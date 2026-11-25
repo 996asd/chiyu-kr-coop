@@ -4,9 +4,9 @@ local proto = require("kr_mp.proto")
 
 local updater = {
     -- 运行 同步推送到GitHub和Gitee.bat 配置双平台仓库后，以下 4 个地址会自动写入真实仓库地址
-    GITEE_VERSION_URL = "",
+    GITEE_VERSION_URL = "https://gitee.com/chiyu-studio/chiyu-kr-coop/raw/main/version.json",
     GITHUB_VERSION_URL = "https://raw.githubusercontent.com/996asd/chiyu-kr-coop/main/version.json",
-    DEFAULT_DOWNLOAD_GITEE = "",
+    DEFAULT_DOWNLOAD_GITEE = "https://gitee.com/chiyu-studio/chiyu-kr-coop/releases",
     DEFAULT_DOWNLOAD_GITHUB = "https://github.com/996asd/chiyu-kr-coop/releases",
 
     boot = nil,

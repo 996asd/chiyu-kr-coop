@@ -2,6 +2,7 @@
 
 > **纯外挂 Hook 轻量化补丁**（客户端补丁不到 100 KB 压缩包），**绝不修改**原版 1.5 GB 的 `Kingdom Rush FL_Alliance-FL4.1.0.exe`，支持一键安装、无痕卸载、全中文界面、大厅检查更新与 AI 友好排错协作。
 >
+> - **Gitee 国内直连仓库（下载更快）**：https://gitee.com/chiyu-studio/chiyu-kr-coop
 > - **GitHub 主仓库**：https://github.com/996asd/chiyu-kr-coop
 
 ---
