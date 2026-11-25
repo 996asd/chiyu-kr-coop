@@ -1,0 +1,26 @@
+# Sandbox game binaries, built packages & runtime artifacts (NEVER commit original game files!)
+game-sandbox/
+dist/
+logs/
+replays/
+kr_mp_logs/
+*.log
+*.rep
+*.exe
+*.dll
+*.kr_mp_backup
+*last_session*.json
+server/kr-mp-server
+server/kr-mp-server.exe
+server/kr-mp-server-linux-amd64
+*.rar
+*.zip
+*.love
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+__pycache__/
+*.pyc

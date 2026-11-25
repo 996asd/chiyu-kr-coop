@@ -1,0 +1,80 @@
+name: KR-MP CI Check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check forbidden binaries and game assets
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+          forbidden_ext = {'.exe', '.dll', '.love', '.rar', '.zip'}
+          bad = []
+          for p in pathlib.Path('.').rglob('*'):
+              if '.git' in p.parts:
+                  continue
+              if p.is_file():
+                  if p.suffix.lower() in forbidden_ext:
+                      bad.append(f"Forbidden binary/archive: {p}")
+                  elif p.stat().st_size > 2 * 1024 * 1024:
+                      bad.append(f"File too large (>2MB): {p} ({p.stat().st_size} bytes)")
+          if bad:
+              print("\n".join(bad))
+              sys.exit(1)
+          print("[PASS] No forbidden binaries or oversized assets committed.")
+          PY
+
+      - name: Validate JSON files & client manifest consistency
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, sys
+          vj = json.loads(pathlib.Path('version.json').read_text(encoding='utf-8'))
+          assert 'version' in vj and 'protocol' in vj, 'version.json missing required fields'
+          mf_path = pathlib.Path('client/kr_mp/manifest.json')
+          assert mf_path.exists(), 'client/kr_mp/manifest.json missing! Run tools/generate_manifest.ps1'
+          mf = json.loads(mf_path.read_text(encoding='utf-8'))
+          files = mf.get('files', {})
+          actual_files = {'UH.lua': pathlib.Path('client/UH.lua')}
+          for p in sorted(pathlib.Path('client/kr_mp').glob('*.lua')):
+              actual_files[f'kr_mp/{p.name}'] = p
+          errors = []
+          for rel, p in actual_files.items():
+              h = hashlib.sha256(p.read_bytes()).hexdigest().upper()
+              if files.get(rel, '').upper() != h:
+                  errors.append(f"Manifest mismatch for {rel}: manifest={files.get(rel)} actual={h}")
+          for rel in files:
+              if rel not in actual_files:
+                  errors.append(f"Stale entry in manifest.json: {rel}")
+          if errors:
+              print("\n".join(errors))
+              print("Please run: powershell -ExecutionPolicy Bypass -File tools\\generate_manifest.ps1")
+              sys.exit(1)
+          print(f"[PASS] version.json ({vj['version']}) and manifest.json ({len(files)} Lua files) verified.")
+          PY
+
+      - name: Lua syntax check
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq luajit
+          for f in client/UH.lua client/kr_mp/*.lua; do
+            luajit -bl "$f" > /dev/null
+          done
+          echo "[PASS] All LuaJIT client scripts parsed with zero syntax errors."
+
+      - name: Go server vet and build
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: |
+          cd server
+          go vet ./...
+          go build -o /tmp/kr-mp-server-ci .
+          echo "[PASS] Go relay server vet & build succeeded."

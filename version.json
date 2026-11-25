@@ -1,0 +1,9 @@
+{
+    "version":  "1.0.0",
+    "protocol":  2,
+    "fl_version":  "4.1.0",
+    "released_at":  "2026-11-25",
+    "notes":  "正式版 v1.0.0：全中文界面、100关/67英雄/41选12混搭卡组、局域网+公网中继、断线高速追帧重连、一键报错与AI修复工具包。",
+    "download_gitee":  "",
+    "download_github":  "https://github.com/996asd/chiyu-kr-coop/releases"
+}

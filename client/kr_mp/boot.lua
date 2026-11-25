@@ -1,0 +1,360 @@
+-- KR-MP Bootstrap Module (M0 Determinism + M1 LAN + M2 Online Relay & Fast-Forward Reconnect)
+local overlay = require("kr_mp.overlay")
+local proto = require("kr_mp.proto")
+local fonts = require("kr_mp.fonts")
+
+local boot = {
+    initialized = false,
+    source = nil,
+    socket_ok = false,
+    socket_info = "",
+    script_hash = "00000000",
+    log_file = nil,
+    smoke_frames = 0,
+    smoke_mode = false,
+    transport = nil,
+    coop = nil,
+    lockstep = nil,
+    lobby = nil,
+    replay = nil,
+    hooks = nil,
+}
+
+local function get_base_dir()
+    if love and love.filesystem and love.filesystem.getSourceBaseDirectory then
+        return love.filesystem.getSourceBaseDirectory()
+    end
+    return "."
+end
+
+function boot:log(fmt, ...)
+    local msg = string.format(fmt, ...)
+    local ts = os.date("%H:%M:%S")
+    local line = string.format("[%s][KR-MP] %s", ts, msg)
+    print(line)
+    if self.log_file then
+        self.log_file:write(line .. "\n")
+        self.log_file:flush()
+    end
+end
+
+function boot:check_luasocket()
+    local ok, socket = pcall(require, "socket")
+    if not ok or not socket then
+        self.socket_ok = false
+        self.socket_info = "require('socket') failed: " .. tostring(socket)
+        self:log("LuaSocket CHECK FAILED: %s", self.socket_info)
+        return false
+    end
+
+    local tcp_ok, tcp_err = pcall(function()
+        local s = assert(socket.tcp())
+        assert(s:bind("127.0.0.1", 0))
+        local ip, port = s:getsockname()
+        s:close()
+        return ip .. ":" .. tostring(port)
+    end)
+
+    local udp_ok, udp_err = pcall(function()
+        local u = assert(socket.udp())
+        assert(u:setsockname("127.0.0.1", 0))
+        local ip, port = u:getsockname()
+        u:close()
+        return ip .. ":" .. tostring(port)
+    end)
+
+    self.socket_ok = tcp_ok and udp_ok
+    self.socket_info = string.format("ver=%s tcp=%s(%s) udp=%s(%s)",
+        tostring(socket._VERSION), tostring(tcp_ok), tostring(tcp_err), tostring(udp_ok), tostring(udp_err))
+    self:log("LuaSocket CHECK: ok=%s | %s", tostring(self.socket_ok), self.socket_info)
+    return self.socket_ok
+end
+
+function boot:wrap_love_callbacks()
+    if self._love_wrapped then return end
+    self._love_wrapped = true
+
+    local orig_draw = love.draw
+    love.draw = function(...)
+        if orig_draw then orig_draw(...) end
+        if self.coop and self.coop:is_active() then
+            self.coop:draw_world_overlays()
+        end
+        overlay:draw()
+        if self.lobby then
+            self.lobby:draw()
+        end
+    end
+
+    local orig_update = love.update
+    love.update = function(dt, ...)
+        if self.lobby then
+            self.lobby:update(dt)
+        end
+        if orig_update then orig_update(dt, ...) end
+        self:on_update(dt)
+    end
+
+    local orig_keypressed = love.keypressed
+    love.keypressed = function(key, scancode, isrepeat, ...)
+        if self:on_keypressed(key, isrepeat) then
+            return
+        end
+        if orig_keypressed then
+            return orig_keypressed(key, scancode, isrepeat, ...)
+        end
+    end
+
+    local orig_textinput = love.textinput
+    love.textinput = function(t, ...)
+        if self.lobby and self.lobby:textinput(t) then
+            return
+        end
+        if orig_textinput then
+            return orig_textinput(t, ...)
+        end
+    end
+
+    local orig_mousepressed = love.mousepressed
+    love.mousepressed = function(x, y, button, istouch, ...)
+        if self.lobby and self.lobby:mousepressed(x, y, button) then
+            return
+        end
+        if overlay:mousepressed(x, y, button) then
+            return
+        end
+        if orig_mousepressed then
+            return orig_mousepressed(x, y, button, istouch, ...)
+        end
+    end
+
+    local orig_mousereleased = love.mousereleased
+    love.mousereleased = function(x, y, button, istouch, ...)
+        if self.lobby and self.lobby:mousereleased(x, y, button) then
+            return
+        end
+        if overlay:mousereleased(x, y, button) then
+            return
+        end
+        if orig_mousereleased then
+            return orig_mousereleased(x, y, button, istouch, ...)
+        end
+    end
+
+    local orig_quit = love.quit
+    love.quit = function(...)
+        self:log("Shutting down KR-MP...")
+        -- Do NOT send LEAVE_ROOM on window close so Online matches retain their 300s reconnect window!
+        if self.transport then
+            self.transport:close()
+        end
+        if self.lockstep then
+            self.lockstep:close_hash_log()
+        end
+        if self.log_file then
+            self.log_file:flush()
+            self.log_file:close()
+            self.log_file = nil
+        end
+        if orig_quit then return orig_quit(...) end
+    end
+
+    local orig_errhand = love.errhand
+    love.errhand = function(msg)
+        local tb = debug.traceback(tostring(msg), 2)
+        self:log("!!! LUA CRASH !!!\n%s", tb)
+        if self.log_file then
+            self.log_file:flush()
+            self.log_file:close()
+            self.log_file = nil
+        end
+        if self.smoke_mode or (os.getenv("KR_MP_AUTO_VERIFY") == "1")
+            or (os.getenv("KR_MP_AUTO_COOP") ~= nil)
+            or (os.getenv("KR_MP_AUTO_M2") ~= nil) then
+            os.exit(1)
+        end
+        if orig_errhand then return orig_errhand(msg) end
+    end
+end
+
+function boot:on_update(dt)
+    if self.hooks and self.hooks.on_update then
+        self.hooks:on_update(dt)
+    end
+
+    local mp_active = self.coop and self.coop:is_active() or false
+    local st = {
+        mp_active = mp_active,
+        mp_online = self.transport and self.transport:is_online() or false,
+        mp_room_code = self.lobby and self.lobby.online_room_code or nil,
+        mp_pid = self.coop and self.coop.local_pid or 1,
+        mp_econ = self.coop and self.coop.econ_mode or "independent",
+        mp_tower_mode = self.coop and self.coop.tower_mode or "owned",
+        mp_g1 = self.coop and self.coop:get_player_gold(1) or 0,
+        mp_g2 = self.coop and self.coop:get_player_gold(2) or 0,
+        mp_rtt = self.transport and self.transport:get_rtt_ms() or 0,
+        mp_phase = self.lockstep and self.lockstep.phase or "IDLE",
+        mp_speed = self.lockstep and self.lockstep.game_speed or 1,
+        mp_sync_ok = self.lockstep and self.lockstep.sync_ok_count or 0,
+        mp_waiting = self.lockstep and self.lockstep.waiting_for_peer or false,
+        mp_catchup_target = self.lockstep and self.lockstep.catchup_target_tick or 0,
+
+        mode = self.replay and self.replay:get_mode() or "IDLE",
+        tick = (game and game.store and game.store.tick) or 0,
+        max_tick = self.replay and self.replay:get_max_tick() or 0,
+        replay_speed = self.replay and self.replay:get_replay_speed() or 1,
+        has_replay = self.replay and self.replay:has_saved_replay() or false,
+        last_hash = mp_active
+            and (self.lockstep and self.lockstep.last_hash_hex or "--------")
+            or (self.replay and self.replay:get_last_hash_hex() or "--------"),
+        socket_ok = self.socket_ok,
+        cmd_count = self.replay and self.replay:get_cmd_count() or 0,
+        seed = mp_active
+            and (self.coop and self.coop.cfg and self.coop.cfg.seed or 0)
+            or (self.replay and self.replay:get_seed() or 0),
+        extra = self.replay and self.replay:get_hud_extra() or "",
+    }
+    overlay:set_status(st)
+
+    if self.smoke_mode then
+        self.smoke_frames = self.smoke_frames + 1
+        if self.smoke_frames >= 5 then
+            self:log("SMOKE_TEST_PASSED frames=%d fl_version=%s", self.smoke_frames, tostring(KR_FL_VERSION))
+            love.event.quit()
+        end
+    end
+end
+
+function boot:on_keypressed(key, isrepeat)
+    if isrepeat then return false end
+    if self.lobby and self.lobby:keypressed(key) then
+        return true
+    end
+    if key == "f9" then
+        overlay.visible = not overlay.visible
+        return true
+    end
+    if not (self.coop and self.coop:is_active()) then
+        if self.replay and self.replay.on_keypressed then
+            if self.replay:on_keypressed(key) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function boot:on_hud_action(action_id)
+    self:log("HUD ACTION: %s", tostring(action_id))
+    if action_id == "hide" then
+        overlay.visible = not overlay.visible
+    elseif action_id == "lobby" and self.lobby then
+        self.lobby:toggle()
+    elseif action_id == "mp_send_gold" and self.lockstep and self.lockstep:is_active() then
+        self.lockstep:queue_local_command({ op = "SEND_GOLD", amount = 50 })
+    elseif action_id == "mp_speed" and self.lockstep and self.lockstep:is_active() then
+        self.lockstep:request_toggle_speed()
+    elseif action_id == "mp_pause" and self.lockstep and self.lockstep:is_active() then
+        self.lockstep:request_toggle_pause()
+    elseif action_id == "mp_leave" and self.lobby then
+        self.lobby:leave_room()
+    elseif action_id == "record" and self.replay then
+        self.replay:start_record()
+    elseif action_id == "replay" and self.replay then
+        self.replay:start_replay()
+    elseif action_id == "stop" and self.replay then
+        self.replay:stop_current()
+    elseif action_id == "speed" and self.replay then
+        self.replay:cycle_replay_speed()
+    end
+end
+
+function boot:init(source)
+    if self.initialized then
+        return self
+    end
+    self.initialized = true
+    self.source = source or "unknown"
+    self.smoke_mode = (os.getenv("KR_MP_SMOKE_TEST") == "1")
+
+    local base = get_base_dir()
+    local env_log = os.getenv("KR_MP_LOG_FILE")
+    local log_path = env_log or (base .. "\\kr_mp.log")
+    -- Keep previous run's log as kr_mp_prev.log so crash stacks survive a restart before collecting bug report
+    if not env_log then
+        local prev_in = io.open(log_path, "rb")
+        if prev_in then
+            local prev_data = prev_in:read("*a")
+            prev_in:close()
+            if prev_data and #prev_data > 0 then
+                local prev_out = io.open(base .. "\\kr_mp_prev.log", "wb")
+                if prev_out then
+                    prev_out:write(prev_data)
+                    prev_out:close()
+                end
+            end
+        end
+    end
+    self.log_file = io.open(log_path, "w")
+    self.script_hash = proto.compute_script_hash()
+
+    self:log("=== KR-MP v%s Booting (entry=%s, FL=%s, hash=%s, font=%s) ===",
+        proto.MOD_VERSION, self.source, tostring(KR_FL_VERSION), self.script_hash, fonts.get_path())
+    self:log("Base dir: %s | Save dir: %s", base,
+        (love.filesystem and love.filesystem.getSaveDirectory and love.filesystem.getSaveDirectory()) or "?")
+
+    overlay:init(function(action_id)
+        self:on_hud_action(action_id)
+    end)
+    self:check_luasocket()
+    self:wrap_love_callbacks()
+
+    -- Load M0 Replay + M1/M2 Co-op Networking & Lockstep modules
+    local ok_r, replay_mod = pcall(require, "kr_mp.replay")
+    if ok_r and replay_mod then
+        self.replay = replay_mod
+        pcall(replay_mod.init, replay_mod, self, overlay)
+    else
+        self:log("ERROR loading kr_mp.replay: %s", tostring(replay_mod))
+    end
+
+    local ok_t, transport_mod = pcall(require, "kr_mp.transport")
+    local ok_c, coop_mod = pcall(require, "kr_mp.coop")
+    local ok_l, lockstep_mod = pcall(require, "kr_mp.lockstep")
+    local ok_lb, lobby_mod = pcall(require, "kr_mp.lobby_ui")
+
+    if ok_t and ok_c and ok_l and ok_lb then
+        self.transport = transport_mod
+        self.coop = coop_mod
+        self.lockstep = lockstep_mod
+        self.lobby = lobby_mod
+        self.transport:init(self)
+        self.coop:init(self, self.lockstep, overlay)
+        self.lockstep:init(self, self.transport, self.coop, overlay)
+        self.lobby:init(self, self.transport, self.lockstep, self.coop, overlay)
+        self:log("M2 Co-op modules loaded (LAN+Online Transport + Lockstep Reconnect + Co-op + Lobby).")
+    else
+        self:log("ERROR loading M2 modules: t=%s c=%s l=%s lb=%s",
+            tostring(transport_mod), tostring(coop_mod), tostring(lockstep_mod), tostring(lobby_mod))
+    end
+
+    local ok_h, hooks_mod = pcall(require, "kr_mp.hooks")
+    if ok_h and hooks_mod then
+        self.hooks = hooks_mod
+        local ok_hi, hi_err = pcall(hooks_mod.init, hooks_mod, self, self.replay, overlay, self.coop, self.lockstep)
+        if not ok_hi then self:log("ERROR hooks:init: %s", tostring(hi_err)) end
+    else
+        self:log("ERROR loading kr_mp.hooks: %s", tostring(hooks_mod))
+    end
+
+    overlay:show_toast("王国保卫战 FL 联机补丁已就绪！点击「联机大厅 (F10)」即可双人联机！", 5)
+    self:log("KR-MP v%s initialization complete.", proto.MOD_VERSION)
+    return self
+end
+
+custom_script = custom_script or {}
+function custom_script:init()
+    boot:init("custom_script")
+end
+
+return boot
