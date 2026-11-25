@@ -82,7 +82,7 @@ try {
     function Upload-GitHubAsset([string]$UploadBaseUrl, [string]$Token, [string]$FilePath) {
         $fileName = [System.IO.Path]::GetFileName($FilePath)
         $cleanBase = $UploadBaseUrl -replace "\{.*\}$", ""
-        $targetUrl = "$cleanBase?name=$([Uri]::EscapeDataString($fileName))"
+        $targetUrl = "${cleanBase}?name=$([Uri]::EscapeDataString($fileName))"
 
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromMinutes(5)
@@ -111,22 +111,21 @@ try {
 
     function Upload-GiteeAsset([string]$Owner, [string]$Repo, [string]$ReleaseId, [string]$Token, [string]$FilePath) {
         $fileName = [System.IO.Path]::GetFileName($FilePath)
-        $targetUrl = "https://gitee.com/api/v5/repos/$Owner/$Repo/releases/$ReleaseId/attach_files"
+        $encTok = [Uri]::EscapeDataString($Token)
+        $targetUrl = "https://gitee.com/api/v5/repos/$Owner/$Repo/releases/$ReleaseId/attach_files?access_token=$encTok"
 
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromMinutes(5)
         $fs = [System.IO.File]::OpenRead($FilePath)
         $multipart = New-Object System.Net.Http.MultipartFormDataContent
         try {
-            $tokenContent = New-Object System.Net.Http.StringContent($Token, [System.Text.Encoding]::UTF8)
-            $multipart.Add($tokenContent, "access_token")
-
             $fileContent = New-Object System.Net.Http.StreamContent($fs)
             $fileContent.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue("application/zip")
             $multipart.Add($fileContent, "file", $fileName)
 
             $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, $targetUrl)
             $req.Headers.TryAddWithoutValidation("User-Agent", "KR-MP-Release-Bot/1.0") | Out-Null
+            $req.Headers.TryAddWithoutValidation("Authorization", "Bearer $Token") | Out-Null
             $req.Content = $multipart
 
             $resp = $client.SendAsync($req).GetAwaiter().GetResult()
@@ -292,7 +291,7 @@ $($verObj.notes)
 
             $geBase = "https://gitee.com/api/v5/repos/$($geInfo.Owner)/$($geInfo.Repo)"
             $encTok = [Uri]::EscapeDataString($geToken)
-            $getRes = Invoke-HttpJson -Method "GET" -Url "$geBase/releases/tags/$Tag?access_token=$encTok"
+            $getRes = Invoke-HttpJson -Method "GET" -Url "$geBase/releases/tags/${Tag}?access_token=$encTok"
             $relId = $null
 
             if ($getRes.Ok -and $getRes.Json -and $getRes.Json.id) {
