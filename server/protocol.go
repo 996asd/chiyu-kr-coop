@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	ServerVersion = "1.2.0"
-	ProtocolVer   = 2
+	ServerVersion = "2.0.0"
+	ProtocolVer   = 3
 )
 
 // IncomingMsg is the flexible envelope decoded from newline-delimited JSON TCP frames.

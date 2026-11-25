@@ -1,6 +1,6 @@
 param(
     [string]$ClientDir = "D:\kr-mp-mod\client",
-    [string]$SandboxDir = "D:\kr-mp-mod\game-sandbox"
+    [string]$SandboxDir = "D:\FL8.2.0"
 )
 
 $ErrorActionPreference = "Stop"

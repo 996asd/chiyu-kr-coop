@@ -7,8 +7,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$SandboxDir = "D:\kr-mp-mod\game-sandbox"
-$ExePath = Join-Path $SandboxDir "Kingdom Rush FL_Alliance-FL4.1.0.exe"
+$SandboxDir = "D:\FL8.2.0"
+$ExePath = Join-Path $SandboxDir "Kingdom Rush FL_Alliance-FL8.1.0.exe"
 $ServerExe = "D:\kr-mp-mod\server\kr-mp-server.exe"
 
 if (-not (Test-Path $ServerExe)) {

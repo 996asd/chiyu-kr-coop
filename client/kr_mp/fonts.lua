@@ -1,4 +1,4 @@
--- KR-MP Built-in Chinese Font Loader (reuses FL 4.1.0's HarmonyOS Sans SC TTF with zero extra bundle bloat)
+-- KR-MP Built-in Chinese Font Loader (reuses FL 8.2.0's HarmonyOS Sans SC TTF with zero extra bundle bloat)
 local fonts = {
     cache = {},
     font_path = nil,
@@ -6,7 +6,10 @@ local fonts = {
 }
 
 local CANDIDATE_FONTS = {
+    "all-desktop/assets/fonts/HarmonyOS_Sans_SC.ttf",
+    "all-desktop/assets/fonts/HarmonyOS_Sans_SC_Regular-.ttf",
     "kr3-desktop/assets/fonts/HarmonyOS_Sans_SC_Regular.ttf",
+    "all-desktop/assets/fonts/AlibabaPuHuiTi-3-55-Regular.ttf",
     "all-desktop/assets/fonts/NotoSansCJKjp-Regular.otf",
     "all-desktop/assets/fonts/DroidSans.ttf",
 }

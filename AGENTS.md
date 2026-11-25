@@ -1,4 +1,4 @@
-# AGENTS.md — KR-MP (Kingdom Rush FL 4.1.0 联机 MOD) AI 协作开发与修复宪法
+# AGENTS.md — KR-MP (Kingdom Rush FL 8.2.0 联机 MOD) AI 协作开发与修复宪法
 
 > 本文档面向所有 AI 编程助手（Cursor、Antigravity、Trae、Claude Code、Codex、DeepSeek 等）与开源贡献者。修改本项目任何代码前，请务必先阅读本文件中的架构地图、铁律与验证方法。
 
@@ -8,19 +8,21 @@
 
 1. **零侵入外挂补丁架构**：
    - 本项目只包含纯外挂 Lua Hook（`client/UH.lua` + `client/kr_mp/`）与独立 Go 服务端（`server/`）。
-   - **严禁**修改、覆盖或提交 FL 4.1.0 原版 `.exe`（1.5 GB）、贴图、音频或任何游戏资源文件。
-   - FL 4.1.0 启动时会通过 `all/director.lua` 自动加载同目录下的 `UH.lua -> mod:init()`，这是唯一入口。
+   - **严禁**修改、覆盖或提交 FL 8.2.0 原版 `.exe`、`.dll`、贴图、音频或任何游戏资源文件（游戏目录约 3 GB，仅作只读参考）。
+   - FL 8.2.0（启动器 `Kingdom Rush FL_Alliance-FL8.1.0.exe`，`main_globals.lua` 中 `KR_FL_VERSION = "8.2.0"`）启动时会通过 `mod.lua` / `all/director.lua` 自动加载同目录下的 `UH.lua -> UH:init()`，这是唯一入口。
 2. **60Hz 确定性帧同步铁律（防 DESYNC 核心）**：
    - 双端只同步操作指令（每 3 帧一个 Turn，2 个 Turn 输入缓冲），不广播实体坐标。
    - **严禁**在战斗逻辑（`sim:do_tick`）内直接调用原生 `math.random` 或依赖无序 `pairs()`。
      - 纯视觉/音效/UI 逻辑中若用到随机，必须包在 `prng:enter_visual()` / `prng:exit_visual()` 内。
      - `store.entities` / `store.waves_active` / `store.manual_wave_cos` 必须通过 `hooks.lua` 的确定性排序迭代器遍历。
+     - FL 8.2.0 新增的 `klove.sso` 空间索引：网格原点固定为 `(0, 0, 2048, 1280)`（不随窗口比例变化），`SSO.filter` 结果按 `e.id` 升序，`SSO.persistent_lists` 走确定性数字键遍历。
+     - FL 8.2.0 的 `all/simulation.lua:prepare_render()` 以渲染帧率运行（含 `particle_system` 到期），只能做纯视觉；纯视觉粒子不计入 `state_hash.lua` 的实体数。
    - **纯本地 UI 实体隔离**：任何仅本地渲染的预览/悬浮/路径指示实体，必须带有 `_kr_mp_local = true` 且分配在 `LOCAL_ID_BASE = 100000000` 空间内，绝不能污染仿真 `E.last_id`，且在 `state_hash.lua` 中必须跳过。
    - **UI 坐标量化**：所有发往联机的世界坐标（英雄移动、技能落点、地图打点）必须经 `commands.lua` 整数/固定精度量化，避免不同窗口分辨率导致浮点分叉。
    - **禁止使用 `os.clock()` / `love.timer.getTime()` 驱动战斗逻辑**：只可用于 UI 动画、Toast 倒计时、网络心跳与重连超时。
 3. **跨平台/中文编码与体积控制**：
    - 所有 Lua、Go、文档与脚本统一使用 **UTF-8（无 BOM）**。
-   - 中文字体直接复用 FL 4.1.0 内置的 `kr3-desktop/assets/fonts/HarmonyOS_Sans_SC_Regular.ttf`（经 `client/kr_mp/fonts.lua` 加载），不要塞入外部字体文件。注意不要使用鸿蒙简中字体缺失的生僻符号（例如勾选请用 `√`，不要用 `✓`）。
+   - 中文字体直接复用 FL 8.2.0 内置的 `all-desktop/assets/fonts/HarmonyOS_Sans_SC.ttf`（经 `client/kr_mp/fonts.lua` 加载），不要塞入外部字体文件。注意不要使用鸿蒙简中字体缺失的生僻符号（例如勾选请用 `√`，不要用 `✓`）。
 4. **先验证再提交**：
    - 修改 `client/` 代码后必须同步到沙盒并跑通回归验证；修改 `server/` 代码后必须通过 `go vet ./...` 与 `go build`。
 
@@ -31,7 +33,7 @@
 ```text
 kr-mp-mod/
 ├── client/                     # 客户端外挂补丁源码（发给玩家的全部代码）
-│   ├── UH.lua                  # FL 4.1.0 自动加载入口（调用 kr_mp.boot）
+│   ├── UH.lua                  # FL 8.2.0 自动加载入口（调用 kr_mp.boot）
 │   └── kr_mp/
 │       ├── boot.lua            # 引导器、日志（含崩溃保留上一份日志）、love.* 回调包装、HUD 动作分发
 │       ├── proto.lua           # 协议版本号、纯 Lua 安全 JSON 编解码、FL 核心脚本哈希（FNV-1a）
@@ -40,9 +42,9 @@ kr-mp-mod/
 │       ├── hooks.lua           # 核心引擎钩子（确定性 pairs/filter/协程、双 ID 空间、A*缓存绕过、跳过漫画、sim.update 锁步驱动）
 │       ├── commands.lua        # 12 类原版操作 + SEND_GOLD / MAP_PING / SYNC_PAUSE 的拦截、校验与重放
 │       ├── lockstep.lua        # 60Hz 帧同步状态机（LOAD_DONE 屏障、1x/2x 倍速、断线保局、高速追帧重连）
-│       ├── coop.lua            # 2P 合作层（双英雄归属、独立/共享经济账本、红蓝塔权、41选12卡组快照、世界标签与打点渲染）
-│       ├── catalog.lua         # FL 4.1.0 完整中文目录（100 关 + 67 英雄 + 41 座防御塔）
-│       ├── fonts.lua           # 复用内置 HarmonyOS_Sans_SC_Regular.ttf 的字号缓存器
+│       ├── coop.lua            # 2P 合作层（双英雄归属、独立/共享经济账本、红蓝塔权、59选12卡组快照、世界标签与打点渲染）
+│       ├── catalog.lua         # FL 8.2.0 完整中文目录（201 关 + 105 英雄 + 59 座防御塔）
+│       ├── fonts.lua           # 复用内置 HarmonyOS_Sans_SC.ttf 的字号缓存器
 │       ├── lobby_ui.lua        # 全中文双模式大厅（局域网 + 公网服务器 + 三大选择器 + 一键重连 + 自动化测试驱动）
 │       ├── overlay.lua         # 顶部居中紧凑中文 HUD（金币/延迟/校验/倍速/暂停/转50金/追帧进度条）
 │       ├── transport.lua       # 局域网与公网统一传输层抽象
@@ -57,7 +59,7 @@ kr-mp-mod/
 │   ├── room.go                 # 房间状态机、历史帧缓存与高速追帧重连计算、定时清理
 │   └── main.go                 # 非阻塞 TCP 连接循环 + 可选 HTTP /health 探针
 ├── tools/                      # 构建、测试、安装、社区报错与修复脚本
-│   ├── sync_client.ps1         # 同步 client/ -> game-sandbox/
+│   ├── sync_client.ps1         # 同步 client/ -> D:\FL8.2.0\（本机 FL 8.2.0 测试目录）
 │   ├── generate_manifest.ps1   # 生成 client/kr_mp/manifest.json
 │   ├── build_server.ps1        # 编译 Windows + Linux 静态单文件服务端
 │   ├── package_release.ps1     # 打包轻量客户端包 & 完整服务端包到 dist/
@@ -94,7 +96,7 @@ kr-mp-mod/
 ### 场景 B：特定关卡或英雄进入战斗时 Lua 报错崩溃
 1. 查看玩家报错包里的 `kr_mp.log`（或 `kr_mp_prev.log`）末尾的 `!!! LUA CRASH !!!` 堆栈。
 2. 常见问题来源：
-   - 某关卡需要特殊前置状态或过场（参考 `hooks.lua` 中 `LU.load_level` 跳过漫画的处理）；
+   - 某关卡需要特殊前置状态或过场（参考 `hooks.lua` 中对 `level_utils` / `level_utils_5` / `level_utils_57` / `level_utils_6` 的 `load_level` 跳过漫画处理）；
    - 某英雄在 `slot_snapshot.heroes.status` 中缺少默认字段（检查 `coop.lua:build_host_slot_snapshot`）；
    - 某塔或英雄贴图组未预加载（参考原版 `all/director.lua` 的 `scale_required_textures` 逻辑）。
 
@@ -115,7 +117,7 @@ powershell -ExecutionPolicy Bypass -File tools\sync_client.ps1
 cd server; go vet ./...; cd ..
 powershell -ExecutionPolicy Bypass -File tools\build_server.ps1 -Linux
 
-# 3. 跑全自动确定性联机回归（需本机存在 game-sandbox/）
+# 3. 跑全自动确定性联机回归（需本机存在 D:\FL8.2.0\，可用 tools\setup_sandbox.ps1 从 FL 8.2.0 压缩包解压）
 powershell -ExecutionPolicy Bypass -File tools\run_m2_test.ps1
 powershell -ExecutionPolicy Bypass -File tools\run_m1_dual.ps1 -AutoCoopTest
 

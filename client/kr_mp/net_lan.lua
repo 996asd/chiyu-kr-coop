@@ -275,7 +275,7 @@ function net_lan:poll()
                 tostring(adv.name or "LAN Room"):gsub("|", "_"),
                 tonumber(adv.level_idx) or 101,
                 tonumber(adv.players) or 1,
-                tostring(KR_FL_VERSION or "4.1.0"))
+                tostring(KR_FL_VERSION or "8.2.0"))
             pcall(self.udp_bcast.sendto, self.udp_bcast, pkt, "255.255.255.255", proto.LAN_DISCOVERY_PORT)
             pcall(self.udp_bcast.sendto, self.udp_bcast, pkt, "127.0.0.1", proto.LAN_DISCOVERY_PORT)
         end

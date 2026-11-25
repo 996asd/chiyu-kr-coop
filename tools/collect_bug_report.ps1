@@ -12,13 +12,14 @@ function Find-DefaultGameDir {
     $candidates = @(
         (Get-Location).Path,
         $PkgRoot,
-        (Join-Path $PkgRoot "game-sandbox"),
-        "D:\kr\Kingdom Rush Alliance",
+        "D:\FL8.2.0",
+        "C:\FL8.2.0",
+        "E:\FL8.2.0",
         "C:\Program Files (x86)\Steam\steamapps\common\Kingdom Rush Alliance",
         "D:\SteamLibrary\steamapps\common\Kingdom Rush Alliance"
     )
     foreach ($c in $candidates) {
-        if ($c -and (Test-Path (Join-Path $c "Kingdom Rush FL_Alliance-FL4.1.0.exe")) -and (Test-Path (Join-Path $c "kr_mp"))) {
+        if ($c -and (Test-Path (Join-Path $c "kr_mp")) -and (Get-ChildItem -Path $c -Filter "Kingdom Rush FL_Alliance*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
             return $c
         }
     }
@@ -36,24 +37,24 @@ if (-not $TargetDir) {
     if (-not $Silent) {
         if ($detected) {
             Write-Host "检测到已安装联机补丁的游戏目录: $detected" -ForegroundColor Green
-            $ans = Read-Host "是否收集此目录的日志？直接回车确认，或输入其他 FL 4.1.0 游戏目录路径"
+            $ans = Read-Host "是否收集此目录的日志？直接回车确认，或输入其他 FL 8.2.0 游戏目录路径"
             if ($ans -eq "" -or $ans -match "^[Yy]$") {
                 $TargetDir = $detected
             } else {
                 $TargetDir = $ans.Trim('"').Trim()
             }
         } else {
-            Write-Host "请选择你的 FL 4.1.0 游戏目录（含 Kingdom Rush FL_Alliance-FL4.1.0.exe）..." -ForegroundColor Yellow
+            Write-Host "请选择你的 FL 8.2.0 游戏目录（含 Kingdom Rush FL_Alliance-FL8.1.0.exe）..." -ForegroundColor Yellow
             try {
                 Add-Type -AssemblyName System.Windows.Forms
                 $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-                $dlg.Description = "请选择已安装 KR-MP 补丁的 FL 4.1.0 游戏目录"
+                $dlg.Description = "请选择已安装 KR-MP 补丁的 FL 8.2.0 游戏目录"
                 if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                     $TargetDir = $dlg.SelectedPath
                 }
             } catch {}
             if (-not $TargetDir) {
-                $TargetDir = (Read-Host "请粘贴或拖入 FL 4.1.0 游戏目录路径").Trim('"').Trim()
+                $TargetDir = (Read-Host "请粘贴或拖入 FL 8.2.0 游戏目录路径").Trim('"').Trim()
             }
         }
     } else {
@@ -182,12 +183,12 @@ foreach ($scanName in @("kr_mp.log", "kr_mp_prev.log")) {
 }
 
 # 4. Write diagnostic summary & ready-to-paste AI prompt
-$hasExe = Test-Path (Join-Path $TargetDir "Kingdom Rush FL_Alliance-FL4.1.0.exe")
+$hasExe = [bool](Get-ChildItem -Path $TargetDir -Filter "Kingdom Rush FL_Alliance*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1)
 $diagText = @"
 === KR-MP 联机环境与文件体检报告 ===
 生成时间: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 游戏目录: $TargetDir
-FL 4.1.0 主程序存在: $hasExe
+FL 8.2.0 主程序存在: $hasExe
 已安装补丁版本: v$modVer
 操作系统: $([System.Environment]::OSVersion.VersionString)
 已收集日志文件: $(if ($collectedLogs.Count -gt 0) { $collectedLogs -join ", " } else { "(无)" })
@@ -201,7 +202,7 @@ $($clueLines -join "`r`n")
 [System.IO.File]::WriteAllText((Join-Path $stage "环境与文件体检.txt"), $diagText, (New-Object System.Text.UTF8Encoding($false)))
 
 $aiPrompt = @"
-我在玩《王国保卫战 FL 4.1.0》的 KR-MP 双人联机 MOD（版本 v$modVer）时遇到了问题，请帮我分析原因并给出最小、安全的 Lua/Go 修复方案。
+我在玩《王国保卫战 FL 8.2.0》的 KR-MP 双人联机 MOD（版本 v$modVer）时遇到了问题，请帮我分析原因并给出最小、安全的 Lua/Go 修复方案。
 
 【自动检测结论】
 $detectedIssue
@@ -216,7 +217,7 @@ $detectedIssue
 3. 项目根目录的 AGENTS.md 或 AI修复指南.md
 
 【请严格遵守以下 4 条修改红线】
-1. 绝不修改原版 FL 4.1.0 游戏 .exe 或素材，只改 UH.lua / kr_mp/*.lua / server/*.go。
+1. 绝不修改原版 FL 8.2.0 游戏 .exe 或素材，只改 UH.lua / kr_mp/*.lua / server/*.go。
 2. 绝不破坏 60Hz 确定性帧同步：战斗内严禁原生 math.random、无序 pairs()、系统时间驱动；纯视觉随机必须包在 prng:enter_visual()/exit_visual() 内。
 3. 纯本地 UI 预览实体必须标记 _kr_mp_local = true 并走 LOCAL_ID_BASE，绝不污染仿真 ID。
 4. 请明确告诉我需要修改哪几个文件、改哪里，改完我测试没问题后会用「一键导出我的修改.bat」分享回群里！

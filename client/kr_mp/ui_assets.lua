@@ -1,10 +1,9 @@
 -- KR-MP Ironhide Native Parchment & Hand-Hewn Oak UI Engine (V2)
 -- Features:
---   1. Isolated lazy loader for FL 4.1.0 native art:
---      - 67/67 Full Vertical Hero Portraits (portrait_notxt_* & hero_room_portraits_big_*)
---      - 67/67 Crisp Square Hero Thumbs (heroroom_portraits_*, small_thumb_*, kra_hero_portraits_0401..0403)
---      - 41/41 Crisp Tower Medallions (room_tower & kr4_map_towerroom with exact a_size UV scaling)
---      - 100/100 Hand-Painted Stage Postcards (kr5_level_thumbs .dds & screen_map_123 .png)
+--   1. Isolated lazy loader for FL 8.2.0 native art:
+--      - 105/105 Hero Portraits (screen_map_123 / rebborn / room_hero / kr4_hero_room / kr6_hero_room_big ...)
+--      - 59/59 Tower Medallions (gui_common_5 / kr4_map_towerroom / kr6_ui_icons with exact a_size UV scaling)
+--      - 201/201 Stage Postcards (kr6/zeta/kr4/kr5/rebborn level thumbs & screen_map_123)
 --   2. External 4x-supersampled Ironhide hardware PNGs (client/kr_mp/assets/*.png) loaded cleanly via io.open+FileData
 --   3. Smooth GPU Mesh gradients + comic-inked tactile Oak/Parchment/Wax/3D-Emerald components
 --   4. Safe native Ironhide UI Sound trigger (never touches sim or PRNG!)
@@ -52,43 +51,30 @@ ui.THEME = {
     err_red         = { 218, 54, 52, 255 },
 }
 
--- FL 4.1.0 exact 41-tower icon index table (all-desktop/screen_map.lua global_icon_idx)
+-- FL 8.2.0 exact 59-tower icon index table (all-desktop/screen_map.lua global_icon_idx + KR6 44..59)
+-- 1..21: KR5/Alliance towers (gui_common_5 main_icons_00XX); 22..43: KR4 towers (kr4_map_towerroom 401..423)
 local TOWER_ICON_IDX = {
-    1, 2, 3, 4,
-    6, 7, 8, 9, 10,
-    11, 12, 13, 15, 16,
-    17, 18, 19, 23, 24,
-    417, 414, 421, 408, 411,
-    407, 409, 404, 423, 410,
-    415, 419, 420, 416, 406,
-    413, 403, 402, 405, 412,
-    418, 422,
+    1,   2,   3,   4,   -- 1..4   圣骑士/皇弓/奥术/三管
+    6,   7,   8,   9,   -- 5..8   树灵/恶魔/观星/火箭
+    10,  11,  12,  13,  -- 9..12  巨弩/死灵/喷火/沙丘
+    16,  17,  18,  32,  -- 13..16 幽冥/酒桶/诡术/暮光
+    34,  39,  42,  49,  -- 17..20 沼泽/炮兵/巨像/竹宗三侠
+    51,                 -- 21     龙之孵育所
+    417, 414, 421, 408, 411, -- 22..26 骚扰/红钻/火山/黑弓/黑骑
+    407, 409, 404, 423, 410, -- 27..31 火法/熔炉/回旋/沉船/幽灵墓
+    415, 419, 420, 416, 406, -- 32..36 腐森/少林/沼巨/女巫/飞艇
+    413, 403, 402, 405, 412, -- 37..41 掷骨/兽人/萨满/火骑/墓地
+    418, 422,                -- 42..43 鱼人/沙虫
 }
 
-local HERO_FALLBACK_NAMES = {
-    [48] = "hero_vesper",
-    [49] = "hero_raelyn",
-    [50] = "hero_muyrn",
-    [51] = "hero_venom",
-    [52] = "hero_builder",
-    [53] = "hero_robot",
-    [54] = "hero_space_elf",
-    [55] = "hero_mecha",
-    [56] = "hero_lumenir",
-    [57] = "hero_hunter",
-    [58] = "hero_dragon_gem",
-    [59] = "hero_bird",
-    [60] = "hero_dragon_bone",
-    [61] = "hero_witch",
-    [62] = "hero_dragon_arb",
-    [63] = "hero_lava",
-    [64] = "hero_spider",
-    [65] = "hero_eiskalt",
-    [66] = "hero_dianyun",
-    [67] = "hero_jack_o_lantern",
+local KR6_TOWER_NAMES = {
+    [44] = "archers", [45] = "knights", [46] = "wizard", [47] = "catapult",
+    [48] = "ranger", [49] = "culverine", [50] = "sunray_master", [51] = "light_priestess",
+    [52] = "tree", [53] = "wildcat", [54] = "alchemist", [55] = "forger",
+    [56] = "crossbows", [57] = "miners", [58] = "sniper", [59] = "owl",
 }
 
-local KR4_PORTRAIT_NUM = { [65] = 401, [66] = 402, [67] = 403 }
+local catalog = require("kr_mp.catalog")
 
 local _base_dir = nil
 local _atlas_meta = {}
@@ -205,7 +191,7 @@ function ui.get_ext_image(fname, wrap_repeat)
     return img
 end
 
--- Load FL 4.1.0 internal atlas metadata (.lua)
+-- Load FL 8.2.0 internal atlas metadata (.lua)
 local function load_atlas_meta(atlas_name)
     local cached = _atlas_meta[atlas_name]
     if cached ~= nil then
@@ -231,7 +217,7 @@ local function load_atlas_meta(atlas_name)
     return tbl
 end
 
--- Load FL 4.1.0 internal texture (.png / .jpg / .dds / .pkm / .ktx)
+-- Load FL 8.2.0 internal texture (.png / .jpg / .dds / .pkm / .ktx)
 local function load_atlas_image(tex_name)
     local cached = _img_cache[tex_name]
     if cached ~= nil then
@@ -266,7 +252,7 @@ local function load_atlas_image(tex_name)
     return img
 end
 
--- Retrieve cached sprite using exact FL 4.1.0 a_size reference coordinates!
+-- Retrieve cached sprite using exact FL 8.2.0 a_size reference coordinates!
 local function get_sprite(atlas_name, sprite_name)
     local key = atlas_name .. ":" .. sprite_name
     local cached = _sprite_cache[key]
@@ -307,69 +293,127 @@ local function get_sprite(atlas_name, sprite_name)
     return entry
 end
 
--- Square crisp hero thumb (67/67 verified: fixes KR4 Eiskalt/Dianyun/Jack with kra_hero_portraits_0401..0403!)
-function ui.get_hero_sprite(hero_idx)
-    local idx = tonumber(hero_idx) or 48
+local function resolve_hero_tpl(idx)
     local hd_tbl = get_hero_data()
     local hd = hd_tbl and hd_tbl[idx]
+    local hname = hd and hd.name
+    if not hname then
+        local info = catalog.get_hero_info(idx)
+        hname = info and info.tpl
+    end
+    -- #71 hero_douzhanshengfo shares Wukong's portrait atlas in FL 8.2.0
+    if hname == "hero_douzhanshengfo" then
+        return "hero_wukong", hd
+    end
+    return hname, hd
+end
 
-    if KR4_PORTRAIT_NUM[idx] then
-        local sp = string.format("kra_hero_portraits_%04d", KR4_PORTRAIT_NUM[idx])
-        return get_sprite("kr4_herogui", sp)
-    elseif idx >= 48 then
-        local hname = (hd and hd.name) or HERO_FALLBACK_NAMES[idx]
-        if not hname then return nil end
-        local sp = string.format("hero_room_portraits_small_thumb_%s_0001", hname)
-        return get_sprite("room_hero", sp) or get_sprite("kr4_herogui", sp)
-    else
+-- Square crisp hero thumb (105/105 verified across KR1/2/3/Rebborn/KR5/KR4/KR6!)
+function ui.get_hero_sprite(hero_idx)
+    local idx = tonumber(hero_idx) or catalog.DEFAULT_HERO_1 or 53
+    local hname, hd = resolve_hero_tpl(idx)
+
+    if idx <= 47 then
         local thumb = (hd and tonumber(hd.thumb)) or idx
         local sp = string.format("heroroom_portraits_%04d", thumb)
         return get_sprite("screen_map_123", sp)
+    elseif idx >= 48 and idx <= 52 then
+        if not hname then return nil end
+        local sp = string.format("hero_room_portraits_small_thumb_%s_0001", hname)
+        return get_sprite("rebborn_heroes_gui", sp) or get_sprite("rebborn_heroes_room", "hero_room_portraits_big_" .. hname .. "_0001")
+    elseif idx >= 53 and idx <= 72 then
+        if not hname then return nil end
+        local sp = string.format("hero_room_portraits_small_thumb_%s_0001", hname)
+        return get_sprite("room_hero", sp) or get_sprite("room_hero", "hero_room_portraits_big_" .. hname .. "_0001")
+    elseif idx >= 73 and idx <= 90 then
+        if not hname then return nil end
+        local sp = string.format("hero_room_portraits_small_thumb_%s_0001", hname)
+        return get_sprite("kr4_hero_room", sp)
+            or get_sprite("kr4_hero_room", "hero_room_portraits_big_" .. hname .. "_0001")
+    else
+        -- KR6 Genesis heroes (91..105)
+        if not hname then return nil end
+        local short = hname:gsub("^hero_", ""):gsub("_g6$", "")
+        local th_sp = string.format("hero_room_portraits_small_thumb_%s_0001", hname)
+        return get_sprite("kr6_hero_portraits", "kr6_hero_portraits_" .. short)
+            or get_sprite("kr6_update1_ui", th_sp)
+            or get_sprite("kr6_hero_silent_portraits", "kr6_hero_portraits_" .. short)
+            or get_sprite("kr6_hero_silent_portraits", th_sp)
+            or get_sprite("kr6_hero_room_big", "hero_room_portraits_big_" .. hname .. "_0001")
     end
 end
 
--- Full vertical hero standing portrait (67/67 verified!)
+-- Full vertical hero standing portrait (105/105 verified across KR1/2/3/Rebborn/KR5/KR4/KR6!)
 function ui.get_hero_big_sprite(hero_idx)
-    local idx = tonumber(hero_idx) or 48
-    local hd_tbl = get_hero_data()
-    local hd = hd_tbl and hd_tbl[idx]
+    local idx = tonumber(hero_idx) or catalog.DEFAULT_HERO_1 or 53
+    local hname, hd = resolve_hero_tpl(idx)
 
-    if idx >= 48 then
-        local hname = (hd and hd.name) or HERO_FALLBACK_NAMES[idx]
-        if not hname then return ui.get_hero_sprite(idx) end
-        local sp = string.format("hero_room_portraits_big_%s_0001", hname)
-        if idx >= 65 then
-            return get_sprite("kr4_herogui", sp) or ui.get_hero_sprite(idx)
-        else
-            return get_sprite("room_hero", sp) or ui.get_hero_sprite(idx)
-        end
-    else
+    if idx <= 47 then
         local pnum = (hd and tonumber(hd.portrait)) or (hd and tonumber(hd.thumb)) or idx
         local sp = string.format("portrait_notxt_%04d", pnum)
         return get_sprite("screen_map_123", sp) or ui.get_hero_sprite(idx)
+    elseif not hname then
+        return ui.get_hero_sprite(idx)
+    end
+
+    local big_sp = string.format("hero_room_portraits_big_%s_0001", hname)
+    if idx >= 48 and idx <= 52 then
+        return get_sprite("rebborn_heroes_room", big_sp) or ui.get_hero_sprite(idx)
+    elseif idx >= 53 and idx <= 72 then
+        return get_sprite("room_hero", big_sp) or ui.get_hero_sprite(idx)
+    elseif idx >= 73 and idx <= 90 then
+        return get_sprite("kr4_hero_room", big_sp) or ui.get_hero_sprite(idx)
+    else
+        return get_sprite("kr6_hero_room_big", big_sp)
+            or get_sprite("kr6_update1_ui", big_sp)
+            or get_sprite("kr6_hero_silent_portraits", big_sp)
+            or ui.get_hero_sprite(idx)
     end
 end
 
--- Crisp tower medallion (41/41 verified: uses kr4_map_towerroom with a_size scaling for all 22 KR4 towers!)
+-- Crisp tower medallion (59/59 verified: KR5 gui_common_5 + KR4 kr4_map_towerroom + KR6 kr6_ui_icons/kr6_update1_ui!)
 function ui.get_tower_sprite(tower_idx)
     local idx = tonumber(tower_idx) or 1
+    local k6 = KR6_TOWER_NAMES[idx]
+    if k6 then
+        local sp = "kr6_icon_room_tower_" .. k6
+        return get_sprite("kr6_ui_icons", sp) or get_sprite("kr6_update1_ui", sp)
+    end
     local gi = TOWER_ICON_IDX[idx]
     if not gi then return nil end
     if gi > 400 then
         local sp = string.format("towerselect_quickmenu_icons_%04d", gi - 400)
-        return get_sprite("kr4_map_towerroom", sp) or get_sprite("kr4_tower_room", sp)
+        return get_sprite("kr4_map_towerroom", sp)
     else
-        local sp = string.format("quickmenu_main_icons_main_icons_0%03d_0001", gi)
-        return get_sprite("room_tower", sp)
+        local sp_kra = string.format("kra_main_icons_%04d", gi)
+        local spr = get_sprite("gui_common_5", sp_kra)
+        if spr then return spr end
+        local sp5 = string.format("main_icons_%04d", gi)
+        spr = get_sprite("gui_common_5", sp5)
+        if spr then return spr end
+        local sp_rt = string.format("quickmenu_main_icons_main_icons_0%03d_0001", gi)
+        return get_sprite("room_tower", sp_rt)
     end
 end
 
--- Official hand-painted stage thumbnail postcard (100/100 verified!)
+-- Official hand-painted stage thumbnail postcard (all 6 generations + Rebborn/Zeta!)
 function ui.get_stage_sprite(level_idx)
     local idx = tonumber(level_idx) or 101
-    local sp = string.format("stage_thumbs_%04d", idx)
-    if idx >= 101 then
+    -- FL 8.2.0 screen_map.lua maps level 142 preview to 122
+    local preview_idx = (idx == 142) and 122 or idx
+    local sp = string.format("stage_thumbs_%04d", preview_idx)
+    if preview_idx >= 251 then
+        return get_sprite("kr6_level_thumbs", sp) or get_sprite("screen_map_123", sp)
+    elseif preview_idx >= 193 and preview_idx <= 201 then
+        return get_sprite("zeta_level_thumbs", sp) or get_sprite("kr4_level_thumbs", sp)
+    elseif preview_idx >= 149 and preview_idx <= 201 then
+        return get_sprite("kr4_level_thumbs", sp) or get_sprite("kr5_level_thumbs", sp)
+    elseif preview_idx >= 101 and preview_idx <= 148 then
         return get_sprite("kr5_level_thumbs", sp) or get_sprite("screen_map_123", sp)
+    elseif preview_idx >= 88 and preview_idx <= 90 then
+        return get_sprite("rebborn_level_thumbs", sp) or get_sprite("screen_map_123", sp)
+    elseif preview_idx == 91 then
+        return get_sprite("stage91_level_thumb", sp) or get_sprite("screen_map_123", sp)
     else
         return get_sprite("screen_map_123", sp) or get_sprite("kr5_level_thumbs", sp)
     end
@@ -804,17 +848,21 @@ function ui.draw_button(b, hover, font_map)
         ui.draw_hero_portrait(b.hero_idx, b.x + 5, b.y + math.floor((b.h - isz) * 0.5), isz, isz, {
             radius = 5, pad = 1, border = sel and bc or { 112, 74, 34, 235 }, border_w = 1.5,
         })
-        local tx = b.x + isz + 10
-        local tw = math.max(10, b.x + b.w - tx - 4)
+        local tx = b.x + isz + 9
+        local tw = math.max(10, b.x + b.w - tx - (sel and 19 or 4))
+        local lbl = b.label or ""
         local f = font_map.small or font_map.main
+        if f and font_map.tiny and f:getWidth(lbl) > tw then
+            f = font_map.tiny
+        end
         if f then G.setFont(f) end
         local fh = f and f:getHeight() or 12
         G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
-        G.printf(b.label or "", tx, b.y + math.floor(b.h * 0.5 - fh), tw, "left")
+        G.print(lbl, tx, b.y + math.floor(b.h * 0.5 - fh - 1))
         if b.sub_label and font_map.tiny then
             G.setFont(font_map.tiny)
             G.setColor(T.ink_sub[1], T.ink_sub[2], T.ink_sub[3], 235)
-            G.printf(b.sub_label, tx, b.y + math.floor(b.h * 0.5 + 2), tw, "left")
+            G.print(b.sub_label, tx, b.y + math.floor(b.h * 0.5 + 3))
         end
         if sel then
             local bx, by = b.x + b.w - 17, b.y + 4

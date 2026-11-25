@@ -9,6 +9,7 @@ local commands = {
     seq = 0,
     executing = false,
     orig_power_fire = {}, -- [1|2|3] = orig function
+    orig_hero_ult_fire = nil, -- HeroUltimateButton.fire (FL 8.2.0 "a"/"s" slots)
     orig_c_swap_tower = nil,
     coop = nil,
     lockstep = nil,
@@ -205,7 +206,31 @@ function commands:execute(cmd, game_ref, boot_ref)
             elseif phase == "point_confirm" then
                 e.user_selection.in_progress = false
                 e.user_selection.new_pos = { x = cmd.wx, y = cmd.wy }
+            elseif phase == "custom" then
+                e.user_selection.in_progress = true
+                e.user_selection.arg = cmd.arg
             end
+        end
+
+    elseif op == "TW_FREE_HOLDER" then
+        local terrain_style = store.terrain_style or 1
+        local max_holder_id = 0
+        local function inspect_holder(ent)
+            if ent and ent.tower and not ent._kr_mp_local then
+                terrain_style = ent.tower.terrain_style or terrain_style
+                max_holder_id = math.max(max_holder_id, tonumber(ent.tower.holder_id) or 0)
+            end
+        end
+        for _, ent in pairs(store.entities) do inspect_holder(ent) end
+        for _, ent in ipairs(store.pending_inserts or {}) do inspect_holder(ent) end
+        local kr6_holder = terrain_style >= 46 and terrain_style <= 64 and terrain_style ~= 50
+        local holder = E:create_entity(kr6_holder and "tower_holder_kr6" or "tower_holder")
+        if holder then
+            holder.pos = { x = cmd.wx, y = cmd.wy }
+            holder.tower.holder_id = tostring(max_holder_id + 1)
+            holder.tower.terrain_style = terrain_style
+            holder.tower.default_rally_pos = { x = cmd.wx, y = cmd.wy + 50 }
+            game_ref.simulation:insert_entity(holder)
         end
 
     elseif op == "HERO_RALLY" then
@@ -230,7 +255,7 @@ function commands:execute(cmd, game_ref, boot_ref)
         if gui then
             if mp_on and not coop:can_use_power(pid, cmd.idx) then return end
             local btn = gui["power_" .. tostring(cmd.idx)]
-            local orig_fn = self.orig_power_fire[cmd.idx]
+            local orig_fn = (cmd.idx == "a" or cmd.idx == "s") and self.orig_hero_ult_fire or self.orig_power_fire[cmd.idx]
             if btn and orig_fn then
                 if mp_on and pid ~= coop.local_pid then
                     -- Remote player fired power: never interrupt local player's targeting mode,

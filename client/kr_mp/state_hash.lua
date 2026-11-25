@@ -75,8 +75,13 @@ function state_hash.compute(store, prng, coop)
     local n = 0
     for id, e in pairs(store.entities) do
         if type(id) == "number" and e and not e._kr_mp_local and id < LOCAL_ID_BASE then
-            sim_ent_count = sim_ent_count + 1
-            if e.enemy or e.soldier or e.hero or e.tower or e.bullet or e.modifier or e.health then
+            local is_combat = e.enemy or e.soldier or e.hero or e.tower or e.bullet or e.modifier or e.health
+            -- In FL 8.2.0, particle_system ticks inside render-rate prepare_render() with visual PRNG lifetimes,
+            -- so pure visual emitters (no combat components) may expire on slightly different ticks without affecting sim.
+            if is_combat or not e.particle_system then
+                sim_ent_count = sim_ent_count + 1
+            end
+            if is_combat then
                 n = n + 1
                 ids[n] = id
             end

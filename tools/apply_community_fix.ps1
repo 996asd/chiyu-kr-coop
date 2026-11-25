@@ -105,12 +105,12 @@ try {
     }
 
     & powershell -ExecutionPolicy Bypass -File (Join-Path $Root "tools\generate_manifest.ps1") -Root $Root
-    if (Test-Path (Join-Path $Root "game-sandbox")) {
+    if (Test-Path "D:\FL8.2.0") {
         & powershell -ExecutionPolicy Bypass -File (Join-Path $Root "tools\sync_client.ps1")
     }
 
     $doTests = $RunTests.IsPresent
-    if (-not $AutoApply -and -not $doTests -and (Test-Path (Join-Path $Root "game-sandbox\Kingdom Rush FL_Alliance-FL4.1.0.exe"))) {
+    if (-not $AutoApply -and -not $doTests -and (Test-Path "D:\FL8.2.0\Kingdom Rush FL_Alliance-FL8.1.0.exe")) {
         $tAns = Read-Host "是否立刻运行 M1+M2 双开确定性同步回归测试以验收此修复？(Y/n)"
         if ($tAns -eq "" -or $tAns -match "^[Yy]$") { $doTests = $true }
     }

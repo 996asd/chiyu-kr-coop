@@ -2,12 +2,13 @@ param(
     [int]$Width = 920,
     [int]$Height = 540,
     [int]$Port = 17777,
+    [int]$TestLevel = 0,
     [switch]$AutoCoopTest
 )
 
 $ErrorActionPreference = "Stop"
-$SandboxDir = "D:\kr-mp-mod\game-sandbox"
-$ExePath = Join-Path $SandboxDir "Kingdom Rush FL_Alliance-FL4.1.0.exe"
+$SandboxDir = "D:\FL8.2.0"
+$ExePath = Join-Path $SandboxDir "Kingdom Rush FL_Alliance-FL8.1.0.exe"
 
 & powershell -ExecutionPolicy Bypass -File "D:\kr-mp-mod\tools\sync_client.ps1"
 
@@ -33,6 +34,9 @@ function Launch-Client([string]$role, [string]$logPath, [string]$wpos, [bool]$au
     if ($autoFast) {
         $psi.EnvironmentVariables["KR_MP_AUTO_COOP"] = $role
         $psi.EnvironmentVariables["KR_MP_AUTO_COOP_FAST"] = "1"
+        if ($TestLevel -gt 0) {
+            $psi.EnvironmentVariables["KR_MP_TEST_LEVEL"] = "$TestLevel"
+        }
     }
     return [System.Diagnostics.Process]::Start($psi)
 }

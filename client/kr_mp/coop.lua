@@ -33,31 +33,28 @@ local coop = {
     show_tower_marks = true, -- Local-only visual toggle for 1P/2P pedestal arc & mini badge
 }
 
--- Curated Alliance / FL 5th-gen dual-hero roster for Lobby selection
+-- Curated Alliance + Genesis FL 8.2.0 dual-hero roster for quick cycling
 coop.HERO_ROSTER = {
-    { idx = 48, name = "Vesper",    tpl = "hero_vesper" },
-    { idx = 49, name = "Raelyn",    tpl = "hero_raelyn" },
-    { idx = 50, name = "Nyru",      tpl = "hero_muyrn" },
-    { idx = 51, name = "Grimson",   tpl = "hero_venom" },
-    { idx = 52, name = "Torres",    tpl = "hero_builder" },
-    { idx = 53, name = "Onagro",    tpl = "hero_robot" },
-    { idx = 54, name = "Therien",   tpl = "hero_space_elf" },
-    { idx = 55, name = "Warhead",   tpl = "hero_mecha" },
-    { idx = 56, name = "Lumenir",   tpl = "hero_lumenir" },
-    { idx = 58, name = "Kosmyr",    tpl = "hero_dragon_gem" },
-    { idx = 60, name = "Bonehart",  tpl = "hero_dragon_bone" },
-    { idx = 65, name = "Eiskalt",   tpl = "hero_eiskalt" },
-    { idx = 66, name = "Dianyun",   tpl = "hero_dianyun" },
+    { idx = 53, name = "Vesper",    tpl = "hero_vesper" },
+    { idx = 54, name = "Raelyn",    tpl = "hero_raelyn" },
+    { idx = 55, name = "Nyru",      tpl = "hero_muyrn" },
+    { idx = 61, name = "Lumenir",   tpl = "hero_lumenir" },
+    { idx = 63, name = "Kosmyr",    tpl = "hero_dragon_gem" },
+    { idx = 65, name = "Bonehart",  tpl = "hero_dragon_bone" },
+    { idx = 70, name = "Wukong",    tpl = "hero_wukong" },
+    { idx = 84, name = "Eiskalt",   tpl = "hero_eiskalt" },
+    { idx = 85, name = "Dianyun",   tpl = "hero_dianyun" },
+    { idx = 91, name = "Gerald G6", tpl = "hero_gerald_g6" },
+    { idx = 92, name = "Zefira",    tpl = "hero_zefira" },
+    { idx = 98, name = "Ashbite",   tpl = "hero_ashbite" },
+    { idx = 99, name = "Drakkan",   tpl = "hero_drakkan" },
 }
 
 coop.LEVEL_PRESETS = {
+    { idx = 251, label = "KR6-251 Linirea Castle" },
     { idx = 101, label = "KR5-101 Sea of Trees 1" },
-    { idx = 102, label = "KR5-102 Sea of Trees 2" },
-    { idx = 103, label = "KR5-103 Sea of Trees 3" },
-    { idx = 104, label = "KR5-104 Sea of Trees 4" },
+    { idx = 150, label = "KR4-150 Vez'nan's Tower" },
     { idx = 1,   label = "KR3-01 Elven Woods 1" },
-    { idx = 2,   label = "KR3-02 Elven Woods 2" },
-    { idx = 3,   label = "KR3-03 Elven Woods 3" },
 }
 
 local function deep_copy(v, seen)
@@ -127,13 +124,14 @@ function coop:build_host_slot_snapshot(heroes, towers)
     snap.heroes = snap.heroes or { selected = "hero_vesper", status = {} }
     snap.heroes.status = snap.heroes.status or {}
 
-    -- Apply room's custom tower deck (1..41, up to 12 towers)
+    -- Apply room's custom tower deck (1..59 in FL 8.2.0, up to 12 towers)
+    local max_tower_id = catalog.MAX_TOWER_ID or 59
     local deck = {}
     if type(towers) == "table" and #towers > 0 then
         local seen_t = {}
         for i = 1, math.min(#towers, 12) do
             local tid = tonumber(towers[i])
-            if tid and tid >= 1 and tid <= 41 and not seen_t[tid] then
+            if tid and tid >= 1 and tid <= max_tower_id and not seen_t[tid] then
                 seen_t[tid] = true
                 deck[#deck + 1] = tid
             end
@@ -146,24 +144,33 @@ function coop:build_host_slot_snapshot(heroes, towers)
     end
     snap.towers = deck
     snap.tower_pick = #deck
-    snap.liuhui = snap.liuhui or {
-        use3tower = true,
-        impossiblerate = 1.5,
-        cheat = false,
-        cheat5 = false,
-        cheathero = false,
-        g3_hprate = false,
-        balance = false,
-        enemy_count = 1,
-        g5_hero_dark_count = 2,
-        cp_mode = false,
-    }
+    snap.liuhui = snap.liuhui or {}
+    snap.liuhui.use3tower = true
+    snap.liuhui.use3tower_count = 0
+    snap.liuhui.tower_generations = { true, true, true, true, true }
+    snap.liuhui.impossiblerate = snap.liuhui.impossiblerate or 1.5
+    snap.liuhui.cheat = false
+    snap.liuhui.cheat5 = false
+    snap.liuhui.cheat6 = false
+    snap.liuhui.cheat5_special = false
+    snap.liuhui.cheat5_dragon = false
+    snap.liuhui.cheathero = false
+    snap.liuhui.rand_hero = 0
+    snap.liuhui.rand_tower = 0
+    snap.liuhui.hero_auto_rally = false
+    snap.liuhui.g3_hprate = false
+    snap.liuhui.balance = false
+    snap.liuhui.enemy_count = 1
+    snap.liuhui.g5_hero_dark_count = 2
+    snap.liuhui.cp_mode = false
+
     -- Force dual-hero mode with the room's exact 2 selected heroes!
-    local h1 = (heroes and heroes[1]) or 48
-    local h2 = (heroes and heroes[2]) or 49
+    local h1 = (heroes and heroes[1]) or catalog.DEFAULT_HERO_1 or 53
+    local h2 = (heroes and heroes[2]) or catalog.DEFAULT_HERO_2 or 54
     snap.liuhui_hero = {
         usedoublehero = true,
         herolist = { [1] = h1, [2] = h2 },
+        rallylist = { h1, h2, h1, h2 },
     }
     -- Ensure both chosen heroes have valid status entries
     local ok_md, map_data = pcall(require, "data.map_data")
@@ -466,9 +473,9 @@ end
 
 function coop:can_use_power(pid, power_idx)
     if not self.active then return true end
-    if power_idx == 1 then
+    if power_idx == 1 or power_idx == "a" then
         return pid == 1
-    elseif power_idx == 3 then
+    elseif power_idx == 3 or power_idx == "s" then
         return pid == 2
     elseif power_idx == 2 then
         -- Independent reinforcements: check deterministic tick cooldown

@@ -14,8 +14,9 @@ function Find-DefaultGameDir {
     $candidates = @(
         (Get-Location).Path,
         $PkgRoot,
-        (Join-Path $PkgRoot "game-sandbox"),
-        "D:\kr\Kingdom Rush Alliance",
+        "D:\FL8.2.0",
+        "C:\FL8.2.0",
+        "E:\FL8.2.0",
         "C:\Program Files (x86)\Steam\steamapps\common\Kingdom Rush Alliance",
         "D:\SteamLibrary\steamapps\common\Kingdom Rush Alliance"
     )
@@ -38,18 +39,18 @@ if (-not $TargetDir) {
     if (-not $Silent) {
         if ($detected) {
             Write-Host "检测到已安装联机补丁的目录: $detected" -ForegroundColor Green
-            $ans = Read-Host "是否从此目录导出你的修改？回车确认，或输入你的 FL 4.1.0 游戏目录路径"
+            $ans = Read-Host "是否从此目录导出你的修改？回车确认，或输入你的 FL 8.2.0 游戏目录路径"
             if ($ans -eq "" -or $ans -match "^[Yy]$") {
                 $TargetDir = $detected
             } else {
                 $TargetDir = $ans.Trim('"').Trim()
             }
         } else {
-            Write-Host "请选择你修改过的 FL 4.1.0 游戏目录（含 UH.lua 与 kr_mp\）..." -ForegroundColor Yellow
+            Write-Host "请选择你修改过的 FL 8.2.0 游戏目录（含 UH.lua 与 kr_mp\）..." -ForegroundColor Yellow
             try {
                 Add-Type -AssemblyName System.Windows.Forms
                 $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-                $dlg.Description = "请选择你修改了联机脚本的 FL 4.1.0 游戏目录"
+                $dlg.Description = "请选择你修改了联机脚本的 FL 8.2.0 游戏目录"
                 if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                     $TargetDir = $dlg.SelectedPath
                 }

@@ -1,4 +1,4 @@
--- KR-MP 全中文双模式联机大厅（局域网 + 公网服务器 + 全100关/67英雄/41选12塔卡组 + 一键追帧重连 + 后台检查更新）
+-- KR-MP 全中文双模式联机大厅（FL 8.2.0 全201关/105英雄/59选12塔卡组 + 一键追帧重连 + 后台检查更新）
 local proto = require("kr_mp.proto")
 local fonts = require("kr_mp.fonts")
 local catalog = require("kr_mp.catalog")
@@ -17,6 +17,7 @@ local lobby = {
     view = "home",   -- "home" | "room"
     sub_modal = nil, -- nil | "stages" | "hero1" | "hero2" | "towers"
     stage_pack_idx = 1,
+    stage_page = 1,
     hero_pack_idx = 1,
     tower_pack_idx = 1,
 
@@ -52,7 +53,7 @@ local lobby = {
         econ_mode = "independent", -- "independent" | "shared"
         tower_mode = "owned",      -- "owned" | "open"
         input_delay_turns = proto.INPUT_DELAY_TURNS, -- 2=局域网(100ms), 4=樱花映射(200ms), 6=抗抖(300ms)
-        heroes = { [1] = 48, [2] = 49 }, -- 维斯珀 + 蕾琳
+        heroes = { [1] = catalog.DEFAULT_HERO_1 or 53, [2] = catalog.DEFAULT_HERO_2 or 54 }, -- 维斯珀 + 蕾琳
         towers = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 },
     },
 
@@ -94,8 +95,8 @@ end
 
 local function ensure_room_defaults(r)
     if not r then return end
-    if not r.heroes or not r.heroes[1] then r.heroes = { 48, 49 } end
-    if not r.heroes[2] then r.heroes[2] = 49 end
+    if not r.heroes or not r.heroes[1] then r.heroes = { catalog.DEFAULT_HERO_1 or 53, catalog.DEFAULT_HERO_2 or 54 } end
+    if not r.heroes[2] then r.heroes[2] = catalog.DEFAULT_HERO_2 or 54 end
     if not r.towers or #r.towers == 0 then
         r.towers = copy_array(catalog.DEFAULT_TOWERS)
     end
@@ -425,7 +426,7 @@ function lobby:join_lan_room(ip, port)
         t = "HELLO",
         proto = proto.PROTOCOL_VER,
         mod_ver = proto.MOD_VERSION,
-        fl_ver = tostring(KR_FL_VERSION or "4.1.0"),
+        fl_ver = tostring(KR_FL_VERSION or "8.2.0"),
         script_hash = proto.compute_script_hash(),
         tick_len = TICK_LENGTH or (1 / 60),
         name = "Player 2",
@@ -451,7 +452,7 @@ function lobby:connect_online_server(addr, silent_fail)
         t = "HELLO",
         proto = proto.PROTOCOL_VER,
         mod_ver = proto.MOD_VERSION,
-        fl_ver = tostring(KR_FL_VERSION or "4.1.0"),
+        fl_ver = tostring(KR_FL_VERSION or "8.2.0"),
         script_hash = proto.compute_script_hash(),
         tick_len = TICK_LENGTH or (1 / 60),
         name = "Player",
@@ -485,7 +486,7 @@ function lobby:create_online_room(password, is_public)
         room = self.room,
         proto = proto.PROTOCOL_VER,
         mod_ver = proto.MOD_VERSION,
-        fl_ver = tostring(KR_FL_VERSION or "4.1.0"),
+        fl_ver = tostring(KR_FL_VERSION or "8.2.0"),
         script_hash = proto.compute_script_hash(),
         tick_len = TICK_LENGTH or (1 / 60),
         player_name = "Player 1",
@@ -506,7 +507,7 @@ function lobby:join_online_room(code, password)
         password = (password ~= nil) and password or self.pw_input or "",
         proto = proto.PROTOCOL_VER,
         mod_ver = proto.MOD_VERSION,
-        fl_ver = tostring(KR_FL_VERSION or "4.1.0"),
+        fl_ver = tostring(KR_FL_VERSION or "8.2.0"),
         script_hash = proto.compute_script_hash(),
         tick_len = TICK_LENGTH or (1 / 60),
         player_name = "Player 2",
@@ -535,7 +536,7 @@ function lobby:reconnect_online_session(sess)
         token = sess.token,
         proto = proto.PROTOCOL_VER,
         mod_ver = proto.MOD_VERSION,
-        fl_ver = tostring(KR_FL_VERSION or "4.1.0"),
+        fl_ver = tostring(KR_FL_VERSION or "8.2.0"),
         script_hash = proto.compute_script_hash(),
         tick_len = TICK_LENGTH or (1 / 60),
     })
@@ -713,7 +714,7 @@ function lobby:on_message(msg)
         self.coop:prepare_match(self.local_pid, msg.cfg, msg)
 
     elseif t == "HELLO" and self.role == "host" and not self.transport:is_online() then
-        local my_fl = tostring(KR_FL_VERSION or "4.1.0")
+        local my_fl = tostring(KR_FL_VERSION or "8.2.0")
         local my_hash = proto.compute_script_hash()
         if msg.proto ~= proto.PROTOCOL_VER or msg.fl_ver ~= my_fl then
             self.transport:send({
@@ -840,10 +841,10 @@ function lobby:step_auto_coop(dt)
 
     if self.auto_stage == "INIT" then
         if self.auto_role == "host" then
-            self.room.level_idx = 101
+            self.room.level_idx = tonumber(os.getenv("KR_MP_TEST_LEVEL")) or 101
             self.room.econ_mode = "independent"
             self.room.tower_mode = "owned"
-            self.room.heroes = { 48, 49 }
+            self.room.heroes = { catalog.DEFAULT_HERO_1 or 53, catalog.DEFAULT_HERO_2 or 54 }
             if self:host_lan_room() then
                 self.auto_stage = "HOST_WAIT_GUEST"
             end
@@ -961,11 +962,11 @@ function lobby:step_auto_m2(dt)
     if self.auto_stage == "INIT" then
         if self.auto_m2_role == "host" then
             self.room.name = "M2 Auto Online Room"
-            self.room.level_idx = 101
+            self.room.level_idx = tonumber(os.getenv("KR_MP_TEST_LEVEL")) or 101
             self.room.econ_mode = "independent"
             self.room.tower_mode = "owned"
-            self.room.heroes = { 48, 49 }
-            self.room.towers = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 23, 24 } -- Mix of KR5 + KR4 towers to test custom deck sync!
+            self.room.heroes = { catalog.DEFAULT_HERO_1 or 53, catalog.DEFAULT_HERO_2 or 54 }
+            self.room.towers = { 1, 2, 3, 4, 5, 6, 7, 8, 25, 27, 44, 59 } -- Mix of KR5 + KR4 + KR6 towers!
             if self:create_online_room("1234", true) then
                 self.auto_stage = "HOST_WAIT_ROOM"
             end
@@ -1347,6 +1348,11 @@ function lobby:handle_button(btn)
     -- Sub-Modal Pickers
     elseif id == "stage_pack" and btn.pack_idx then
         self.stage_pack_idx = btn.pack_idx
+        self.stage_page = 1
+    elseif id == "stage_page_prev" then
+        self.stage_page = math.max(1, (self.stage_page or 1) - 1)
+    elseif id == "stage_page_next" then
+        self.stage_page = (self.stage_page or 1) + 1
     elseif id == "pick_stage" and btn.level_idx and self.role == "host" then
         self.room.level_idx = btn.level_idx
         self.sub_modal = nil
@@ -1410,10 +1416,12 @@ end
 -- === Lobby Rendering (V2 Ironhide Native Parchment & Hand-Hewn Oak War-Table) ===
 
 local PACK_TAG_STYLES = {
-    kr5 = { bg = { 46, 26, 12, 220 }, border = { 218, 166, 78, 220 }, fg = { 255, 232, 164, 255 }, era = "5代·联盟" },
-    kr3 = { bg = { 30, 64, 38, 225 }, border = { 132, 214, 148, 210 }, fg = { 232, 255, 236, 255 }, era = "3代·起源" },
-    kr2 = { bg = { 98, 56, 18, 225 }, border = { 242, 186, 94, 215 }, fg = { 255, 240, 204, 255 }, era = "2代·前线" },
-    kr1 = { bg = { 96, 30, 30, 225 }, border = { 236, 132, 126, 210 }, fg = { 255, 230, 226, 255 }, era = "1代·初代" },
+    kr6 = { bg = { 24, 54, 108, 230 }, border = { 136, 198, 255, 225 }, fg = { 228, 246, 255, 255 }, era = "6代·创世" },
+    kr5 = { bg = { 46, 26, 12, 220 },  border = { 218, 166, 78, 220 },  fg = { 255, 232, 164, 255 }, era = "5代·联盟" },
+    kr4 = { bg = { 76, 22, 64, 225 },  border = { 224, 128, 212, 215 }, fg = { 255, 226, 250, 255 }, era = "4代·复仇" },
+    kr3 = { bg = { 30, 64, 38, 225 },  border = { 132, 214, 148, 210 }, fg = { 232, 255, 236, 255 }, era = "3代·起源" },
+    kr2 = { bg = { 98, 56, 18, 225 },  border = { 242, 186, 94, 215 },  fg = { 255, 240, 204, 255 }, era = "2代·前线" },
+    kr1 = { bg = { 96, 30, 30, 225 },  border = { 236, 132, 126, 210 }, fg = { 255, 230, 226, 255 }, era = "1代·初代" },
 }
 
 local DIFF_STYLES = {
@@ -1423,10 +1431,14 @@ local DIFF_STYLES = {
 }
 
 local function get_stage_pack_info(level_idx)
+    local info = catalog.get_stage_info(level_idx)
+    if info and info.pack_id then return info.pack_id end
     local idx = tonumber(level_idx) or 101
-    if idx >= 101 then return "kr5"
-    elseif idx <= 22 then return "kr3"
-    elseif idx <= 44 then return "kr2"
+    if idx >= 251 then return "kr6"
+    elseif idx >= 150 then return "kr4"
+    elseif idx >= 101 then return "kr5"
+    elseif idx <= 22 or idx == 86 then return "kr3"
+    elseif idx <= 44 or idx >= 77 then return "kr2"
     else return "kr1" end
 end
 
@@ -1500,7 +1512,7 @@ function lobby:draw()
     elseif self.sub_modal == "hero2" then
         banner_title = "英雄殿 · 选 2P 队友"
     elseif self.sub_modal == "towers" then
-        banner_title = "皇家军械库 · 41选12"
+        banner_title = "皇家军械库 · 59选12"
     end
 
     -- Draw Hand-Hewn Dark Oak Shell + Aged Parchment + 4 Iron Corners + Royal Crimson Ribbon
@@ -1711,27 +1723,38 @@ function lobby:draw()
         end
 
     elseif self.sub_modal == "stages" then
-        -- === 战役舆图 · 全 100 关选择器 ===
+        -- === 战役舆图 · FL 8.2.0 全 201 关选择器（6代同堂 + 分页） ===
         local y = py + 42
         local packs = catalog.STAGE_PACKS
-        local back_w = 96
-        local tab_w = math.floor((cw - back_w - 14 - (#packs - 1) * 6) / #packs)
+        local back_w = 84
+        local tab_gap = 5
+        local tab_w = math.floor((cw - back_w - 10 - (#packs - 1) * tab_gap) / #packs)
         for i, pk in ipairs(packs) do
             local act = (i == self.stage_pack_idx)
-            add_btn("stage_pack", pk.name, cx + (i - 1) * (tab_w + 6), y, tab_w, 28,
-                act and "wood" or "parchment", { pack_idx = i, small = true, active = act })
+            local lbl = string.format("%s(%d)", pk.tag or pk.id, #pk.stages)
+            add_btn("stage_pack", lbl, cx + (i - 1) * (tab_w + tab_gap), y, tab_w, 28,
+                act and "wood" or "parchment", { pack_idx = i, tiny = true, active = act })
         end
-        add_btn("modal_back", "返回战桌", cx + cw - back_w, y, back_w, 28, "crimson", { small = true })
+        add_btn("modal_back", "返回战桌", cx + cw - back_w, y, back_w, 28, "crimson", { tiny = true })
         y = y + 36
 
         local pack = packs[self.stage_pack_idx] or packs[1]
+        local per_page = 30
+        local total_pages = math.max(1, math.ceil(#pack.stages / per_page))
+        local cur_page = math.max(1, math.min(total_pages, self.stage_page or 1))
+        self.stage_page = cur_page
+        local start_i = (cur_page - 1) * per_page + 1
+        local end_i = math.min(#pack.stages, start_i + per_page - 1)
+
         local cols = 5
-        local gap = 7
+        local gap = 6
         local tile_w = math.floor((cw - (cols - 1) * gap) / cols)
-        local tile_h = 56
-        for i, st in ipairs(pack.stages) do
-            local col = (i - 1) % cols
-            local row = math.floor((i - 1) / cols)
+        local tile_h = (total_pages > 1) and 52 or 56
+        for idx_in_pack = start_i, end_i do
+            local st = pack.stages[idx_in_pack]
+            local slot = idx_in_pack - start_i
+            local col = slot % cols
+            local row = math.floor(slot / cols)
             local bx = cx + col * (tile_w + gap)
             local by = y + row * (tile_h + gap)
             local sel = (self.room.level_idx == st.idx)
@@ -1739,20 +1762,35 @@ function lobby:draw()
                 sel and "battle" or "parchment", { level_idx = st.idx, selected = sel, tiny = true })
         end
 
+        if total_pages > 1 then
+            local pby = py + ph - 44
+            ui.draw_pill(cx + math.floor(cw / 2) - 56, pby + 2, 112, 24,
+                string.format("第 %d / %d 页", cur_page, total_pages),
+                { 246, 232, 198, 240 }, T.parchment_edge, T.ink_text, self.font_small)
+            if cur_page > 1 then
+                add_btn("stage_page_prev", "上一页", cx + math.floor(cw / 2) - 146, pby, 82, 28, "wood", { small = true })
+            end
+            if cur_page < total_pages then
+                add_btn("stage_page_next", "下一页", cx + math.floor(cw / 2) + 64, pby, 82, 28, "wood", { small = true })
+            end
+        end
+
     elseif self.sub_modal == "hero1" or self.sub_modal == "hero2" then
-        -- === 经典铁皮分栏英雄殿：左侧大立绘实时预览 + 右侧全 67 英雄方阵 ===
+        -- === 经典铁皮分栏英雄殿：左侧大立绘实时预览 + 右侧全 105 英雄方阵 ===
         local is_h1 = (self.sub_modal == "hero1")
         local cur_hero = is_h1 and self.room.heroes[1] or self.room.heroes[2]
         local y = py + 42
         local packs = catalog.HERO_PACKS
-        local back_w = 96
-        local tab_w = math.floor((cw - back_w - 14 - (#packs - 1) * 6) / #packs)
+        local back_w = 80
+        local tab_gap = 4
+        local tab_w = math.floor((cw - back_w - 8 - (#packs - 1) * tab_gap) / #packs)
         for i, pk in ipairs(packs) do
             local act = (i == self.hero_pack_idx)
-            add_btn("hero_pack", pk.name, cx + (i - 1) * (tab_w + 6), y, tab_w, 28,
-                act and (is_h1 and "azure" or "crimson") or "parchment", { pack_idx = i, small = true, active = act })
+            local short_lbl = pk.name:gsub("·[^%(]+", "")
+            add_btn("hero_pack", short_lbl, cx + (i - 1) * (tab_w + tab_gap), y, tab_w, 28,
+                act and (is_h1 and "azure" or "crimson") or "parchment", { pack_idx = i, tiny = true, active = act })
         end
-        add_btn("modal_back", "返回战桌", cx + cw - back_w, y, back_w, 28, "wood", { small = true })
+        add_btn("modal_back", "返回战桌", cx + cw - back_w, y, back_w, 28, "wood", { tiny = true })
         y = y + 38
 
         -- Compute hovered hero for instant giant vertical art preview on the left!
@@ -1811,25 +1849,29 @@ function lobby:draw()
         G.printf("点击右侧头像立即委任出战", cx + 10, y + 344, preview_w - 20, "center")
 
     elseif self.sub_modal == "towers" then
-        -- === 皇家军械库 · 41 选 12 ===
+        -- === 皇家军械库 · FL 8.2.0 全 59 选 12（6代 + 5代 + 4代） ===
         ensure_room_defaults(self.room)
         local selected = {}
         for _, tid in ipairs(self.room.towers) do selected[tid] = true end
 
         local y = py + 42
         local full = (#self.room.towers >= 12)
-        ui.draw_pill(cx, y + 2, 110, 24, string.format("已装备 %d / 12", #self.room.towers),
+        ui.draw_pill(cx, y + 2, 102, 24, string.format("已装备 %d/12", #self.room.towers),
             full and { 42, 122, 54, 245 } or { 172, 108, 28, 245 },
-            T.ink_dark, { 255, 250, 232, 255 }, self.font_small)
+            T.ink_dark, { 255, 250, 232, 255 }, self.font_tiny)
 
         local packs = catalog.TOWER_PACKS
+        local right_w = 180
+        local avail_tabs_w = cw - 110 - right_w - 8
+        local t_gap = 6
+        local t_tab_w = math.floor((avail_tabs_w - (#packs - 1) * t_gap) / #packs)
         for i, pk in ipairs(packs) do
             local act = (i == self.tower_pack_idx)
-            add_btn("tower_pack", pk.name, cx + 118 + (i - 1) * 168, y, 162, 28,
-                act and "wood" or "parchment", { pack_idx = i, small = true, active = act })
+            add_btn("tower_pack", pk.name, cx + 108 + (i - 1) * (t_tab_w + t_gap), y, t_tab_w, 28,
+                act and "wood" or "parchment", { pack_idx = i, tiny = true, active = act })
         end
-        add_btn("towers_default", "默认12塔", cx + cw - 196, y, 90, 28, "parchment", { small = true })
-        add_btn("modal_back", "完成返回", cx + cw - 98, y, 98, 28, "battle", { small = true })
+        add_btn("towers_default", "默认12塔", cx + cw - 178, y, 84, 28, "parchment", { tiny = true })
+        add_btn("modal_back", "完成返回", cx + cw - 88, y, 88, 28, "battle", { tiny = true })
         y = y + 38
 
         local pack = packs[self.tower_pack_idx] or packs[1]
@@ -1958,7 +2000,7 @@ function lobby:draw()
         local pks = PACK_TAG_STYLES[pk_key] or PACK_TAG_STYLES.kr5
         ui.draw_pill(mp_x + 7, mp_y + 7, 68, 19, pks.era, pks.bg, pks.border, pks.fg, self.font_tiny)
         if is_host then
-            add_btn("open_stages", "切换地图 (100关)", mp_x + mp_w - 114, mp_y + 6, 108, 22, "wood", { tiny = true })
+            add_btn("open_stages", string.format("切换地图 (%d关)", catalog.TOTAL_STAGES or 201), mp_x + mp_w - 114, mp_y + 6, 108, 22, "wood", { tiny = true })
         end
         local df_info = DIFF_STYLES[self.room.level_difficulty] or DIFF_STYLES[2]
         if self.font_tiny then G.setFont(self.font_tiny) end
@@ -2078,7 +2120,7 @@ function lobby:draw()
             hovered_tw_name and T.gold_bright or { 228, 202, 154, 215 }, self.font_tiny)
 
         if is_host then
-            add_btn("open_towers", "配置 41 选 12", cx + cw - 126, y + 5, 114, 23, "wood", { tiny = true })
+            add_btn("open_towers", string.format("配置 %d 选 12", catalog.TOTAL_TOWERS or 59), cx + cw - 126, y + 5, 114, 23, "wood", { tiny = true })
         else
             ui.draw_pill(cx + cw - 114, y + 7, 102, 19, "房主配置卡组",
                 { 18, 10, 4, 165 }, { 164, 122, 64, 115 }, { 224, 198, 152, 210 }, self.font_tiny)

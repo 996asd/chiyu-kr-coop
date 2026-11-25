@@ -1,4 +1,4 @@
--- Zero-patch auto-loader for Kingdom Rush FL 4.1.0 (loaded automatically by mod.lua -> director:init)
+-- Zero-patch auto-loader for Kingdom Rush FL 8.2.0 (loaded automatically by mod.lua -> director:init)
 local UH = {}
 
 function UH:init()

@@ -148,7 +148,7 @@ try {
     $VerNum = $Tag.TrimStart("v")
 
     if (-not $Title) {
-        $Title = "$Tag 赤羽的王国保卫战联机器 (FL 4.1.0)"
+        $Title = "$Tag 赤羽的王国保卫战联机器 (FL 8.2.0)"
     }
     if ($BodyFile -and (Test-Path $BodyFile)) {
         $Body = Get-Content $BodyFile -Raw -Encoding UTF8
@@ -159,8 +159,8 @@ try {
 $($verObj.notes)
 
 ### 下载说明
-- **普通玩家开黑**：下载 ``KR-MP-FL4.1.0-$Tag-client-patch.zip``（轻量化客户端补丁），解压后双击 ``一键安装联机补丁.bat`` 即可。
-- **房主自建公网中继服 / 樱花映射断线重连**：下载 ``KR-MP-FL4.1.0-$Tag-full-and-server.zip``（内置 Windows / Linux Go 中继服）。
+- **普通玩家开黑**：下载 ``KR-MP-FL8.2.0-$Tag-client-patch.zip``（轻量化客户端补丁），解压后双击 ``一键安装联机补丁.bat`` 即可。
+- **房主自建公网中继服 / 樱花映射断线重连**：下载 ``KR-MP-FL8.2.0-$Tag-full-and-server.zip``（内置 Windows / Linux Go 中继服）。
 "@
     }
 
@@ -169,8 +169,8 @@ $($verObj.notes)
     Write-Host "============================================================" -ForegroundColor Cyan
 
     # --- 2. Build/verify dist zips ---
-    $ClientZip = Join-Path $Root "dist\KR-MP-FL4.1.0-$Tag-client-patch.zip"
-    $FullZip   = Join-Path $Root "dist\KR-MP-FL4.1.0-$Tag-full-and-server.zip"
+    $ClientZip = Join-Path $Root "dist\KR-MP-FL8.2.0-$Tag-client-patch.zip"
+    $FullZip   = Join-Path $Root "dist\KR-MP-FL8.2.0-$Tag-full-and-server.zip"
     if (-not $SkipPackage -or -not (Test-Path $ClientZip) -or -not (Test-Path $FullZip)) {
         Write-Host "[打包] 正在生成 $Tag 双份发行压缩包..." -ForegroundColor Cyan
         & powershell -ExecutionPolicy Bypass -File (Join-Path $Root "tools\package_release.ps1") -Version $VerNum

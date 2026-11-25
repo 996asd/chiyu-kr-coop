@@ -3,8 +3,8 @@
 local bit = require("bit")
 
 local proto = {
-    MOD_VERSION = "1.2.0",
-    PROTOCOL_VER = 2,
+    MOD_VERSION = "2.0.0",
+    PROTOCOL_VER = 3,
     DEFAULT_TCP_PORT = 17777,
     LAN_DISCOVERY_PORT = 17778,
     DEFAULT_ONLINE_HOST = "127.0.0.1",
@@ -32,6 +32,7 @@ end
 
 local CORE_HASH_FILES = {
     "main.lua",
+    "all/simulation.lua",
     "lib/klove/simulation.lua",
     "all/systems.lua",
     "all/entity_db.lua",
@@ -59,7 +60,7 @@ function proto.compute_script_hash()
         return proto._script_hash
     end
     local h = bit.tobit(0x811c9dc5)
-    h = fnv1a_step(h, tostring(KR_FL_VERSION or "4.1.0"))
+    h = fnv1a_step(h, tostring(KR_FL_VERSION or "8.2.0"))
     h = fnv1a_step(h, "|")
     if love and love.filesystem and love.filesystem.read then
         for i = 1, #CORE_HASH_FILES do

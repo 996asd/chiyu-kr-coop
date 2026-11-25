@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$Width = 1280,
     [int]$Height = 720,
     [string]$WPos = "80,60",
@@ -8,8 +8,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$SandboxDir = "D:\kr-mp-mod\game-sandbox"
-$ExePath = Join-Path $SandboxDir "Kingdom Rush FL_Alliance-FL4.1.0.exe"
+$SandboxDir = "D:\FL8.2.0"
+$ExePath = Join-Path $SandboxDir "Kingdom Rush FL_Alliance-FL8.1.0.exe"
 
 & "D:\kr-mp-mod\tools\sync_client.ps1"
 
@@ -38,7 +38,7 @@ if ($Level -gt 0) {
     $argsList += @("-screen", "splash")
 }
 
-Write-Host "[KR-MP] Launching FL 4.1.0 sandbox: $ExePath $($argsList -join ' ')"
+Write-Host "[KR-MP] Launching FL 8.2.0: $ExePath $($argsList -join ' ')"
 Push-Location $SandboxDir
 try {
     if ($SmokeTest -or $AutoVerify) {

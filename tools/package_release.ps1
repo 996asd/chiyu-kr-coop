@@ -81,7 +81,7 @@ pause
 
 # 1. Lightweight Client-Only Patch Zip (~100 KB, ASCII filename for GitHub & Gitee Releases!)
 Populate-BasePackage $StageClient
-$ClientZip = Join-Path $DistDir "KR-MP-FL4.1.0-v$Version-client-patch.zip"
+$ClientZip = Join-Path $DistDir "KR-MP-FL8.2.0-v$Version-client-patch.zip"
 Remove-Item $ClientZip -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $StageClient "*") -DestinationPath $ClientZip -CompressionLevel Optimal
 
@@ -104,7 +104,7 @@ pause
 "@
 [System.IO.File]::WriteAllText((Join-Path $SrvDest "启动公网中继服.bat"), $srvBat, (New-Object System.Text.UTF8Encoding($false)))
 
-$FullZip = Join-Path $DistDir "KR-MP-FL4.1.0-v$Version-full-and-server.zip"
+$FullZip = Join-Path $DistDir "KR-MP-FL8.2.0-v$Version-full-and-server.zip"
 Remove-Item $FullZip -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $StageFull "*") -DestinationPath $FullZip -CompressionLevel Optimal
 

@@ -1,4 +1,4 @@
--- KR-MP Runtime Hook Layer for Kingdom Rush FL 4.1.0
+-- KR-MP Runtime Hook Layer for Kingdom Rush FL 8.2.0
 -- Zero modification to original exe; attaches cleanly at runtime via UH.lua.
 local prng = require("kr_mp.prng")
 local commands = require("kr_mp.commands")
@@ -30,6 +30,7 @@ local hooks = {
     installed_core = false,
     installed_gui = false,
     active_store = nil,
+    sso_ref = nil,
     entity_ids = {},
     co_seq = setmetatable({}, { __mode = "k" }),
     co_counter = 0,
@@ -61,6 +62,7 @@ local VISUAL_SYSTEMS = {
     sound_events = true,
     texts = true,
     seen_tracker = true,
+    performance_monitor = true,
 }
 
 local orig_pairs = pairs
@@ -159,6 +161,33 @@ local function sorted_string_pairs(tbl)
     return iter, tbl, nil
 end
 
+-- Deterministic ascending numeric-key iterator (for FL 8.2.0 SSO persistent_lists: alive_enemies/graveyards/modifiers)
+local function sorted_numeric_pairs(tbl)
+    local list = {}
+    local n = 0
+    for k in orig_pairs(tbl) do
+        n = n + 1
+        list[n] = k
+    end
+    table.sort(list, function(a, b)
+        local ta, tb = type(a), type(b)
+        if ta == "number" and tb == "number" then
+            return a < b
+        end
+        return tostring(a) < tostring(b)
+    end)
+    local idx = 0
+    local function iter()
+        idx = idx + 1
+        local k = list[idx]
+        if k ~= nil then
+            return k, tbl[k]
+        end
+        return nil
+    end
+    return iter, tbl, nil
+end
+
 function hooks:install_global_determinism()
     -- 1. Monotonic coroutine tagging
     coroutine.create = function(fn)
@@ -168,7 +197,56 @@ function hooks:install_global_determinism()
         return co
     end
 
-    -- 2. Targeted deterministic pairs() for store.entities, store.waves_active, store.manual_wave_cos
+    -- 1b. Hook FL 8.2.0 SSO (Spatial Search Optimization) so persistent_lists & spatial grid filter are 100% deterministic across resolutions
+    local ok_sso, SSO = pcall(require, "klove.sso")
+    if not ok_sso or type(SSO) ~= "table" then
+        ok_sso, SSO = pcall(require, "sso")
+    end
+    if ok_sso and type(SSO) == "table" then
+        hooks.sso_ref = SSO
+        if SSO.create and not SSO._kr_mp_wrapped then
+            SSO._kr_mp_wrapped = true
+            local orig_sso_create = SSO.create
+            SSO.create = function(self_s, name, x, y, w, h)
+                -- Use canonical fixed grid origin (0,0) during sync so different window aspect ratios produce identical spatial buckets
+                if hooks:is_sync_active() then
+                    return orig_sso_create(self_s, name, 0, 0, 2048, 1280)
+                end
+                return orig_sso_create(self_s, name, x, y, w, h)
+            end
+            if SSO.filter then
+                local orig_sso_filter = SSO.filter
+                SSO.filter = function(self_s, out, name, x, y, range, filter_fn)
+                    local prev_n = (type(out) == "table") and #out or 0
+                    local r = orig_sso_filter(self_s, out, name, x, y, range, filter_fn)
+                    if hooks:is_sync_active() and type(out) == "table" then
+                        local new_n = #out
+                        if new_n - prev_n > 1 then
+                            if prev_n == 0 then
+                                table.sort(out, function(a, b)
+                                    return (a and a.id or 0) < (b and b.id or 0)
+                                end)
+                            else
+                                local slice = {}
+                                for i = prev_n + 1, new_n do
+                                    slice[#slice + 1] = out[i]
+                                end
+                                table.sort(slice, function(a, b)
+                                    return (a and a.id or 0) < (b and b.id or 0)
+                                end)
+                                for i = 1, #slice do
+                                    out[prev_n + i] = slice[i]
+                                end
+                            end
+                        end
+                    end
+                    return r
+                end
+            end
+        end
+    end
+
+    -- 2. Targeted deterministic pairs() for store.entities, store.waves_active, store.manual_wave_cos, and FL 8.2.0 SSO persistent_lists
     pairs = function(t)
         local st = hooks.active_store
         if st ~= nil then
@@ -178,6 +256,13 @@ function hooks:install_global_determinism()
                 return sorted_waves_pairs(t)
             elseif t == st.manual_wave_cos then
                 return sorted_string_pairs(t)
+            end
+            local sso = hooks.sso_ref
+            if sso and sso.persistent_lists then
+                local pl = sso.persistent_lists
+                if t == pl.alive_enemies or t == pl.graveyards or t == pl.modifiers or t == pl.towers then
+                    return sorted_numeric_pairs(t)
+                end
             end
         end
         return orig_pairs(t)
@@ -323,52 +408,77 @@ function hooks:install_global_determinism()
         end
     end
 
-    -- 4c. Auto-skip campaign intro comics in Co-op / Replay so all 100 stages & reconnects enter battle immediately
-    local ok_lu, LU = pcall(require, "level_utils")
-    if ok_lu and LU and LU.load_level and not LU._kr_mp_wrapped then
-        LU._kr_mp_wrapped = true
-        local orig_load_level = LU.load_level
-        LU.load_level = function(store, name)
-            local lvl = orig_load_level(store, name)
-            if lvl then
-                if lvl._kr_mp_orig_comic_idx == nil and lvl.show_comic_idx ~= nil then
-                    lvl._kr_mp_orig_comic_idx = lvl.show_comic_idx
+    -- 4c. Auto-skip campaign intro comics in Co-op / Replay across ALL FL 8.2.0 generations (KR1..KR6!)
+    for _, lu_mod in ipairs({ "level_utils", "level_utils_5", "level_utils_57", "level_utils_6" }) do
+        local ok_lu, LU = pcall(require, lu_mod)
+        if ok_lu and LU and LU.load_level and not LU._kr_mp_wrapped then
+            LU._kr_mp_wrapped = true
+            local orig_load_level = LU.load_level
+            LU.load_level = function(store, name)
+                local lvl = orig_load_level(store, name)
+                if lvl then
+                    if lvl._kr_mp_orig_comic_idx == nil and lvl.show_comic_idx ~= nil then
+                        lvl._kr_mp_orig_comic_idx = lvl.show_comic_idx
+                    end
+                    if hooks:is_sync_active() then
+                        lvl.show_comic_idx = nil
+                    elseif lvl._kr_mp_orig_comic_idx ~= nil then
+                        lvl.show_comic_idx = lvl._kr_mp_orig_comic_idx
+                    end
                 end
-                if hooks:is_sync_active() then
-                    lvl.show_comic_idx = nil
-                elseif lvl._kr_mp_orig_comic_idx ~= nil then
-                    lvl.show_comic_idx = lvl._kr_mp_orig_comic_idx
-                end
+                return lvl
             end
-            return lvl
         end
     end
 
     -- 5. Hook storage:load_slot / save_slot so replay restores exact initial hero/upgrade state safely
-    -- Also ensures FL 4.1.0 default fields exist when booting straight into a level (-level N).
+    -- Also ensures FL 8.2.0 default fields exist when booting straight into a level (-level N).
     local function ensure_fl_slot_defaults(slot)
         if not slot or type(slot) ~= "table" then return slot end
         local want_double = (os.getenv("KR_MP_AUTO_DOUBLE_HERO") == "1")
         if slot.liuhui_hero == nil then
-            slot.liuhui_hero = { usedoublehero = want_double, herolist = { [1] = 48, [2] = 49 } }
+            slot.liuhui_hero = {
+                usedoublehero = want_double,
+                herolist = { [1] = 53, [2] = 54 },
+                rallylist = { 53, 54, 55, 56 },
+            }
         else
             if slot.liuhui_hero.usedoublehero == nil then slot.liuhui_hero.usedoublehero = want_double end
             if want_double then slot.liuhui_hero.usedoublehero = true end
-            if slot.liuhui_hero.herolist == nil then slot.liuhui_hero.herolist = { [1] = 48, [2] = 49 } end
+            if slot.liuhui_hero.herolist == nil then slot.liuhui_hero.herolist = { [1] = 53, [2] = 54 } end
+            if slot.liuhui_hero.rallylist == nil then slot.liuhui_hero.rallylist = { 53, 54, 55, 56 } end
         end
         if slot.liuhui == nil then
             slot.liuhui = {
                 use3tower = true,
+                use3tower_count = 0,
+                tower_generations = { true, true, true, true, true },
                 impossiblerate = 1.5,
                 cheat = false,
                 cheat5 = false,
+                cheat6 = false,
+                cheat5_special = false,
+                cheat5_dragon = false,
                 cheathero = false,
+                rand_hero = 0,
+                rand_tower = 0,
+                hero_auto_rally = false,
                 g3_hprate = false,
                 balance = false,
                 enemy_count = 1,
                 g5_hero_dark_count = 2,
                 cp_mode = false,
             }
+        else
+            if slot.liuhui.use3tower_count == nil then slot.liuhui.use3tower_count = 0 end
+            if slot.liuhui.tower_generations == nil then
+                slot.liuhui.tower_generations = { true, true, true, true, true }
+            end
+            if hooks:is_sync_active() then
+                slot.liuhui.rand_hero = 0
+                slot.liuhui.rand_tower = 0
+                slot.liuhui.hero_auto_rally = false
+            end
         end
         if slot.towers == nil or #slot.towers == 0 then
             slot.towers = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 }
@@ -450,13 +560,16 @@ function hooks:install_simulation_hooks()
             hooks.replay:on_before_sim_init(store)
         end
 
-        -- Wrap visual systems' insert/remove callbacks once so they never consume battle PRNG or sim entity IDs
+        -- Wrap visual systems' callbacks once so they never consume battle PRNG or sim entity IDs
         local S_sys = require("systems")
         for sname, _ in orig_pairs(VISUAL_SYSTEMS) do
             local sys = S_sys[sname]
             if sys and not sys._kr_mp_vis_wrapped then
                 sys._kr_mp_vis_wrapped = true
-                for _, fn_name in ipairs({ "on_insert", "on_remove", "on_queue", "on_dequeue" }) do
+                for _, fn_name in ipairs({
+                    "on_insert", "on_remove", "on_insert_unconditional", "on_remove_unconditional",
+                    "on_queue", "on_dequeue", "on_render_update", "prepare_frame"
+                }) do
                     if sys[fn_name] then
                         local orig_fn = sys[fn_name]
                         sys[fn_name] = function(...)
@@ -473,43 +586,112 @@ function hooks:install_simulation_hooks()
             end
         end
 
-        -- Wrap sys.main_script so local UI entities (hover/marker/path_direction) run in visual+local isolation
+        -- Wrap FL 8.2.0 simulation:prepare_render so render/particle updates stay in visual+local isolation
+        if self_sim.prepare_render and not self_sim._kr_mp_prep_wrapped then
+            self_sim._kr_mp_prep_wrapped = true
+            local orig_prep = self_sim.prepare_render
+            self_sim.prepare_render = function(s_self, dt_arg)
+                hooks.local_entity_depth = hooks.local_entity_depth + 1
+                prng:enter_visual()
+                local ok_p, err_p = pcall(orig_prep, s_self, dt_arg)
+                prng:exit_visual()
+                hooks.local_entity_depth = hooks.local_entity_depth - 1
+                if not ok_p then error(err_p) end
+            end
+        end
+
+        -- Wrap sys.main_script so local UI entities run in visual+local isolation
+        -- while preserving FL 8.2.0's dual-list, _dominant_entity, and s.on_error semantics
         local ms = S_sys.main_script
         if ms and not ms._kr_mp_local_wrapped then
             ms._kr_mp_local_wrapped = true
             local log_ms = require("klua.log"):new("systems")
             ms.on_update = function(self_ms, dt, ts, st)
-                for _, e in E:filter_iter(st.entities, "main_script") do
-                    local s = e.main_script
-                    if s.update then
-                        if e._kr_mp_local then
-                            hooks.local_entity_depth = hooks.local_entity_depth + 1
-                            prng:enter_visual()
-                        end
-                        if not s.co and s.runs ~= 0 then
-                            s.runs = s.runs - 1
-                            s.co = coroutine.create(s.update)
-                        end
-                        if s.co then
-                            local gold_before = hooks:is_mp_active() and (st.player_gold or 0) or 0
-                            local success, err = coroutine.resume(s.co, e, st, s)
-                            if hooks:is_mp_active() and not e._kr_mp_local then
-                                local gdelta = (st.player_gold or 0) - gold_before
-                                if gdelta ~= 0 then
-                                    hooks.coop:on_system_gold_delta(st, gdelta, e._mp_actor or e._mp_owner or 1)
-                                end
+                local mp_on = hooks:is_mp_active()
+                local function step_coro_entity(e)
+                    local s = e and e.main_script
+                    if not s or not s.update then return end
+                    if e._kr_mp_local then
+                        hooks.local_entity_depth = hooks.local_entity_depth + 1
+                        prng:enter_visual()
+                    end
+                    if not s.co and s.runs ~= 0 then
+                        s.runs = s.runs - 1
+                        s.co = coroutine.create(s.update)
+                    end
+                    if s.co then
+                        local prev_dom = st._dominant_entity
+                        st._dominant_entity = e
+                        local co = s.co
+                        local gold_before = mp_on and (st.player_gold or 0) or 0
+                        local success, err = coroutine.resume(co, e, st, s)
+                        if mp_on and not e._kr_mp_local then
+                            local gdelta = (st.player_gold or 0) - gold_before
+                            if gdelta ~= 0 then
+                                hooks.coop:on_system_gold_delta(st, gdelta, e._mp_actor or e._mp_owner or 1)
                             end
-                            if coroutine.status(s.co) == "dead" or err ~= nil then
-                                if err ~= nil then
-                                    log_ms.error("Error running coro: %s", debug.traceback(s.co, err))
-                                end
+                        end
+                        if (not success and s.co == co) or coroutine.status(co) == "dead" then
+                            if s.co == co then
                                 s.co = nil
                             end
                         end
-                        if e._kr_mp_local then
-                            prng:exit_visual()
-                            hooks.local_entity_depth = hooks.local_entity_depth - 1
+                        if not success and err ~= nil and err ~= "cannot resume dead coroutine" then
+                            log_ms.error("Error running coro: %s", debug.traceback(co, tostring(err)))
+                            if s.on_error then
+                                st._dominant_entity = e
+                                local cleaned, cleanup_err = pcall(s.on_error, e, st, s)
+                                if not cleaned then
+                                    log_ms.error("Error cleaning up %s: %s", tostring(e.template_name), tostring(cleanup_err))
+                                end
+                            end
                         end
+                        st._dominant_entity = prev_dom
+                    end
+                    if e._kr_mp_local then
+                        prng:exit_visual()
+                        hooks.local_entity_depth = hooks.local_entity_depth - 1
+                    end
+                end
+
+                if st.entities_with_main_script_on_update then
+                    local cnt = st.entities_with_main_script_on_update_count or #st.entities_with_main_script_on_update
+                    for i = 1, cnt do
+                        local e = st.entities_with_main_script_on_update[i]
+                        if e then step_coro_entity(e) end
+                    end
+                    local list1 = st.entities_with_main_script_on_update1
+                    if list1 then
+                        local cnt1 = st.entities_with_main_script_on_update_count1 or #list1
+                        for i = 1, cnt1 do
+                            local e = list1[i]
+                            local s = e and e.main_script
+                            if s and s.update then
+                                if e._kr_mp_local then
+                                    hooks.local_entity_depth = hooks.local_entity_depth + 1
+                                    prng:enter_visual()
+                                end
+                                local prev_dom = st._dominant_entity
+                                st._dominant_entity = e
+                                local gold_before = mp_on and (st.player_gold or 0) or 0
+                                s.update(e, st, s)
+                                if mp_on and not e._kr_mp_local then
+                                    local gdelta = (st.player_gold or 0) - gold_before
+                                    if gdelta ~= 0 then
+                                        hooks.coop:on_system_gold_delta(st, gdelta, e._mp_actor or e._mp_owner or 1)
+                                    end
+                                end
+                                st._dominant_entity = prev_dom
+                                if e._kr_mp_local then
+                                    prng:exit_visual()
+                                    hooks.local_entity_depth = hooks.local_entity_depth - 1
+                                end
+                            end
+                        end
+                    end
+                else
+                    for _, e in E:filter_iter(st.entities, "main_script") do
+                        step_coro_entity(e)
                     end
                 end
             end
@@ -685,15 +867,16 @@ function hooks:install_simulation_hooks()
         return orig_update(self_sim, dt)
     end
 
-    sim.do_tick = function(self_sim)
+    sim.do_tick = function(self_sim, tick_length)
         local d = self_sim.store
         hooks.sim_exec_depth = hooks.sim_exec_depth + 1
         prng:enter_sim()
 
         local ok_tick, err_tick = pcall(function()
             local mp_on = hooks:is_mp_active()
+            local tl = TICK_LENGTH
             d.tick = d.tick + 1
-            d.tick_ts = d.tick * TICK_LENGTH
+            d.tick_ts = d.tick * tl
             d.ts = d.tick_ts
 
             if mp_on then
@@ -703,39 +886,44 @@ function hooks:install_simulation_hooks()
             -- 1. Flush tick-synchronized player commands BEFORE pending_inserts/systems
             commands:flush_tick(d.tick, game, hooks.boot)
 
-            -- 2. Standard FL 4.1.0 entity insert/remove flush
-            while #d.pending_inserts > 0 do
-                local e = table.remove(d.pending_inserts, 1)
-                self_sim:insert_entity(e)
-            end
-
-            while #d.pending_removals > 0 do
-                local e = table.remove(d.pending_removals, 1)
-                self_sim:remove_entity(e)
+            -- 2. Standard entity insert/remove flush (uses FL 8.2.0 flush_pending_entities when available)
+            if self_sim.flush_pending_entities then
+                self_sim:flush_pending_entities()
+            else
+                while #d.pending_inserts > 0 do
+                    local e = table.remove(d.pending_inserts, 1)
+                    self_sim:insert_entity(e)
+                end
+                while #d.pending_removals > 0 do
+                    local e = table.remove(d.pending_removals, 1)
+                    self_sim:remove_entity(e)
+                end
             end
 
             -- 3. Run all simulation systems in exact order; isolate visual systems & account Co-op gold deltas
-            for _, sys in ipairs(self_sim.systems_on_update) do
+            local sys_cnt = self_sim.systems_on_update_count or #self_sim.systems_on_update
+            for i = 1, sys_cnt do
+                local sys = self_sim.systems_on_update[i]
                 if VISUAL_SYSTEMS[sys.name] then
                     hooks.local_entity_depth = hooks.local_entity_depth + 1
                     prng:enter_visual()
-                    local ok_vs, err_vs = pcall(sys.on_update, sys, TICK_LENGTH, d.tick_ts, d)
+                    local ok_vs, err_vs = pcall(sys.on_update, sys, tl, d.tick_ts, d)
                     prng:exit_visual()
                     hooks.local_entity_depth = hooks.local_entity_depth - 1
                     if not ok_vs then error(err_vs) end
                 elseif mp_on and sys.name == "tower_upgrade" then
                     hooks.coop:before_tower_upgrade(d)
-                    sys:on_update(TICK_LENGTH, d.tick_ts, d)
+                    sys:on_update(tl, d.tick_ts, d)
                     hooks.coop:after_tower_upgrade(d)
                 elseif mp_on and sys.name ~= "main_script" then
                     local gold_before = d.player_gold or 0
-                    sys:on_update(TICK_LENGTH, d.tick_ts, d)
+                    sys:on_update(tl, d.tick_ts, d)
                     local gdelta = (d.player_gold or 0) - gold_before
                     if gdelta ~= 0 then
                         hooks.coop:on_system_gold_delta(d, gdelta, nil)
                     end
                 else
-                    sys:on_update(TICK_LENGTH, d.tick_ts, d)
+                    sys:on_update(tl, d.tick_ts, d)
                 end
             end
 
@@ -799,8 +987,11 @@ function hooks:install_game_hooks(g)
     local orig_game_update = g.update
     g.update = function(self_g, dt)
         if hooks:is_sync_active() then
-            -- Bypass FL's raw 'x'/'z' keyboard speed hacks during deterministic record/replay or Co-op
+            -- Bypass FL's local q/e/r/x/z keyboard speed hacks during deterministic record/replay or Co-op
             self_g.simulation:update(dt)
+            if self_g.simulation.prepare_render then
+                self_g.simulation:prepare_render(dt)
+            end
             self_g.game_gui:update(dt)
             return
         end
@@ -879,6 +1070,47 @@ function hooks:install_gui_hooks(gui)
         end
     end
 
+    -- 1b. Hook FL 8.2.0 HeroUltimateButton ("a" = 1P Hero Ult, "s" = 2P Hero Ult)
+    if HeroUltimateButton and HeroUltimateButton.fire then
+        local orig_hu_fire = HeroUltimateButton.fire
+        commands.orig_hero_ult_fire = orig_hu_fire
+        HeroUltimateButton.fire = function(self_btn, wx, wy)
+            if commands.executing or not hooks:is_sync_active() then
+                return orig_hu_fire(self_btn, wx, wy)
+            end
+            if hooks.replay and hooks.replay:is_replaying() then return end
+            local slot = self_btn.hero_slot or "a"
+            if hooks:is_mp_active() and not hooks.coop:can_use_power(hooks.coop.local_pid, slot) then
+                game_gui:set_mode()
+                if hooks.overlay then
+                    hooks.overlay:show_toast("那是队友的英雄大招！", 2.0)
+                end
+                return
+            end
+            game_gui:set_mode()
+            hooks:submit_command({
+                op = "POWER_FIRE",
+                idx = slot,
+                wx = wx,
+                wy = wy,
+            })
+        end
+    end
+    if HeroUltimateButton and HeroUltimateButton.on_click then
+        local orig_hu_click = HeroUltimateButton.on_click
+        HeroUltimateButton.on_click = function(self_btn, button, x, y)
+            local slot = self_btn.hero_slot or "a"
+            if hooks:is_mp_active() and not hooks.coop:can_use_power(hooks.coop.local_pid, slot) then
+                if hooks.overlay then
+                    local owner = (slot == "a") and 1 or 2
+                    hooks.overlay:show_toast(string.format("那是 %dP 队友的英雄大招！", owner), 2.0)
+                end
+                return
+            end
+            return orig_hu_click(self_btn, button, x, y)
+        end
+    end
+
     if HeroPortrait and HeroPortrait.on_click then
         local orig_hp_click = HeroPortrait.on_click
         HeroPortrait.on_click = function(self_hp, button, x, y)
@@ -917,16 +1149,41 @@ function hooks:install_gui_hooks(gui)
         local b = e.barrack
         local rc = { x = e.pos.x + e.tower.range_offset.x, y = e.pos.y + e.tower.range_offset.y }
 
-        if U.is_inside_ellipse({ x = wx, y = wy }, rc, b.rally_range)
-            and (b.rally_anywhere or (P:valid_node_nearby(wx, wy, nil, NF_RALLY) and GR:cell_is_only(wx, wy, b.rally_terrains))) then
+        local function check_tower_rally(tx, ty)
+            return U.is_inside_ellipse({ x = tx, y = ty }, rc, b.rally_range)
+                and (b.rally_anywhere or (P:valid_node_nearby(tx, ty, nil, NF_RALLY) and GR:cell_is_only(tx, ty, b.rally_terrains)))
+        end
+
+        local fx, fy = nil, nil
+        if check_tower_rally(wx, wy) then
+            fx, fy = wx, wy
+        else
+            -- FL 8.2.0 smooth nearest-valid-point line clamp
+            local cx, cy = e.pos.x, e.pos.y
+            for it = 1, 199 do
+                local lx = commands.quantize((cx * it + wx * (200 - it)) / 200)
+                local ly = commands.quantize((cy * it + wy * (200 - it)) / 200)
+                if check_tower_rally(lx, ly) then
+                    fx, fy = lx, ly
+                    break
+                end
+            end
+        end
+
+        if fx and fy then
             S:queue("GUIPlaceRallyPoint")
             hooks:submit_command({
                 op = "TW_RALLY",
                 id = e.id,
-                wx = wx,
-                wy = wy,
+                wx = fx,
+                wy = fy,
             })
-            game_gui:show_rally_flag(x, y)
+            if game_gui.g2u then
+                local ux, uy = game_gui:g2u({ x = fx, y = fy })
+                game_gui:show_rally_flag(ux, uy)
+            else
+                game_gui:show_rally_flag(x, y)
+            end
             game_gui:hide_rally_range()
             game_gui:deselect_entity()
             return true
@@ -950,22 +1207,46 @@ function hooks:install_gui_hooks(gui)
         if hooks:is_mp_active() and not hooks.coop:can_control_hero(hooks.coop.local_pid, e) then
             if hooks.overlay then
                 local other = (hooks.coop.local_pid == 1) and 2 or 1
-                hooks.overlay:show_toast(string.format("That's P%d's Hero!", other), 2.0)
+                hooks.overlay:show_toast(string.format("那是 %dP 队友的英雄！", other), 2.0)
             end
             game_gui:deselect_entity()
             return false
         end
 
-        if (not e.nav_rally.requires_node_nearby or P:valid_node_nearby(wx, wy, nil, NF_RALLY))
-            and GR:cell_is_only(wx, wy, e.nav_grid.valid_terrains_dest)
-            and ((e.teleport and V.dist(wx, wy, e.pos.x, e.pos.y) > e.teleport.min_distance)
-                or e.nav_grid.ignore_waypoints
-                or GR:find_waypoints(e.pos, e.nav_rally.pos, { x = wx, y = wy }, e.nav_grid.valid_terrains, true)) then
+        local function check_hero_rally(tx, ty)
+            return (not e.nav_rally.requires_node_nearby or P:valid_node_nearby(tx, ty, nil, NF_RALLY))
+                and GR:cell_is_only(tx, ty, e.nav_grid.valid_terrains_dest)
+                and ((e.teleport and V.dist(tx, ty, e.pos.x, e.pos.y) > e.teleport.min_distance)
+                    or e.nav_grid.ignore_waypoints
+                    or GR:find_waypoints(e.pos, e.nav_rally.pos, { x = tx, y = ty }, e.nav_grid.valid_terrains, true))
+        end
+
+        local fx, fy = nil, nil
+        if check_hero_rally(wx, wy) then
+            fx, fy = wx, wy
+        else
+            local search_point = 200
+            local lidx = game_gui.game and game_gui.game.store and game_gui.game.store.level_idx
+            if lidx == 71 or lidx == 72 or (GS and GS.jnum4 and GS.last_level4 and lidx and lidx > GS.jnum4 and lidx <= GS.last_level4) then
+                search_point = 10
+            end
+            local cx, cy = e.pos.x, e.pos.y
+            for it = 1, search_point - 1 do
+                local lx = commands.quantize((cx * it + wx * (search_point - it)) / search_point)
+                local ly = commands.quantize((cy * it + wy * (search_point - it)) / search_point)
+                if check_hero_rally(lx, ly) then
+                    fx, fy = lx, ly
+                    break
+                end
+            end
+        end
+
+        if fx and fy then
             hooks:submit_command({
                 op = "HERO_RALLY",
                 id = e.id,
-                wx = wx,
-                wy = wy,
+                wx = fx,
+                wy = fy,
             })
             game_gui:show_point_confirm(x, y)
             game_gui:deselect_entity()
@@ -995,7 +1276,19 @@ function hooks:install_gui_hooks(gui)
             })
             return true
         end
-        if button == 1 and game_gui.mode == GUI_MODE_SELECT_POINT then
+        if button == 1 and game_gui.mode == "free_holder" then
+            local wx, wy = game_gui:u2g({ x = x, y = y })
+            wx, wy = commands.quantize(wx), commands.quantize(wy)
+            hooks:submit_command({
+                op = "TW_FREE_HOLDER",
+                wx = wx,
+                wy = wy,
+            })
+            game_gui:show_point_confirm(x, y)
+            game_gui:set_mode()
+            S:queue("GUIPlaceRallyPoint")
+            return true
+        elseif button == 1 and game_gui.mode == GUI_MODE_SELECT_POINT then
             local wx, wy = game_gui:u2g({ x = x, y = y })
             wx, wy = commands.quantize(wx), commands.quantize(wy)
             local e = game_gui.selected_entity
@@ -1064,7 +1357,7 @@ function hooks:install_gui_hooks(gui)
         end
 
         -- Pure UI mode transitions (no simulation mutation yet) pass straight through
-        if item.action == "tw_rally" then
+        if item.action == "tw_rally" or item.action == "tw_page" or item.action == "tw_add_holder" then
             return orig_tmb_click(self_btn)
         end
 
@@ -1148,6 +1441,22 @@ function hooks:install_gui_hooks(gui)
                 })
             end
             self_btn.parent:hide()
+
+        elseif item.action == "tw_custom_no_close" or item.action == "tw_custom_close" then
+            local e = game_gui.selected_entity
+            if e and e.user_selection then
+                hooks:submit_command({
+                    op = "TW_USER_SEL",
+                    id = e.id,
+                    phase = "custom",
+                    arg = (item.action_arg ~= "" and item.action_arg or nil),
+                })
+            end
+            if item.action == "tw_custom_close" then
+                game_gui:deselect_entity()
+            elseif game_gui.towertooltip and game_gui.towertooltip.show then
+                game_gui.towertooltip:show(e, item)
+            end
 
         elseif item.action == "tw_repair" then
             local e = game_gui.selected_entity
@@ -1280,14 +1589,16 @@ function hooks:install_gui_hooks(gui)
                     if hooks.lockstep then hooks.lockstep:request_toggle_pause() end
                     return true
                 end
-                -- Block selecting teammate's power/hero via number keys 1/3 or hero hotkeys
-                if (key == "1" and hooks.coop.local_pid == 2) or (key == "3" and hooks.coop.local_pid == 1) then
-                    if hooks.overlay then hooks.overlay:show_toast("That's your teammate's Ultimate!", 2.0) end
+                -- Block selecting teammate's power/hero via number keys 1/3 or FL 8.2.0 a/s ultimate keys
+                if ((key == "1" or key == "a") and hooks.coop.local_pid == 2)
+                    or ((key == "3" or key == "s") and hooks.coop.local_pid == 1) then
+                    if hooks.overlay then hooks.overlay:show_toast("那是队友的英雄大招！", 2.0) end
                     return true
                 end
             end
-            -- Intercept early-wave hotkeys during recording or Co-op
-            if (key == KEYPRESS_RETURN or (not DEBUG and ks and key == ks.wave))
+            -- Intercept early-wave hotkeys during recording or Co-op (incl. FL 8.2.0 'w' next-wave key)
+            local wave_key = (ks and ks.wave) or KEYPRESS_NEXTWAVE or "w"
+            if (key == KEYPRESS_RETURN or (not DEBUG and key == wave_key))
                 and self_gui.next_wave_button and not self_gui.next_wave_button:is_disabled() then
                 hooks:submit_command({ op = "SEND_WAVE" })
                 return true
@@ -1331,6 +1642,7 @@ function hooks:install_gui_hooks(gui)
     wrap_local_ui_method(InfoBar, "show")
     wrap_local_ui_method(InfoBar, "update_stats")
     wrap_local_ui_method(TowerTooltip, "show")
+    wrap_local_ui_method(TowerMenuTooltip, "show")
     wrap_local_ui_method(TowerMenu, "show")
 
     hooks.boot:log("GUI command hooks installed successfully.")
