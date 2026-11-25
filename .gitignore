@@ -24,3 +24,9 @@ Thumbs.db
 .idea/
 __pycache__/
 *.pyc
+
+# Local secrets / tokens (never commit!)
+.env
+.env.*
+*.token
+*secret*.json
