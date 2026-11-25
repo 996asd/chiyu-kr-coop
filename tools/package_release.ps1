@@ -1,9 +1,13 @@
 ﻿param(
-    [string]$Version = "1.0.0"
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
 $Root = "D:\kr-mp-mod"
+if (-not $Version) {
+    $vObj = Get-Content (Join-Path $Root "version.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    $Version = [string]$vObj.version
+}
 $DistDir = Join-Path $Root "dist"
 $StageClient = Join-Path $DistDir "_stage_client"
 $StageFull = Join-Path $DistDir "_stage_full"
@@ -71,9 +75,9 @@ pause
     [System.IO.File]::WriteAllText((Join-Path $dest "一键导出我的修改.bat"), $exportBat, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-# 1. Lightweight Client-Only Patch Zip (~70 KB!)
+# 1. Lightweight Client-Only Patch Zip (~100 KB, ASCII filename for GitHub & Gitee Releases!)
 Populate-BasePackage $StageClient
-$ClientZip = Join-Path $DistDir "KR-MP-FL4.1.0-v$Version-客户端轻量补丁包.zip"
+$ClientZip = Join-Path $DistDir "KR-MP-FL4.1.0-v$Version-client-patch.zip"
 Remove-Item $ClientZip -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $StageClient "*") -DestinationPath $ClientZip -CompressionLevel Optimal
 
@@ -90,13 +94,13 @@ chcp 65001 >nul
 title KR-MP 公网大厅与帧中继服务端 (TCP :17780)
 cd /d "%~dp0"
 echo [KR-MP] 启动 Go 公网中继服：TCP :17780 | 状态监控 :17781/health | 断线重连保留 300 秒
-echo [KR-MP] 按 Ctrl+C 停止服务。
+echo [KR-MP] 配合樱花映射时请映射本地 TCP 17780 端口，按 Ctrl+C 停止服务。
 kr-mp-server.exe -addr :17780 -http :17781 -grace 300
 pause
 "@
 [System.IO.File]::WriteAllText((Join-Path $SrvDest "启动公网中继服.bat"), $srvBat, (New-Object System.Text.UTF8Encoding($false)))
 
-$FullZip = Join-Path $DistDir "KR-MP-FL4.1.0-v$Version-完整联机与服务端包.zip"
+$FullZip = Join-Path $DistDir "KR-MP-FL4.1.0-v$Version-full-and-server.zip"
 Remove-Item $FullZip -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $StageFull "*") -DestinationPath $FullZip -CompressionLevel Optimal
 

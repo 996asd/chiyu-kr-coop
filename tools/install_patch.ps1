@@ -28,8 +28,14 @@ function Find-DefaultGameDir {
     return ""
 }
 
+$ModVer = "1.1.0"
+$mfFile = Join-Path $PatchDir "kr_mp\manifest.json"
+if (Test-Path $mfFile) {
+    try { $ModVer = (Get-Content $mfFile -Raw -Encoding UTF8 | ConvertFrom-Json).version } catch {}
+}
+
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  王国保卫战 FL 4.1.0 联机 MOD (KR-MP v1.0.0) 一键安装程序" -ForegroundColor Yellow
+Write-Host "  赤羽的王国保卫战联机器 FL 4.1.0 (KR-MP v$ModVer) 一键安装程序" -ForegroundColor Yellow
 Write-Host "  零侵入外挂补丁架构：绝不修改原版 1.5GB 游戏主程序 .exe" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
@@ -103,7 +109,7 @@ start "" "Kingdom Rush FL_Alliance-FL4.1.0.exe" -fps 60
 [System.IO.File]::WriteAllText($LauncherPath, $LauncherContent, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host ""
-Write-Host "[成功] KR-MP v1.0.0 联机补丁安装完成！" -ForegroundColor Green
+Write-Host "[成功] KR-MP v$ModVer 联机补丁安装完成！" -ForegroundColor Green
 Write-Host "  已写入: $TargetUH"
 Write-Host "  已写入: $TargetKrMp\ (全部联机模块)"
 Write-Host "  已生成: $LauncherPath"

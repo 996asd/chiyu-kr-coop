@@ -50,6 +50,7 @@ local lobby = {
         level_difficulty = 2, -- 1=休闲, 2=普通, 3=老兵
         econ_mode = "independent", -- "independent" | "shared"
         tower_mode = "owned",      -- "owned" | "open"
+        input_delay_turns = proto.INPUT_DELAY_TURNS, -- 2=局域网(100ms), 4=樱花映射(200ms), 6=抗抖(300ms)
         heroes = { [1] = 48, [2] = 49 }, -- 维斯珀 + 蕾琳
         towers = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 },
     },
@@ -71,6 +72,18 @@ local lobby = {
 }
 
 local DIFF_NAMES = { [1] = "休闲", [2] = "普通", [3] = "老兵" }
+local DELAY_LABELS = {
+    [2] = "缓冲:局域网100ms",
+    [4] = "缓冲:樱花200ms",
+    [6] = "缓冲:抗抖300ms",
+}
+
+local function normalize_delay_turns(v)
+    local n = tonumber(v) or proto.INPUT_DELAY_TURNS
+    if n >= 6 then return 6 end
+    if n >= 4 then return 4 end
+    return 2
+end
 
 local function copy_array(t)
     local out = {}
@@ -90,6 +103,96 @@ local function ensure_room_defaults(r)
     r.level_difficulty = tonumber(r.level_difficulty) or 2
     r.econ_mode = r.econ_mode or "independent"
     r.tower_mode = r.tower_mode or "owned"
+    r.input_delay_turns = normalize_delay_turns(r.input_delay_turns)
+end
+
+local function get_base_dir_safe()
+    return (love and love.filesystem and love.filesystem.getSourceBaseDirectory and love.filesystem.getSourceBaseDirectory()) or "."
+end
+
+local function get_prefs_path()
+    return get_base_dir_safe() .. "\\kr_mp_prefs.json"
+end
+
+function lobby:load_prefs()
+    if os.getenv("KR_MP_AUTO_COOP") or os.getenv("KR_MP_AUTO_M2") then return end
+    local f = io.open(get_prefs_path(), "r")
+    if not f then return end
+    local raw = f:read("*a")
+    f:close()
+    local obj = proto.decode(raw)
+    if type(obj) ~= "table" then return end
+    if type(obj.ip_input) == "string" and #obj.ip_input > 0 then
+        self.ip_input = obj.ip_input:sub(1, 80)
+    end
+    if type(obj.server_input) == "string" and #obj.server_input > 0 and not os.getenv("KR_MP_SERVER") then
+        self.server_input = obj.server_input:sub(1, 80)
+    end
+    if obj.input_delay_turns ~= nil then
+        self.room.input_delay_turns = normalize_delay_turns(obj.input_delay_turns)
+    end
+    if obj.show_tower_marks ~= nil and self.coop then
+        self.coop.show_tower_marks = (obj.show_tower_marks ~= false)
+    end
+end
+
+function lobby:save_prefs()
+    if os.getenv("KR_MP_AUTO_COOP") or os.getenv("KR_MP_AUTO_M2") then return end
+    local prefs = {
+        ip_input = self.ip_input,
+        server_input = self.server_input,
+        input_delay_turns = normalize_delay_turns(self.room and self.room.input_delay_turns),
+        show_tower_marks = (self.coop == nil) or (self.coop.show_tower_marks ~= false),
+    }
+    local f = io.open(get_prefs_path(), "w")
+    if f then
+        f:write(proto.encode(prefs))
+        f:flush()
+        f:close()
+    end
+end
+
+function lobby:paste_into_field(field_name)
+    if not love or not love.system or not love.system.getClipboardText then
+        self.overlay:show_toast("当前环境不支持读取剪贴板，请手动输入。", 2.5)
+        return false
+    end
+    local clip = love.system.getClipboardText()
+    if type(clip) ~= "string" or #clip == 0 then
+        self.overlay:show_toast("剪贴板为空！请先复制樱花映射或服务器地址。", 2.5)
+        return false
+    end
+    if field_name == "ip" then
+        local clean = proto.sanitize_addr(clip):sub(1, 80)
+        if #clean > 0 then
+            self.ip_input = clean
+            self:save_prefs()
+            self.overlay:show_toast("已粘贴直连/映射地址：" .. clean, 3.0)
+            return true
+        end
+    elseif field_name == "server" then
+        local clean = proto.sanitize_addr(clip):sub(1, 80)
+        if #clean > 0 then
+            self.server_input = clean
+            self:save_prefs()
+            self.overlay:show_toast("已粘贴服务器/映射地址：" .. clean, 3.0)
+            return true
+        end
+    elseif field_name == "code" then
+        local clean = clip:upper():gsub("[^%dA-Z]", ""):sub(1, 6)
+        if #clean > 0 then
+            self.code_input = clean
+            return true
+        end
+    elseif field_name == "pw" then
+        local clean = clip:gsub("[^%w%-%_@#]", ""):sub(1, 16)
+        if #clean > 0 then
+            self.pw_input = clean
+            return true
+        end
+    end
+    self.overlay:show_toast("剪贴板里未识别到有效地址，请重新复制。", 2.8)
+    return false
 end
 
 local function get_session_path()
@@ -166,6 +269,7 @@ function lobby:init(boot, transport, lockstep, coop, overlay)
     self.font_small = fonts.get(12)
     self.font_tiny = fonts.get(11)
 
+    self:load_prefs()
     self:load_saved_session()
     updater:init(boot, overlay)
 
@@ -482,6 +586,7 @@ function lobby:host_start_match()
 
     local seed = (os.time() % 900000) + 100000
     local slot_snap = self.coop:build_host_slot_snapshot(self.room.heroes, self.room.towers)
+    local delay_turns = normalize_delay_turns(self.room.input_delay_turns)
     local cfg = {
         level_idx = self.room.level_idx,
         level_mode = self.room.level_mode or 1,
@@ -489,7 +594,7 @@ function lobby:host_start_match()
         seed = seed,
         tick_len = TICK_LENGTH or (1 / 60),
         turn_ticks = proto.TURN_TICKS,
-        input_delay_turns = proto.INPUT_DELAY_TURNS,
+        input_delay_turns = delay_turns,
         econ_mode = self.room.econ_mode,
         tower_mode = self.room.tower_mode,
         heroes = { self.room.heroes[1], self.room.heroes[2] },
@@ -497,8 +602,8 @@ function lobby:host_start_match()
         slot_snapshot = slot_snap,
     }
 
-    self.boot:log("[LOBBY] Host launching 2P Co-op match (online=%s, level=%d, seed=%d, econ=%s, tower=%s, deck=%d)",
-        tostring(self.transport:is_online()), cfg.level_idx, cfg.seed, cfg.econ_mode, cfg.tower_mode, #cfg.towers)
+    self.boot:log("[LOBBY] Host launching 2P Co-op match (online=%s, level=%d, seed=%d, delay=%d, econ=%s, tower=%s, deck=%d)",
+        tostring(self.transport:is_online()), cfg.level_idx, cfg.seed, cfg.input_delay_turns, cfg.econ_mode, cfg.tower_mode, #cfg.towers)
     self.transport:send({ t = "START_MATCH", cfg = cfg })
 
     if not self.transport:is_online() then
@@ -1039,12 +1144,14 @@ function lobby:textinput(t)
     if not self.open or not self.focused_field then return false end
     local f = self.focused_field
     if f == "ip" then
-        if t:match("^[%d%.:a-zA-Z%-]$") and #self.ip_input < 28 then
-            self.ip_input = self.ip_input .. t
+        local c = (t == "：") and ":" or t
+        if c:match("^[%d%.:a-zA-Z%-]$") and #self.ip_input < 80 then
+            self.ip_input = self.ip_input .. c
         end
     elseif f == "server" then
-        if t:match("^[%d%.:a-zA-Z%-]$") and #self.server_input < 40 then
-            self.server_input = self.server_input .. t
+        local c = (t == "：") and ":" or t
+        if c:match("^[%d%.:a-zA-Z%-]$") and #self.server_input < 80 then
+            self.server_input = self.server_input .. c
         end
     elseif f == "code" then
         if t:match("^[%da-zA-Z]$") and #self.code_input < 6 then
@@ -1074,7 +1181,11 @@ function lobby:keypressed(key)
     end
     local f = self.focused_field
     if f then
-        if key == "backspace" then
+        local ctrl = love and love.keyboard and love.keyboard.isDown and (love.keyboard.isDown("lctrl") or love.keyboard.isDown("rctrl"))
+        if ctrl and key == "v" then
+            self:paste_into_field(f)
+            return true
+        elseif key == "backspace" then
             if f == "ip" then self.ip_input = self.ip_input:sub(1, -2)
             elseif f == "server" then self.server_input = self.server_input:sub(1, -2)
             elseif f == "code" then self.code_input = self.code_input:sub(1, -2)
@@ -1084,8 +1195,12 @@ function lobby:keypressed(key)
         elseif key == "return" or key == "kpenter" then
             self.focused_field = nil
             if f == "ip" then
+                self.ip_input = proto.sanitize_addr(self.ip_input):sub(1, 80)
+                self:save_prefs()
                 self:join_lan_room(self.ip_input)
             elseif f == "server" then
+                self.server_input = proto.sanitize_addr(self.server_input):sub(1, 80)
+                self:save_prefs()
                 self:connect_online_server(self.server_input, false)
             elseif f == "code" then
                 self:join_online_room(self.code_input, self.pw_input)
@@ -1140,14 +1255,22 @@ function lobby:handle_button(btn)
         self:join_lan_room("127.0.0.1", proto.DEFAULT_TCP_PORT)
     elseif id == "ip_box" then
         self.focused_field = "ip"
+    elseif id == "paste_ip" then
+        self:paste_into_field("ip")
     elseif id == "join_ip" then
+        self.ip_input = proto.sanitize_addr(self.ip_input):sub(1, 80)
+        self:save_prefs()
         self:join_lan_room(self.ip_input)
     elseif id == "join_lan_room" and btn.room then
         self:join_lan_room(btn.room.ip, btn.room.port)
     -- Online Home
     elseif id == "server_box" then
         self.focused_field = "server"
+    elseif id == "paste_server" then
+        self:paste_into_field("server")
     elseif id == "connect_server" then
+        self.server_input = proto.sanitize_addr(self.server_input):sub(1, 80)
+        self:save_prefs()
         self:connect_online_server(self.server_input, false)
     elseif id == "refresh_online" then
         self:refresh_online_rooms()
@@ -1188,6 +1311,21 @@ function lobby:handle_button(btn)
     elseif id == "tower_toggle" and self.role == "host" then
         self.room.tower_mode = (self.room.tower_mode == "owned") and "open" or "owned"
         self:broadcast_room_state()
+    elseif id == "delay_cycle" and self.role == "host" then
+        local cur = normalize_delay_turns(self.room.input_delay_turns)
+        self.room.input_delay_turns = (cur == 2) and 4 or ((cur == 4) and 6 or 2)
+        self:save_prefs()
+        self:broadcast_room_state()
+        local tips = {
+            [2] = "已切至【局域网 100ms 缓冲】：同 Wi-Fi / 低延迟最跟手",
+            [4] = "已切至【樱花映射 200ms 缓冲】：免费 FRP / 跨省联机更丝滑不卡顿！",
+            [6] = "已切至【高延迟抗抖 300ms 缓冲】：适合高抖动跨网 / 热点联机",
+        }
+        self.overlay:show_toast(tips[self.room.input_delay_turns], 3.2)
+    elseif id == "toggle_tower_marks" and self.coop then
+        self.coop.show_tower_marks = not self.coop.show_tower_marks
+        self:save_prefs()
+        self.overlay:show_toast(self.coop.show_tower_marks and "已开启本地防御塔底座红蓝标志（仅对自己生效）" or "已关闭本地防御塔归属标志（纯净画面）", 2.8)
     elseif id == "toggle_ready" and self.role == "client" then
         self.local_ready = not self.local_ready
         self.transport:send({ t = "SET_GUEST", ready = self.local_ready, hero_idx = self.room.heroes[2] })
@@ -1330,13 +1468,22 @@ function lobby:draw()
             y = y + 44
 
             G.setColor(220, 230, 245, 240)
-            G.print("直连 IP[:端口]：", px + 18, y + 6)
-            local ip_x = px + 132
-            local ip_w = pw - 132 - 118
+            G.print("直连/映射：", px + 18, y + 6)
+            local ip_x = px + 94
+            local ip_w = pw - 94 - 166
             local ip_bg = (self.focused_field == "ip") and { 45, 62, 92, 255 } or { 32, 40, 58, 245 }
-            add_btn("ip_box", self.ip_input .. (self.focused_field == "ip" and "_" or ""), ip_x, y, ip_w, 30, ip_bg)
-            add_btn("join_ip", "直连加入", px + pw - 108, y, 90, 30, { 40, 145, 85, 240 })
-            y = y + 42
+            local ip_disp = self.ip_input
+            if #ip_disp > 42 then ip_disp = "..." .. ip_disp:sub(-39) end
+            add_btn("ip_box", ip_disp .. (self.focused_field == "ip" and "_" or ""), ip_x, y, ip_w, 30, ip_bg, { small = true })
+            add_btn("paste_ip", "粘贴", px + pw - 160, y, 52, 30, { 68, 92, 132, 240 }, { small = true })
+            add_btn("join_ip", "直连加入", px + pw - 102, y, 84, 30, { 40, 145, 85, 240 }, { small = true })
+            y = y + 34
+
+            if self.font_tiny then G.setFont(self.font_tiny) end
+            G.setColor(145, 205, 245, 230)
+            G.print("樱花映射远程开黑：房主建 TCP 隧道映射本地端口 17777，2P 复制地址后点「粘贴」(或 Ctrl+V) 直连！", px + 18, y)
+            if self.font then G.setFont(self.font) end
+            y = y + 20
 
             G.setColor(255, 225, 130, 240)
             G.print("已发现的局域网房间（自动扫描 UDP 17778）：", px + 18, y)
@@ -1345,9 +1492,9 @@ function lobby:draw()
             local rooms = self.transport:get_lan_rooms()
             if #rooms == 0 then
                 G.setColor(150, 165, 185, 215)
-                G.print("  暂未发现局域网房间... 请先在房主端点击「创建局域网房间」", px + 18, y + 8)
+                G.print("  暂未发现局域网房间... 同 Wi-Fi 请等房主开房；远程请直接粘贴樱花映射地址直连。", px + 18, y + 6)
             else
-                for idx = 1, math.min(#rooms, 4) do
+                for idx = 1, math.min(#rooms, 3) do
                     local r = rooms[idx]
                     G.setColor(34, 44, 64, 230)
                     G.rectangle("fill", px + 18, y, pw - 36, 34, 5, 5)
@@ -1371,11 +1518,14 @@ function lobby:draw()
             G.setColor(220, 230, 245, 240)
             G.print("服务器：", px + 18, y + 6)
             local srv_bg = (self.focused_field == "server") and { 45, 62, 92, 255 } or { 32, 40, 58, 245 }
-            add_btn("server_box", self.server_input .. (self.focused_field == "server" and "_" or ""), px + 78, y, pw - 278, 28, srv_bg)
+            local srv_disp = self.server_input
+            if #srv_disp > 38 then srv_disp = "..." .. srv_disp:sub(-35) end
+            add_btn("server_box", srv_disp .. (self.focused_field == "server" and "_" or ""), px + 76, y, pw - 306, 28, srv_bg, { small = true })
+            add_btn("paste_server", "粘贴", px + pw - 224, y, 48, 28, { 68, 92, 132, 240 }, { small = true })
             local conn_bg = self.server_connected and { 35, 140, 82, 240 } or { 45, 105, 185, 240 }
-            local conn_lbl = self.server_connected and ("已连 " .. self.transport:get_rtt_ms() .. "ms") or "连接服务器"
-            add_btn("connect_server", conn_lbl, px + pw - 192, y, 92, 28, conn_bg)
-            add_btn("refresh_online", "刷新列表", px + pw - 94, y, 76, 28, { 62, 82, 112, 240 })
+            local conn_lbl = self.server_connected and ("已连 " .. self.transport:get_rtt_ms() .. "ms") or "连接"
+            add_btn("connect_server", conn_lbl, px + pw - 170, y, 84, 28, conn_bg, { small = true })
+            add_btn("refresh_online", "刷新列表", px + pw - 80, y, 62, 28, { 62, 82, 112, 240 }, { small = true })
             y = y + 38
 
             local pw_bg = (self.focused_field == "pw") and { 45, 62, 92, 255 } or { 32, 40, 58, 245 }
@@ -1402,7 +1552,7 @@ function lobby:draw()
 
             if not self.server_connected then
                 G.setColor(170, 180, 198, 225)
-                G.print("  点击「连接服务器」接入中继服（本地可运行“启动公网中继服.bat”，或填写云服务器IP）。", px + 18, y + 6)
+                G.print("  点击「连接」接入中继服（房主开本地中继服 + 樱花映射 TCP 17780 即可免服务器享 5 分钟断线重连）。", px + 18, y + 6)
             elseif #self.online_rooms == 0 then
                 G.setColor(150, 165, 185, 215)
                 G.print("  已连接服务器！当前暂无公开房间，可点击「创建公网房间」或「刷新列表」。", px + 18, y + 6)
@@ -1531,7 +1681,7 @@ function lobby:draw()
         local rtt = self.transport:get_rtt_ms()
         local room_prefix = self.transport:is_online()
             and ("公网房间 #" .. tostring(self.online_room_code or "----") .. " | ")
-            or ("局域网端口:" .. tostring(self.transport:get_port()) .. " | ")
+            or ("TCP端口:" .. tostring(self.transport:get_port()) .. " (樱花映射填此端口) | ")
         local conn_txt = self.peer_connected
             and string.format("%s2/2 已连接（延迟 %dms）", room_prefix, rtt)
             or string.format("%s1/2 等待 2P 队友加入...", room_prefix)
@@ -1588,27 +1738,40 @@ function lobby:draw()
         if self.font then G.setFont(self.font) end
         y = y + 46
 
-        -- 联机规则三项
-        local diff_lbl = "难度：" .. (DIFF_NAMES[self.room.level_difficulty] or "普通")
-        local econ_lbl = (self.room.econ_mode == "independent") and "经济：各自独立 (50/50)" or "经济：团队共享金币"
-        local tower_lbl = (self.room.tower_mode == "owned") and "塔权：红蓝归属保护" or "塔权：自由共建共享"
+        -- 联机规则四项（含樱花映射抗抖动网络缓冲档位）+ 个人防御塔标志开关
+        local diff_lbl = "难度:" .. (DIFF_NAMES[self.room.level_difficulty] or "普通")
+        local econ_lbl = (self.room.econ_mode == "independent") and "经济:独立(50/50)" or "经济:共享金币"
+        local tower_lbl = (self.room.tower_mode == "owned") and "塔权:红蓝保护" or "塔权:自由共享"
+        local d_turns = normalize_delay_turns(self.room.input_delay_turns)
+        local delay_lbl = DELAY_LABELS[d_turns] or "缓冲:局域网100ms"
+        local marks_on = (self.coop == nil) or (self.coop.show_tower_marks ~= false)
 
         if is_host then
-            local rw = math.floor((pw - 36 - 16) / 3)
-            add_btn("diff_cycle", diff_lbl, px + 18, y, rw, 34, { 52, 68, 96, 240 })
-            add_btn("econ_toggle", econ_lbl, px + 18 + rw + 8, y, rw, 34, { 45, 98, 72, 240 })
-            add_btn("tower_toggle", tower_lbl, px + 18 + (rw + 8) * 2, y, rw, 34, { 108, 65, 130, 240 })
-            y = y + 44
-            if self.font_small then G.setFont(self.font_small) end
-            G.setColor(165, 190, 220, 220)
-            G.print("提示：点击上方选项即可实时同步给 2P；局内支持 +50金转账、Alt+左键打点、1x/2x倍速、断线重连。", px + 18, y + 4)
+            local rw = math.floor((pw - 36 - 18) / 4)
+            add_btn("diff_cycle", diff_lbl, px + 18, y, rw, 34, { 52, 68, 96, 240 }, { small = true })
+            add_btn("econ_toggle", econ_lbl, px + 18 + (rw + 6), y, rw, 34, { 45, 98, 72, 240 }, { small = true })
+            add_btn("tower_toggle", tower_lbl, px + 18 + (rw + 6) * 2, y, rw, 34, { 108, 65, 130, 240 }, { small = true })
+            local dbg = (d_turns >= 4) and { 155, 95, 32, 245 } or { 45, 92, 132, 240 }
+            add_btn("delay_cycle", delay_lbl, px + 18 + (rw + 6) * 3, y, rw, 34, dbg, { small = true })
+            y = y + 42
+            if self.font_tiny then G.setFont(self.font_tiny) end
+            G.setColor(165, 195, 225, 225)
+            local tip = (rtt >= 65 and d_turns == 2)
+                and "检测到延迟偏高：建议把右侧「缓冲」切换为【樱花200ms】消除跨网抖动卡顿！"
+                or "提示：用樱花映射远程开黑时，建议将「缓冲」调为【樱花200ms】；右侧可自选是否显示塔底归属标志。"
+            G.print(tip, px + 18, y + 6)
+            add_btn("toggle_tower_marks", marks_on and "我的塔标:开" or "我的塔标:关",
+                px + pw - 118, y, 100, 24, marks_on and { 42, 112, 145, 235 } or { 68, 74, 88, 225 }, { tiny = true })
         else
-            G.setColor(215, 230, 250, 245)
-            G.print(string.format("对局规则：%s  |  %s  |  %s", diff_lbl, econ_lbl, tower_lbl), px + 18, y + 8)
-            y = y + 36
             if self.font_small then G.setFont(self.font_small) end
-            G.setColor(165, 190, 220, 220)
-            G.print("提示：你可以点击红色卡片自由更换 2P 英雄，等待 1P 房主点击开始即可同步进入战场。", px + 18, y + 4)
+            G.setColor(215, 230, 250, 245)
+            G.print(string.format("规则：%s | %s | %s | %s", diff_lbl, econ_lbl, tower_lbl, delay_lbl), px + 18, y + 8)
+            y = y + 36
+            if self.font_tiny then G.setFont(self.font_tiny) end
+            G.setColor(165, 195, 225, 225)
+            G.print("提示：可点击红色卡片更换 2P 英雄；右侧可自由开关自己画面中的防御塔归属标志。", px + 18, y + 6)
+            add_btn("toggle_tower_marks", marks_on and "我的塔标:开" or "我的塔标:关",
+                px + pw - 118, y, 100, 24, marks_on and { 42, 112, 145, 235 } or { 68, 74, 88, 225 }, { tiny = true })
         end
 
         -- 底部操作栏

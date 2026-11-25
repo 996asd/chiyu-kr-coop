@@ -3,16 +3,32 @@
 local bit = require("bit")
 
 local proto = {
-    MOD_VERSION = "1.0.0",
+    MOD_VERSION = "1.1.0",
     PROTOCOL_VER = 2,
     DEFAULT_TCP_PORT = 17777,
     LAN_DISCOVERY_PORT = 17778,
     DEFAULT_ONLINE_HOST = "127.0.0.1",
     DEFAULT_ONLINE_PORT = 17780,
     TURN_TICKS = 3,        -- 3 ticks per lockstep turn (50ms @ 60Hz)
-    INPUT_DELAY_TURNS = 2, -- 2 turns lookahead (100ms smooth buffer)
+    INPUT_DELAY_TURNS = 2, -- 2 turns lookahead (100ms LAN; 4 turns = 200ms for SakuraFrp)
     _script_hash = nil,
 }
+
+-- Cleanly extract host[:port] from clipboard / SakuraFrp / OpenFrp copy-paste strings
+-- Handles whitespace, fullwidth Chinese colon "：", "tcp://", "http://", or surrounding Chinese text.
+function proto.sanitize_addr(raw)
+    if type(raw) ~= "string" then return "" end
+    local s = raw:gsub("\r", " "):gsub("\n", " ")
+    s = s:gsub("：", ":") -- Chinese fullwidth colon -> ASCII colon
+    s = s:gsub("^[%s]+", ""):gsub("[%s]+$", "")
+    s = s:gsub("^%a+://", "")
+    -- Try extracting explicit host:port token from pasted SakuraFrp lines like "连接地址: cn-cd-dx-2.natfrp.cloud:54321"
+    local hp = s:match("([%w%.%-]+:%d+)")
+    if hp then return hp end
+    -- Otherwise keep bare IP / hostname
+    local bare = s:match("([%w%.%-]+)")
+    return bare or ""
+end
 
 local CORE_HASH_FILES = {
     "main.lua",

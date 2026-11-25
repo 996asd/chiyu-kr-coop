@@ -30,6 +30,7 @@ local coop = {
     pings = {}, -- { { wx, wy, pid, start_ts, end_ts }, ... }
     signal_registered = false,
     _pending_tower_ops = nil,
+    show_tower_marks = true, -- Local-only visual toggle for 1P/2P pedestal arc & mini badge
 }
 
 -- Curated Alliance / FL 5th-gen dual-hero roster for Lobby selection
@@ -592,32 +593,69 @@ function coop:draw_world_overlays()
     local badge_font = fonts.get(12)
     if badge_font then G.setFont(badge_font) end
 
-    -- 1. Draw crisp Blue (P1) / Red (P2) ownership ellipses around owned towers
-    G.setLineWidth(2.5)
-    for _, e in pairs(game.store.entities) do
-        if e and e.tower and e._mp_owner and e.pos and not e._kr_mp_local then
-            local sx, sy = world_to_screen(e.pos.x, e.pos.y)
-            if sx then
-                if e._mp_owner == 1 then
-                    G.setColor(60, 165, 255, 210)
-                else
-                    G.setColor(255, 75, 75, 210)
-                end
-                local rx = 34 * scale
-                local ry = 18 * scale
-                G.ellipse("line", sx, sy + 6 * scale, rx, ry)
-                -- Tiny corner badge "1P" / "2P"
-                G.setColor(0, 0, 0, 175)
-                G.rectangle("fill", sx - 13, sy + 18 * scale, 26, 14, 3, 3)
-                if e._mp_owner == 1 then
-                    G.setColor(110, 200, 255, 255)
-                    G.printf("1P", sx - 13, sy + 18 * scale, 26, "center")
-                else
-                    G.setColor(255, 115, 115, 255)
-                    G.printf("2P", sx - 13, sy + 18 * scale, 26, "center")
+    -- 1. Draw sleek lower-front pedestal crescent + compact 1P/2P mini pill (ONLY in 'owned' mode & when enabled!)
+    -- Never draws across the upper tower body so original hand-drawn tower artwork stays 100% clean.
+    if self.show_tower_marks and self.tower_mode == "owned" then
+        local mini_font = fonts.get(10) or badge_font
+        for _, e in pairs(game.store.entities) do
+            if e and e.tower and e._mp_owner and e.pos and not e._kr_mp_local then
+                local sx, sy = world_to_screen(e.pos.x, e.pos.y)
+                if sx then
+                    local is_p1 = (e._mp_owner == 1)
+                    local cx = sx
+                    local cy = sy - 7 * scale
+                    local rx = 31 * scale
+                    local ry = 13 * scale
+
+                    -- Build smooth front-bottom arc points (strictly hugging tower stone pedestal lip)
+                    local pts = {}
+                    local segs = 18
+                    local a0 = math.pi * 0.14
+                    local a1 = math.pi * 0.86
+                    for i = 0, segs do
+                        local a = a0 + (a1 - a0) * (i / segs)
+                        pts[#pts + 1] = cx + math.cos(a) * rx
+                        pts[#pts + 1] = cy + math.sin(a) * ry
+                    end
+
+                    -- Soft outer ground glow
+                    G.setLineWidth(4.0)
+                    if is_p1 then
+                        G.setColor(55, 165, 255, 60)
+                    else
+                        G.setColor(255, 78, 78, 60)
+                    end
+                    G.line(pts)
+
+                    -- Crisp refined inner pedestal rim
+                    G.setLineWidth(1.6)
+                    if is_p1 then
+                        G.setColor(95, 198, 255, 215)
+                    else
+                        G.setColor(255, 110, 105, 215)
+                    end
+                    G.line(pts)
+
+                    -- Compact rounded glass mini pill nestled cleanly at the front tip of the pedestal
+                    local pw, ph = 22, 13
+                    local bx = cx - pw / 2
+                    local by = cy + ry - 5
+                    G.setColor(10, 16, 26, 200)
+                    G.rectangle("fill", bx, by, pw, ph, 5, 5)
+                    G.setLineWidth(1.1)
+                    if is_p1 then
+                        G.setColor(95, 198, 255, 235)
+                    else
+                        G.setColor(255, 110, 105, 235)
+                    end
+                    G.rectangle("line", bx, by, pw, ph, 5, 5)
+                    if mini_font then G.setFont(mini_font) end
+                    G.setColor(is_p1 and 155 or 255, is_p1 and 220 or 165, is_p1 and 255 or 165, 255)
+                    G.printf(is_p1 and "1P" or "2P", bx, by, pw, "center")
                 end
             end
         end
+        if badge_font then G.setFont(badge_font) end
     end
 
     -- 2. Draw crisp P1 (Blue) / P2 (Red) floating badges above the two Heroes (auto-stagger if stacked at spawn)

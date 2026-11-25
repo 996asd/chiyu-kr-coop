@@ -71,18 +71,26 @@ local function build_buttons(s, x, y, w)
     if s.mp_active then
         local other = (s.mp_pid == 1) and "2P" or "1P"
         if s.mp_econ == "independent" then
-            add_btn("mp_send_gold", "转50金→" .. other, 92, { 195, 135, 25, 240 })
+            add_btn("mp_send_gold", "转50金→" .. other, 86, { 195, 135, 25, 240 })
         end
         local spd = s.mp_speed or 1
-        local slbl = string.format("倍速: %dx", spd)
+        local slbl = string.format("倍速:%dx", spd)
         local sbg = (spd == 2) and { 25, 155, 115, 240 } or { 58, 78, 108, 240 }
-        add_btn("mp_speed", slbl, 76, sbg)
+        add_btn("mp_speed", slbl, 66, sbg)
 
         local plbl = (s.mp_phase == "PAUSED") and "继续对局" or "暂停对局"
         local pbg = (s.mp_phase == "PAUSED") and { 35, 150, 75, 240 } or { 55, 100, 175, 240 }
-        add_btn("mp_pause", plbl, 78, pbg)
-        add_btn("mp_leave", "退出联机", 78, { 175, 50, 50, 235 })
-        add_btn("hide", "隐藏(F9)", 74, { 60, 68, 82, 220 })
+        add_btn("mp_pause", plbl, 70, pbg)
+
+        if s.mp_tower_mode == "owned" then
+            local m_on = (s.mp_tower_marks ~= false)
+            local mlbl = m_on and "塔标:开" or "塔标:关"
+            local mbg = m_on and { 45, 115, 145, 235 } or { 68, 74, 88, 225 }
+            add_btn("mp_tower_marks", mlbl, 62, mbg)
+        end
+
+        add_btn("mp_leave", "退出联机", 70, { 175, 50, 50, 235 })
+        add_btn("hide", "隐藏(F9)", 66, { 60, 68, 82, 220 })
         return btns
     end
 
@@ -172,8 +180,11 @@ function overlay:draw()
     local w, x, y
     if s.mp_active then
         -- Top-center compact HUD in Co-op so native top-left Lives/Gold/Wave & top-right buttons stay visible
-        w = math.min(460, sw - 20)
+        w = math.min(486, sw - 20)
         x = math.max(10, math.floor((sw - w) / 2))
+        if sw >= 880 and x < 220 then
+            x = 220
+        end
         y = 6
     else
         w = math.min(500, sw - 20)

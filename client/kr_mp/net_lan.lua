@@ -155,25 +155,51 @@ end
 
 function net_lan:connect(ip, port)
     self:close()
-    local target_ip = (ip and ip ~= "") and ip or "127.0.0.1"
+    local clean = proto.sanitize_addr(ip or "")
+    local target_ip = (clean ~= "") and clean or "127.0.0.1"
     local target_port = tonumber(port) or proto.DEFAULT_TCP_PORT
+    local p_host, p_port = target_ip:match("^([^:]+):(%d+)$")
+    if p_host and p_port then
+        target_ip = p_host
+        target_port = tonumber(p_port)
+    end
+
+    -- Explicit IPv4 DNS resolution for SakuraFrp / OpenFrp domain names
+    local connect_ip = target_ip
+    if not target_ip:match("^%d+%.%d+%.%d+%.%d+$") then
+        local resolved, derr = socket.dns.toip(target_ip)
+        if not resolved then
+            self.last_error = string.format("域名解析失败 (%s)：请检查樱花映射地址是否复制完整", target_ip)
+            self:log("DNS resolve failed for %s: %s", target_ip, tostring(derr))
+            return false, self.last_error
+        end
+        self:log("Resolved FRP/host %s -> %s", target_ip, resolved)
+        connect_ip = resolved
+    end
 
     local c, err = socket.tcp()
     if not c then
-        self.last_error = "TCP create failed: " .. tostring(err)
+        self.last_error = "TCP 初始化失败: " .. tostring(err)
         return false, self.last_error
     end
 
-    c:settimeout(2.5)
-    local ok, cerr = c:connect(target_ip, target_port)
+    -- 5.0s connect timeout accommodates cross-ISP SakuraFrp / OpenFrp TCP tunnels
+    c:settimeout(5.0)
+    local ok, cerr = c:connect(connect_ip, target_port)
     if not ok then
         c:close()
-        self.last_error = string.format("Connect %s:%d failed: %s", target_ip, target_port, tostring(cerr))
-        self:log("%s", self.last_error)
+        local hint = (cerr == "timeout")
+            and "连接超时（请确认房主已开房且樱花映射 TCP 隧道已开启）"
+            or ((cerr == "connection refused" or cerr == "refused")
+                and "连接被拒绝（请确认房主已点创建房间且映射本地端口为 17777）"
+                or tostring(cerr))
+        self.last_error = string.format("连接 %s:%d 失败：%s", target_ip, target_port, hint)
+        self:log("Connect %s:%d (%s) failed: %s", target_ip, target_port, connect_ip, tostring(cerr))
         return false, self.last_error
     end
 
     pcall(c.setoption, c, "tcp-nodelay", true)
+    pcall(c.setoption, c, "keepalive", true)
     c:settimeout(0)
     self.peer = c
     self.peer_ip = target_ip
@@ -183,7 +209,7 @@ function net_lan:connect(ip, port)
     self.recv_buf = ""
     self.send_queue = {}
     self.send_offset = 1
-    self:log("Connected to LAN host %s:%d", target_ip, target_port)
+    self:log("Connected to LAN/FRP host %s:%d (ip=%s)", target_ip, target_port, connect_ip)
     return true
 end
 
@@ -283,6 +309,7 @@ function net_lan:poll()
         local client, err = self.server:accept()
         if client then
             pcall(client.setoption, client, "tcp-nodelay", true)
+            pcall(client.setoption, client, "keepalive", true)
             client:settimeout(0)
             local cip = select(1, client:getpeername()) or "?"
             self.peer = client

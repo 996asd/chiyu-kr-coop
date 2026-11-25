@@ -190,6 +190,7 @@ function boot:on_update(dt)
         mp_pid = self.coop and self.coop.local_pid or 1,
         mp_econ = self.coop and self.coop.econ_mode or "independent",
         mp_tower_mode = self.coop and self.coop.tower_mode or "owned",
+        mp_tower_marks = (self.coop == nil) or (self.coop.show_tower_marks ~= false),
         mp_g1 = self.coop and self.coop:get_player_gold(1) or 0,
         mp_g2 = self.coop and self.coop:get_player_gold(2) or 0,
         mp_rtt = self.transport and self.transport:get_rtt_ms() or 0,
@@ -256,6 +257,12 @@ function boot:on_hud_action(action_id)
         self.lockstep:request_toggle_speed()
     elseif action_id == "mp_pause" and self.lockstep and self.lockstep:is_active() then
         self.lockstep:request_toggle_pause()
+    elseif action_id == "mp_tower_marks" and self.coop then
+        self.coop.show_tower_marks = not self.coop.show_tower_marks
+        if self.lobby and self.lobby.save_prefs then
+            self.lobby:save_prefs()
+        end
+        overlay:show_toast(self.coop.show_tower_marks and "已开启：防御塔底座红蓝归属标志" or "已关闭：防御塔归属标志（纯净画面，仅对你自己生效）", 2.8)
     elseif action_id == "mp_leave" and self.lobby then
         self.lobby:leave_room()
     elseif action_id == "record" and self.replay then

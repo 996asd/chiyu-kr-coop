@@ -41,7 +41,8 @@ end
 
 function net_online:connect(host, port)
     self:close()
-    local target_host = (host and host ~= "") and host or proto.DEFAULT_ONLINE_HOST
+    local clean = proto.sanitize_addr(host or "")
+    local target_host = (clean ~= "") and clean or proto.DEFAULT_ONLINE_HOST
     local target_port = tonumber(port) or proto.DEFAULT_ONLINE_PORT
     local p_host, p_port = target_host:match("^([^:]+):(%d+)$")
     if p_host and p_port then
@@ -49,18 +50,35 @@ function net_online:connect(host, port)
         target_port = tonumber(p_port)
     end
 
+    local connect_ip = target_host
+    if not target_host:match("^%d+%.%d+%.%d+%.%d+$") then
+        local resolved, derr = socket.dns.toip(target_host)
+        if not resolved then
+            self.last_error = string.format("域名解析失败 (%s)：请检查服务器/樱花映射地址", target_host)
+            self:log("DNS resolve failed for %s: %s", target_host, tostring(derr))
+            return false, self.last_error
+        end
+        self:log("Resolved server %s -> %s", target_host, resolved)
+        connect_ip = resolved
+    end
+
     local c, err = socket.tcp()
     if not c then
-        self.last_error = "TCP create failed: " .. tostring(err)
+        self.last_error = "TCP 初始化失败: " .. tostring(err)
         return false, self.last_error
     end
 
-    c:settimeout(3.0)
-    local ok, cerr = c:connect(target_host, target_port)
+    c:settimeout(5.0)
+    local ok, cerr = c:connect(connect_ip, target_port)
     if not ok then
         c:close()
-        self.last_error = string.format("Connect server %s:%d failed: %s", target_host, target_port, tostring(cerr))
-        self:log("%s", self.last_error)
+        local hint = (cerr == "timeout")
+            and "连接超时（请检查公网服或樱花映射 TCP 17780 隧道是否开启）"
+            or ((cerr == "connection refused" or cerr == "refused")
+                and "连接被拒绝（请确认已启动公网中继服 kr-mp-server.exe）"
+                or tostring(cerr))
+        self.last_error = string.format("连接 %s:%d 失败：%s", target_host, target_port, hint)
+        self:log("Connect server %s:%d (%s) failed: %s", target_host, target_port, connect_ip, tostring(cerr))
         return false, self.last_error
     end
 
@@ -78,7 +96,7 @@ function net_online:connect(host, port)
     self.last_ping_ts = socket.gettime()
     self.last_error = nil
 
-    self:log("Connected to Online Relay Server %s:%d", target_host, target_port)
+    self:log("Connected to Online Relay Server %s:%d (ip=%s)", target_host, target_port, connect_ip)
     return true
 end
 

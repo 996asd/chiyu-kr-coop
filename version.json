@@ -1,9 +1,9 @@
 {
-    "version":  "1.0.0",
-    "protocol":  2,
-    "fl_version":  "4.1.0",
-    "released_at":  "2026-11-25",
-    "notes":  "正式版 v1.0.0：全中文界面、100关/67英雄/41选12混搭卡组、局域网+公网中继、断线高速追帧重连、一键报错与AI修复工具包。",
-    "download_gitee":  "https://gitee.com/chiyu-studio/chiyu-kr-coop/releases",
-    "download_github":  "https://github.com/996asd/chiyu-kr-coop/releases"
+  "version": "1.1.0",
+  "protocol": 2,
+  "fl_version": "4.1.0",
+  "released_at": "2026-11-25",
+  "notes": "v1.1.0：重绘防御塔底座前半弧光+迷你角标且支持玩家自由开关；全面优化樱花映射/OpenFrp（支持80字长域名、Ctrl+V与一键粘贴、200/300ms抗抖缓冲档位、TCP保活与中文排错提示）。",
+  "download_gitee": "https://gitee.com/chiyu-studio/chiyu-kr-coop/releases",
+  "download_github": "https://github.com/996asd/chiyu-kr-coop/releases"
 }
