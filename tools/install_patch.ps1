@@ -28,7 +28,7 @@ function Find-DefaultGameDir {
     return ""
 }
 
-$ModVer = "1.1.0"
+$ModVer = "1.2.0"
 $mfFile = Join-Path $PatchDir "kr_mp\manifest.json"
 if (Test-Path $mfFile) {
     try { $ModVer = (Get-Content $mfFile -Raw -Encoding UTF8 | ConvertFrom-Json).version } catch {}
@@ -93,11 +93,13 @@ if (Test-Path $TargetUH) {
     }
 }
 
-# 复制轻量化外挂补丁（仅 UH.lua + kr_mp/）
+# 复制轻量化外挂补丁（仅 UH.lua + kr_mp/，先清理旧版 kr_mp/ 避免残留或嵌套 assets）
 Copy-Item (Join-Path $PatchDir "UH.lua") $TargetUH -Force
 $TargetKrMp = Join-Path $TargetDir "kr_mp"
-New-Item -ItemType Directory -Force -Path $TargetKrMp | Out-Null
-Copy-Item (Join-Path $PatchDir "kr_mp\*") $TargetKrMp -Recurse -Force
+if (Test-Path $TargetKrMp) {
+    Remove-Item $TargetKrMp -Recurse -Force
+}
+Copy-Item (Join-Path $PatchDir "kr_mp") $TargetKrMp -Recurse -Force
 
 # 在游戏目录下生成锁定 60 FPS 的便捷联机启动器
 $LauncherPath = Join-Path $TargetDir "启动联机版_FL4.1.0.bat"

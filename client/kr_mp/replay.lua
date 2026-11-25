@@ -218,13 +218,13 @@ function replay:get_hud_extra()
         return string.format("| %d/%d (%d%%) OK:%d/%d%s",
             cur, max_t, pct, self.verified_count, self.total_checkpoints, nxt_str)
     elseif self.mode == "VERIFIED_OK" then
-        return string.format("| 100%% MATCH %d/%d (Paused - click RESUME)", self.verified_count, self.total_checkpoints)
+        return string.format("· 回放 100%% 匹配 %d/%d", self.verified_count, self.total_checkpoints)
     elseif self.mode == "DESYNC" and self.desync_info then
-        return string.format("| DESYNC @ Tick %d!", self.desync_info.tick)
+        return string.format("· 分叉 @ 帧 %d", self.desync_info.tick)
     elseif self.mode == "RECORDING" then
-        return "| Recording... Click STOP & SAVE when done"
+        return "· 录制中（按 F8 保存）"
     end
-    return "| Click REC START to begin M0 test"
+    return "· 按 F10 呼出双人联机战桌"
 end
 
 function replay:get_slot_override()

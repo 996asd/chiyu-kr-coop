@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	ServerVersion = "1.1.0"
+	ServerVersion = "1.2.0"
 	ProtocolVer   = 2
 )
 

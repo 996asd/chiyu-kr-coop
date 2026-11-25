@@ -1,9 +1,9 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "protocol": 2,
   "fl_version": "4.1.0",
   "released_at": "2026-11-25",
-  "notes": "v1.1.0：重绘防御塔底座前半弧光+迷你角标且支持玩家自由开关；全面优化樱花映射/OpenFrp（支持80字长域名、Ctrl+V与一键粘贴、200/300ms抗抖缓冲档位、TCP保活与中文排错提示）。",
+  "notes": "v1.2.0：全新铁皮羊皮纸与雕花橡木皇家战桌 UI（含 4x 超采样丝绸缎带/锻铁包角/火漆印章贴图与原生铁皮音效）、67位全画幅竖版英雄立绘与实时悬停预览、100关官方手绘战役明信片、修复4代双塔与三龙高清纹章、42px极简铁链悬木局内状态栏。",
   "download_gitee": "https://gitee.com/chiyu-studio/chiyu-kr-coop/releases",
   "download_github": "https://github.com/996asd/chiyu-kr-coop/releases"
 }

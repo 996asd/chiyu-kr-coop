@@ -29,6 +29,10 @@ function Populate-BasePackage([string]$dest) {
 
     Copy-Item (Join-Path $Root "client\UH.lua") (Join-Path $dest "patch\UH.lua") -Force
     Copy-Item (Join-Path $Root "client\kr_mp\*.lua") (Join-Path $dest "patch\kr_mp\") -Force
+    if (Test-Path (Join-Path $Root "client\kr_mp\assets")) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $dest "patch\kr_mp\assets") | Out-Null
+        Copy-Item (Join-Path $Root "client\kr_mp\assets\*") (Join-Path $dest "patch\kr_mp\assets\") -Recurse -Force
+    }
     Copy-Item (Join-Path $Root "client\kr_mp\manifest.json") (Join-Path $dest "patch\kr_mp\manifest.json") -Force
     Copy-Item (Join-Path $Root "tools\install_patch.ps1") (Join-Path $dest "tools\install_patch.ps1") -Force
     Copy-Item (Join-Path $Root "tools\uninstall_patch.ps1") (Join-Path $dest "tools\uninstall_patch.ps1") -Force

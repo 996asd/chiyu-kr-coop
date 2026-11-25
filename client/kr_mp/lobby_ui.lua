@@ -3,6 +3,7 @@ local proto = require("kr_mp.proto")
 local fonts = require("kr_mp.fonts")
 local catalog = require("kr_mp.catalog")
 local updater = require("kr_mp.updater")
+local ui = require("kr_mp.ui_assets")
 
 local lobby = {
     boot = nil,
@@ -1233,6 +1234,20 @@ function lobby:handle_button(btn)
     local id = btn.id
     self.focused_field = nil
 
+    -- Native Ironhide tactile UI sound feedback (purely visual/audio, outside sim)
+    if id == "close" or id == "leave_room" then
+        ui.play_sfx("close")
+    elseif id == "start_match" or id == "toggle_ready" then
+        ui.play_sfx("start")
+    elseif id == "tab_lan" or id == "tab_online" or id == "stage_pack" or id == "hero_pack" or id == "tower_pack"
+        or id == "open_stages" or id == "open_hero1" or id == "open_hero2" or id == "open_towers" then
+        ui.play_sfx("tab")
+    elseif id == "econ_toggle" then
+        ui.play_sfx("coin")
+    elseif id ~= "ip_box" and id ~= "server_box" and id ~= "code_box" and id ~= "pw_box" then
+        ui.play_sfx("click")
+    end
+
     if id == "close" then
         self.open = false
         self.sub_modal = nil
@@ -1392,24 +1407,72 @@ function lobby:mousereleased(x, y, button)
     return self.open
 end
 
--- === Lobby Rendering ===
+-- === Lobby Rendering (V2 Ironhide Native Parchment & Hand-Hewn Oak War-Table) ===
+
+local PACK_TAG_STYLES = {
+    kr5 = { bg = { 46, 26, 12, 220 }, border = { 218, 166, 78, 220 }, fg = { 255, 232, 164, 255 }, era = "5代·联盟" },
+    kr3 = { bg = { 30, 64, 38, 225 }, border = { 132, 214, 148, 210 }, fg = { 232, 255, 236, 255 }, era = "3代·起源" },
+    kr2 = { bg = { 98, 56, 18, 225 }, border = { 242, 186, 94, 215 }, fg = { 255, 240, 204, 255 }, era = "2代·前线" },
+    kr1 = { bg = { 96, 30, 30, 225 }, border = { 236, 132, 126, 210 }, fg = { 255, 230, 226, 255 }, era = "1代·初代" },
+}
+
+local DIFF_STYLES = {
+    [1] = { name = "休闲", stars = "★☆☆", col = { 42, 118, 56, 255 } },
+    [2] = { name = "普通", stars = "★★☆", col = { 168, 92, 24, 255 } },
+    [3] = { name = "老兵", stars = "★★★", col = { 158, 32, 32, 255 } },
+}
+
+local function get_stage_pack_info(level_idx)
+    local idx = tonumber(level_idx) or 101
+    if idx >= 101 then return "kr5"
+    elseif idx <= 22 then return "kr3"
+    elseif idx <= 44 then return "kr2"
+    else return "kr1" end
+end
+
+local function get_stage_clean_title(level_idx)
+    local short = catalog.get_stage_short(level_idx)
+    local num, name = short:match("^(%d+)%s+(.+)$")
+    if num and name then
+        return string.format("第 %s 关 · %s", num, name)
+    end
+    return catalog.get_stage_label(level_idx)
+end
 
 function lobby:draw()
     if not self.open or not love.graphics then return end
 
     local G = love.graphics
+    local T = ui.THEME
     local sw, sh = G.getWidth(), G.getHeight()
-    local pw, ph = math.min(680, sw - 32), math.min(488, sh - 32)
-    local px, py = math.floor((sw - pw) / 2), math.floor((sh - ph) / 2)
+    local pw = math.min(780, sw - 40)
+    local ph = math.min(486, sh - 46)
+    local px = math.floor((sw - pw) / 2)
+    local py = math.floor((sh - ph) / 2) + 12
 
-    if not self.font_title then self.font_title = fonts.get(17) end
+    if not self.font_banner then self.font_banner = fonts.get(16) end
+    if not self.font_title then self.font_title = fonts.get(16) end
+    if not self.font_hero then self.font_hero = fonts.get(15) end
     if not self.font then self.font = fonts.get(13) end
     if not self.font_small then self.font_small = fonts.get(12) end
     if not self.font_tiny then self.font_tiny = fonts.get(11) end
 
+    local font_map = {
+        title = self.font_title,
+        hero  = self.font_hero,
+        main  = self.font,
+        small = self.font_small,
+        tiny  = self.font_tiny,
+    }
+
+    local mx, my = 0, 0
+    if love.mouse and love.mouse.getPosition then
+        mx, my = love.mouse.getPosition()
+    end
+
     local btns = {}
-    local function add_btn(id, label, x, y, w, h, bg, extra)
-        local b = { id = id, label = label, x = x, y = y, w = w, h = h, bg = bg }
+    local function add_btn(id, label, x, y, w, h, style, extra)
+        local b = { id = id, label = label, x = x, y = y, w = w, h = h, style = style or "wood" }
         if extra then
             for k, v in pairs(extra) do b[k] = v end
         end
@@ -1422,402 +1485,631 @@ function lobby:draw()
     G.setShader()
     G.setBlendMode("alpha")
 
-    -- Backdrop
-    G.setColor(5, 8, 15, 182)
+    -- Warm darkened backdrop vignette
+    G.setColor(T.backdrop[1], T.backdrop[2], T.backdrop[3], T.backdrop[4])
     G.rectangle("fill", 0, 0, sw, sh)
 
-    -- Main lobby card
-    G.setColor(22, 28, 42, 248)
-    G.rectangle("fill", px, py, pw, ph, 10, 10)
-    G.setColor(110, 175, 255, 215)
-    G.setLineWidth(2)
-    G.rectangle("line", px, py, pw, ph, 10, 10)
+    -- Pick clean single-line Royal Crimson Banner Title (100% centered inside gold stitch!)
+    local banner_title = "双人同盟 · 皇家战桌"
+    if self.view == "home" then
+        banner_title = "联机酒馆 · 冒险驿站"
+    elseif self.sub_modal == "stages" then
+        banner_title = "战役舆图 · 选择关卡"
+    elseif self.sub_modal == "hero1" then
+        banner_title = "英雄殿 · 选 1P 主将"
+    elseif self.sub_modal == "hero2" then
+        banner_title = "英雄殿 · 选 2P 队友"
+    elseif self.sub_modal == "towers" then
+        banner_title = "皇家军械库 · 41选12"
+    end
 
-    -- Title bar
-    if self.font_title then G.setFont(self.font_title) end
-    G.setColor(255, 232, 130, 255)
-    G.print("赤羽的王国保卫战联机器（2P 合作守关）", px + 18, py + 12)
-    local upd_lbl = updater.has_update and ("下载新版 v" .. tostring(updater.latest_version))
-        or (updater.checking and "检查中..." or "检查更新")
-    local upd_w = updater.has_update and 112 or 76
-    local upd_bg = updater.has_update and { 28, 158, 86, 248 } or { 52, 68, 96, 225 }
-    add_btn("check_update", upd_lbl, px + pw - 46 - upd_w, py + 10, upd_w, 26, upd_bg, { small = true })
-    add_btn("close", "×", px + pw - 38, py + 10, 28, 26, { 150, 45, 45, 230 })
+    -- Draw Hand-Hewn Dark Oak Shell + Aged Parchment + 4 Iron Corners + Royal Crimson Ribbon
+    ui.draw_ironhide_war_table(px, py, pw, ph, banner_title, self.font_banner)
 
-    if self.font_small then G.setFont(self.font_small) end
-    G.setColor(175, 200, 230, 235)
-    G.print(string.format("FL %s | 联机补丁 v%s | 脚本校验 %s | 60Hz 帧同步（按 F10 开关）",
-        tostring(KR_FL_VERSION), proto.MOD_VERSION, proto.compute_script_hash()), px + 18, py + 37)
+    -- Protruding Ironhide Corner Crimson Close Shield (×)
+    add_btn("close", "×", px + pw - 22, py - 10, 32, 30, "crimson", { large = true, radius = 8 })
 
-    if self.font then G.setFont(self.font) end
+    -- Content bounds inside parchment double-ink hairline frame
+    local cx = px + 25
+    local cw = pw - 50
 
     if self.view == "home" then
-        local ty = py + 60
-        local tw = math.floor((pw - 44) / 2)
-        local lan_bg = (self.net_tab == "lan") and { 38, 115, 195, 250 } or { 38, 46, 62, 220 }
-        local onl_bg = (self.net_tab == "online") and { 30, 145, 95, 250 } or { 38, 46, 62, 220 }
-        add_btn("tab_lan", "局域网联机（同Wi-Fi / 直连）", px + 18, ty, tw, 32, lan_bg)
-        add_btn("tab_online", "公网服务器（大厅 / 房间码）", px + 26 + tw, ty, tw, 32, onl_bg)
+        -- === 联机酒馆 · 冒险驿站 ===
+        local y = py + 42
+        local is_lan = (self.net_tab == "lan")
+        add_btn("tab_lan", "局域网 / 樱花直连", cx, y, 162, 28, is_lan and "wood" or "parchment", { small = true, active = is_lan })
+        add_btn("tab_online", "公网中继服 (追帧重连)", cx + 170, y, 178, 28, (not is_lan) and "wood" or "parchment", { small = true, active = not is_lan })
 
-        local y = ty + 42
+        local upd_lbl = updater.has_update and ("下载新版 v" .. tostring(updater.latest_version))
+            or (updater.checking and "检查中..." or "检查更新")
+        local upd_w = updater.has_update and 112 or 76
+        add_btn("check_update", upd_lbl, cx + cw - upd_w, y + 1, upd_w, 26,
+            updater.has_update and "battle" or "parchment", { tiny = true })
+        if self.font_tiny then G.setFont(self.font_tiny) end
+        G.setColor(T.ink_muted[1], T.ink_muted[2], T.ink_muted[3], 235)
+        G.printf(string.format("FL %s · 补丁 v%s · F10", tostring(KR_FL_VERSION), proto.MOD_VERSION),
+            cx + 356, y + 7, cw - 364 - upd_w, "right")
 
-        if self.net_tab == "lan" then
-            add_btn("host_lan", "创建局域网房间（1P 房主 · 蓝方）", px + 18, y, pw - 36, 38, { 35, 110, 195, 240 })
-            y = y + 48
-            add_btn("join_local", "本机快速加入 127.0.0.1（2P 双开测试 · 红方）", px + 18, y, pw - 36, 34, { 185, 65, 55, 240 })
-            y = y + 44
+        y = y + 36
+        G.setColor(T.parchment_line[1], T.parchment_line[2], T.parchment_line[3], 130)
+        G.setLineWidth(1)
+        G.line(cx, y, cx + cw, y)
+        y = y + 10
 
-            G.setColor(220, 230, 245, 240)
-            G.print("直连/映射：", px + 18, y + 6)
-            local ip_x = px + 94
-            local ip_w = pw - 94 - 166
-            local ip_bg = (self.focused_field == "ip") and { 45, 62, 92, 255 } or { 32, 40, 58, 245 }
-            local ip_disp = self.ip_input
-            if #ip_disp > 42 then ip_disp = "..." .. ip_disp:sub(-39) end
-            add_btn("ip_box", ip_disp .. (self.focused_field == "ip" and "_" or ""), ip_x, y, ip_w, 30, ip_bg, { small = true })
-            add_btn("paste_ip", "粘贴", px + pw - 160, y, 52, 30, { 68, 92, 132, 240 }, { small = true })
-            add_btn("join_ip", "直连加入", px + pw - 102, y, 84, 30, { 40, 145, 85, 240 }, { small = true })
-            y = y + 34
+        if is_lan then
+            -- Two Pinned Tavern Bounty Contracts side-by-side
+            local card_w = math.floor((cw - 14) / 2)
+            local card_h = 164
 
+            -- Left Contract: 1P Host
+            ui.draw_parchment_card(cx, y, card_w, card_h, {
+                top = { 236, 240, 232, 250 },
+                bot = { 228, 214, 178, 250 },
+                border = T.p1_border,
+                border_w = 2,
+                thumbtack = true,
+            })
+            ui.draw_pill(cx + 14, y + 14, 124, 20, "1P 房主 · 蓝方旗帜", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, self.font_tiny)
+            if self.font_hero then G.setFont(self.font_hero) end
+            G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
+            G.print("设立双人合作战桌", cx + 14, y + 40)
             if self.font_tiny then G.setFont(self.font_tiny) end
-            G.setColor(145, 205, 245, 230)
-            G.print("樱花映射远程开黑：房主建 TCP 隧道映射本地端口 17777，2P 复制地址后点「粘贴」(或 Ctrl+V) 直连！", px + 18, y)
-            if self.font then G.setFont(self.font) end
-            y = y + 20
+            G.setColor(T.ink_sub[1], T.ink_sub[2], T.ink_sub[3], 240)
+            G.printf("开房自动开启局域网发现 (TCP 17777)；异地开黑用樱花映射指向此端口即可零服务器直连。",
+                cx + 14, y + 62, card_w - 28, "left")
+            add_btn("host_lan", "创建房间并备战", cx + 14, y + 96, card_w - 28, 32, "battle", { small = false })
+            add_btn("join_local", "本机双开快速加入 (127.0.0.1)", cx + 14, y + 134, card_w - 28, 22, "parchment", { tiny = true })
 
-            G.setColor(255, 225, 130, 240)
-            G.print("已发现的局域网房间（自动扫描 UDP 17778）：", px + 18, y)
-            y = y + 24
+            -- Right Contract: 2P Guest / SakuraFrp Smart Paste
+            local rx = cx + card_w + 14
+            ui.draw_parchment_card(rx, y, card_w, card_h, {
+                top = { 250, 238, 226, 250 },
+                bot = { 234, 212, 176, 250 },
+                border = T.p2_border,
+                border_w = 2,
+                thumbtack = true,
+            })
+            ui.draw_pill(rx + 14, y + 14, 124, 20, "2P 队友 · 红方驰援", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, self.font_tiny)
+            if self.font_hero then G.setFont(self.font_hero) end
+            G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
+            G.print("粘贴樱花 / 局域网地址直连", rx + 14, y + 40)
 
+            local ip_disp = self.ip_input
+            if #ip_disp > 32 then ip_disp = "..." .. ip_disp:sub(-29) end
+            local ip_w = card_w - 28 - 64
+            add_btn("ip_box", ip_disp .. (self.focused_field == "ip" and "|" or ""), rx + 14, y + 66, ip_w, 28, "input", {
+                small = true, focused = (self.focused_field == "ip"),
+            })
+            add_btn("paste_ip", "粘贴", rx + 14 + ip_w + 6, y + 66, 58, 28, "wood", { small = true })
+            if self.font_tiny then G.setFont(self.font_tiny) end
+            G.setColor(T.ink_muted[1], T.ink_muted[2], T.ink_muted[3], 235)
+            G.print("复制整行樱花日志后点「粘贴」(或 Ctrl+V) 自动提取地址！", rx + 14, y + 99)
+            add_btn("join_ip", "立即直连队友战桌", rx + 14, y + 120, card_w - 28, 34, "crimson", { small = false })
+
+            y = y + card_h + 12
+
+            -- Bottom Dark-Oak Tavern Notice Board (LAN Auto-Discovery)
+            local tray_h = (py + ph - 22) - y
+            ui.draw_armory_tray(cx, y, cw, tray_h, 9)
             local rooms = self.transport:get_lan_rooms()
+            ui.draw_ping_dot(cx + 18, y + 18, 12, #rooms > 0)
+            if self.font_small then G.setFont(self.font_small) end
+            ui.print_shadow(string.format("酒馆布告栏 · 自动扫描附近局域网战桌 (UDP 17778 · %d 个房间)", #rooms),
+                cx + 30, y + 11, T.gold_bright)
+
             if #rooms == 0 then
-                G.setColor(150, 165, 185, 215)
-                G.print("  暂未发现局域网房间... 同 Wi-Fi 请等房主开房；远程请直接粘贴樱花映射地址直连。", px + 18, y + 6)
+                if self.font_small then G.setFont(self.font_small) end
+                G.setColor(232, 206, 158, 205)
+                G.printf("暂未扫描到同 Wi-Fi 房间 · 同局域网请等待房主点「创建房间」；异地远程请直接使用右上樱花映射直连。",
+                    cx + 22, y + math.floor(tray_h * 0.46), cw - 44, "center")
             else
-                for idx = 1, math.min(#rooms, 3) do
+                local max_lan = math.max(1, math.floor((tray_h - 38) / 48))
+                for idx = 1, math.min(#rooms, max_lan) do
                     local r = rooms[idx]
-                    G.setColor(34, 44, 64, 230)
-                    G.rectangle("fill", px + 18, y, pw - 36, 34, 5, 5)
-                    G.setColor(235, 245, 255, 255)
-                    G.print(string.format("%s | %s | %s:%d (%d/2)",
-                        r.name, catalog.get_stage_short(r.level_idx), r.ip, r.port, r.players), px + 28, y + 8)
-                    add_btn("join_lan_room", "加入", px + pw - 96, y + 4, 72, 26, { 40, 145, 85, 240 }, { room = r })
-                    y = y + 40
+                    local ry = y + 34 + (idx - 1) * 48
+                    ui.draw_parchment_card(cx + 12, ry, cw - 24, 42, { radius = 6 })
+                    ui.draw_stage_thumb(r.level_idx, cx + 18, ry + 4, 58, 34, { radius = 4, pad = 1, border = { 108, 72, 32, 235 } })
+                    if self.font then G.setFont(self.font) end
+                    G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
+                    G.print(string.format("%s  ·  %s", tostring(r.name), get_stage_clean_title(r.level_idx)), cx + 86, ry + 5)
+                    if self.font_tiny then G.setFont(self.font_tiny) end
+                    G.setColor(T.ink_sub[1], T.ink_sub[2], T.ink_sub[3], 235)
+                    G.print(string.format("%s:%d  ·  %d/2 勇士等待中", tostring(r.ip), tonumber(r.port) or 17777, tonumber(r.players) or 1), cx + 86, ry + 23)
+                    add_btn("join_lan_room", "揭榜加入", cx + cw - 110, ry + 6, 86, 28, "battle", { small = true, room = r })
                 end
             end
         else
-            -- 公网服务器首页
+            -- === 公网中继服首页 ===
             if self.saved_session then
                 local s = self.saved_session
                 add_btn("reconnect_last",
-                    string.format("一键重连上次对局：房间 #%s (%dP) @ %s", tostring(s.code), tonumber(s.pid) or 2, tostring(s.server)),
-                    px + 18, y, pw - 36, 34, { 205, 118, 22, 248 })
-                y = y + 42
+                    string.format("一键高速追帧重连：房间 #%s (%dP)  @  %s", tostring(s.code), tonumber(s.pid) or 2, tostring(s.server)),
+                    cx, y, cw, 32, "battle", { small = true })
+                y = y + 40
             end
 
-            G.setColor(220, 230, 245, 240)
-            G.print("服务器：", px + 18, y + 6)
-            local srv_bg = (self.focused_field == "server") and { 45, 62, 92, 255 } or { 32, 40, 58, 245 }
+            -- Server connection strip
+            ui.draw_parchment_card(cx, y, cw, 44, { radius = 7 })
+            if self.font_small then G.setFont(self.font_small) end
+            G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
+            G.print("中继服：", cx + 12, y + 14)
+            local sx = cx + 64
+            local sw_in = cw - 64 - 224
             local srv_disp = self.server_input
-            if #srv_disp > 38 then srv_disp = "..." .. srv_disp:sub(-35) end
-            add_btn("server_box", srv_disp .. (self.focused_field == "server" and "_" or ""), px + 76, y, pw - 306, 28, srv_bg, { small = true })
-            add_btn("paste_server", "粘贴", px + pw - 224, y, 48, 28, { 68, 92, 132, 240 }, { small = true })
-            local conn_bg = self.server_connected and { 35, 140, 82, 240 } or { 45, 105, 185, 240 }
+            if #srv_disp > 40 then srv_disp = "..." .. srv_disp:sub(-37) end
+            add_btn("server_box", srv_disp .. (self.focused_field == "server" and "|" or ""), sx, y + 7, sw_in, 28, "input", {
+                small = true, focused = (self.focused_field == "server"),
+            })
+            add_btn("paste_server", "粘贴", sx + sw_in + 6, y + 7, 48, 28, "wood", { small = true })
             local conn_lbl = self.server_connected and ("已连 " .. self.transport:get_rtt_ms() .. "ms") or "连接"
-            add_btn("connect_server", conn_lbl, px + pw - 170, y, 84, 28, conn_bg, { small = true })
-            add_btn("refresh_online", "刷新列表", px + pw - 80, y, 62, 28, { 62, 82, 112, 240 }, { small = true })
-            y = y + 38
+            add_btn("connect_server", conn_lbl, sx + sw_in + 60, y + 7, 86, 28, self.server_connected and "battle" or "azure", { small = true })
+            add_btn("refresh_online", "刷新", sx + sw_in + 152, y + 7, 58, 28, "parchment", { small = true })
+            y = y + 52
 
-            local pw_bg = (self.focused_field == "pw") and { 45, 62, 92, 255 } or { 32, 40, 58, 245 }
-            local pw_disp = (#self.pw_input > 0 and self.pw_input or "无密码(选填)") .. (self.focused_field == "pw" and "_" or "")
-            G.setColor(220, 230, 245, 240)
-            G.print("密码：", px + 18, y + 6)
-            add_btn("pw_box", pw_disp, px + 68, y, 136, 28, pw_bg)
-            add_btn("toggle_public", self.room_public and "公开大厅" or "仅房间码", px + 212, y, 88, 28,
-                self.room_public and { 42, 118, 88, 240 } or { 115, 72, 145, 240 })
-            add_btn("create_online", "创建公网房间（1P 房主）", px + 308, y, pw - 326, 28, { 35, 110, 195, 245 })
-            y = y + 38
+            -- Two Pinned Online Contracts
+            local lw = math.floor(cw * 0.54)
+            local rw = cw - lw - 12
+            local rx = cx + lw + 12
 
-            G.setColor(220, 230, 245, 240)
-            G.print("房间码：", px + 18, y + 6)
-            local code_bg = (self.focused_field == "code") and { 45, 62, 92, 255 } or { 32, 40, 58, 245 }
-            local code_disp = (#self.code_input > 0 and self.code_input or "4位房间码") .. (self.focused_field == "code" and "_" or "")
-            add_btn("code_box", code_disp, px + 78, y, 126, 28, code_bg)
-            add_btn("join_code", "凭房间码进房（2P 队友）", px + 212, y, pw - 230, 28, { 185, 65, 55, 240 })
-            y = y + 38
+            ui.draw_parchment_card(cx, y, lw, 92, { border = T.p1_border, border_w = 1.8, thumbtack = true })
+            if self.font_small then G.setFont(self.font_small) end
+            G.setColor(T.p1_border[1], T.p1_border[2], T.p1_border[3], 255)
+            G.print("1P 房主 · 创建公网合作房", cx + 12, y + 8)
+            local pw_empty = (#self.pw_input == 0)
+            local pw_disp = (pw_empty and "房间密码(选填)" or self.pw_input) .. (self.focused_field == "pw" and "|" or "")
+            local pw_w = lw - 122
+            add_btn("pw_box", pw_disp, cx + 12, y + 28, pw_w, 25, "input", {
+                small = true, placeholder = pw_empty and (self.focused_field ~= "pw"), focused = (self.focused_field == "pw"),
+            })
+            add_btn("toggle_public", self.room_public and "公开大厅" or "仅房间码", cx + 18 + pw_w, y + 28, 92, 25, "parchment", { tiny = true })
+            add_btn("create_online", "创建公网房间", cx + 12, y + 58, lw - 24, 26, "azure", { small = true })
 
-            G.setColor(255, 225, 130, 240)
-            G.print("公开在线房间列表 (" .. tostring(#self.online_rooms) .. ")：", px + 18, y)
-            y = y + 22
+            ui.draw_parchment_card(rx, y, rw, 92, { border = T.p2_border, border_w = 1.8, thumbtack = true })
+            if self.font_small then G.setFont(self.font_small) end
+            G.setColor(T.p2_border[1], T.p2_border[2], T.p2_border[3], 255)
+            G.print("2P 队友 · 凭房间码加入", rx + 12, y + 8)
+            local code_empty = (#self.code_input == 0)
+            local code_disp = (code_empty and "输入4位房间码(如 A1B2)" or self.code_input) .. (self.focused_field == "code" and "|" or "")
+            add_btn("code_box", code_disp, rx + 12, y + 28, rw - 24, 25, "input", {
+                small = true, placeholder = code_empty and (self.focused_field ~= "code"), focused = (self.focused_field == "code"),
+            })
+            add_btn("join_code", "凭房间码进房", rx + 12, y + 58, rw - 24, 26, "crimson", { small = true })
+            y = y + 100
+
+            -- Online Public Hall Tray
+            local tray_h = (py + ph - 22) - y
+            ui.draw_armory_tray(cx, y, cw, tray_h, 9)
+            ui.draw_ping_dot(cx + 18, y + 17, self.transport:get_rtt_ms(), self.server_connected)
+            if self.font_small then G.setFont(self.font_small) end
+            ui.print_shadow(string.format("公开在线房间大厅 (%d 个房间)", #self.online_rooms), cx + 30, y + 10, T.gold_bright)
 
             if not self.server_connected then
-                G.setColor(170, 180, 198, 225)
-                G.print("  点击「连接」接入中继服（房主开本地中继服 + 樱花映射 TCP 17780 即可免服务器享 5 分钟断线重连）。", px + 18, y + 6)
+                if self.font_small then G.setFont(self.font_small) end
+                G.setColor(232, 206, 158, 205)
+                G.printf("尚未连接中继服 · 点上方「连接」接入；或自开 kr-mp-server + 樱花映射 TCP 17780 享 5 分钟追帧重连。",
+                    cx + 22, y + math.floor(tray_h * 0.44), cw - 44, "center")
             elseif #self.online_rooms == 0 then
-                G.setColor(150, 165, 185, 215)
-                G.print("  已连接服务器！当前暂无公开房间，可点击「创建公网房间」或「刷新列表」。", px + 18, y + 6)
+                if self.font_small then G.setFont(self.font_small) end
+                G.setColor(232, 206, 158, 205)
+                G.printf("已连接服务器！当前暂无公开房间，可点左上「创建公网房间」或「刷新」。",
+                    cx + 22, y + math.floor(tray_h * 0.46), cw - 44, "center")
             else
-                local max_show = self.saved_session and 3 or 4
+                local max_show = math.max(1, math.floor((tray_h - 34) / 38))
                 for idx = 1, math.min(#self.online_rooms, max_show) do
                     local r = self.online_rooms[idx]
-                    G.setColor(34, 44, 64, 232)
-                    G.rectangle("fill", px + 18, y, pw - 36, 32, 5, 5)
-                    G.setColor(235, 245, 255, 255)
+                    local ry = y + 32 + (idx - 1) * 38
+                    ui.draw_parchment_card(cx + 12, ry, cw - 24, 33, { radius = 5 })
+                    ui.draw_pill(cx + 18, ry + 6, 56, 20, "#" .. tostring(r.code), T.wood_mid, T.ink_dark, T.gold_bright, self.font_tiny)
+                    if self.font_small then G.setFont(self.font_small) end
+                    G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
                     local pw_tag = r.has_password and " [需密码]" or ""
-                    G.print(string.format("#%s | %s | %s | %d/2%s",
-                        tostring(r.code), tostring(r.name), catalog.get_stage_short(r.level_idx), tonumber(r.players) or 1, pw_tag),
-                        px + 26, y + 7)
-                    add_btn("join_online_room", "加入", px + pw - 92, y + 3, 68, 26, { 40, 145, 85, 240 }, { room = r })
-                    y = y + 36
+                    G.print(string.format("%s  ·  %s  (%d/2)%s",
+                        tostring(r.name), get_stage_clean_title(r.level_idx), tonumber(r.players) or 1, pw_tag), cx + 82, ry + 9)
+                    add_btn("join_online_room", "加入", cx + cw - 92, ry + 4, 70, 24, "battle", { small = true, room = r })
                 end
             end
         end
 
     elseif self.sub_modal == "stages" then
-        -- === 全 100 关分页中文选择器 ===
-        local y = py + 62
-        G.setColor(255, 232, 130, 255)
-        G.print("选择合作关卡（共 100 关 · 含 5代/3代/2代/1代）", px + 18, y + 4)
-        add_btn("modal_back", "返回房间", px + pw - 108, y, 90, 26, { 155, 65, 65, 235 })
-        y = y + 34
-
+        -- === 战役舆图 · 全 100 关选择器 ===
+        local y = py + 42
         local packs = catalog.STAGE_PACKS
-        local tab_w = math.floor((pw - 36 - (#packs - 1) * 6) / #packs)
+        local back_w = 96
+        local tab_w = math.floor((cw - back_w - 14 - (#packs - 1) * 6) / #packs)
         for i, pk in ipairs(packs) do
-            local bg = (i == self.stage_pack_idx) and { 35, 135, 95, 248 } or { 42, 52, 72, 225 }
-            add_btn("stage_pack", pk.name, px + 18 + (i - 1) * (tab_w + 6), y, tab_w, 28, bg, { pack_idx = i })
+            local act = (i == self.stage_pack_idx)
+            add_btn("stage_pack", pk.name, cx + (i - 1) * (tab_w + 6), y, tab_w, 28,
+                act and "wood" or "parchment", { pack_idx = i, small = true, active = act })
         end
+        add_btn("modal_back", "返回战桌", cx + cw - back_w, y, back_w, 28, "crimson", { small = true })
         y = y + 36
 
         local pack = packs[self.stage_pack_idx] or packs[1]
         local cols = 5
-        local gap = 6
-        local cw = math.floor((pw - 36 - (cols - 1) * gap) / cols)
-        local ch = 46
+        local gap = 7
+        local tile_w = math.floor((cw - (cols - 1) * gap) / cols)
+        local tile_h = 56
         for i, st in ipairs(pack.stages) do
             local col = (i - 1) % cols
             local row = math.floor((i - 1) / cols)
-            local bx = px + 18 + col * (cw + gap)
-            local by = y + row * (ch + gap)
+            local bx = cx + col * (tile_w + gap)
+            local by = y + row * (tile_h + gap)
             local sel = (self.room.level_idx == st.idx)
-            local bg = sel and { 32, 155, 82, 250 } or { 38, 48, 68, 235 }
-            add_btn("pick_stage", string.format("%d\n%s", st.idx, st.name), bx, by, cw, ch, bg, { level_idx = st.idx, tiny = true })
+            add_btn("pick_stage", string.format("第 %d 关\n%s", st.idx, st.name), bx, by, tile_w, tile_h,
+                sel and "battle" or "parchment", { level_idx = st.idx, selected = sel, tiny = true })
         end
 
     elseif self.sub_modal == "hero1" or self.sub_modal == "hero2" then
-        -- === 全 67 英雄分页中文选择器 ===
+        -- === 经典铁皮分栏英雄殿：左侧大立绘实时预览 + 右侧全 67 英雄方阵 ===
         local is_h1 = (self.sub_modal == "hero1")
         local cur_hero = is_h1 and self.room.heroes[1] or self.room.heroes[2]
-        local y = py + 62
-        G.setColor(is_h1 and 110 or 255, is_h1 and 200 or 125, is_h1 and 255 or 125, 255)
-        G.print(is_h1 and "选择 1P 房主英雄（蓝方 · 共 67 位）" or "选择 2P 队友英雄（红方 · 共 67 位）", px + 18, y + 4)
-        add_btn("modal_back", "返回房间", px + pw - 108, y, 90, 26, { 155, 65, 65, 235 })
-        y = y + 34
-
+        local y = py + 42
         local packs = catalog.HERO_PACKS
-        local tab_w = math.floor((pw - 36 - (#packs - 1) * 6) / #packs)
+        local back_w = 96
+        local tab_w = math.floor((cw - back_w - 14 - (#packs - 1) * 6) / #packs)
         for i, pk in ipairs(packs) do
-            local bg = (i == self.hero_pack_idx) and { 45, 110, 185, 248 } or { 42, 52, 72, 225 }
-            add_btn("hero_pack", pk.name, px + 18 + (i - 1) * (tab_w + 6), y, tab_w, 28, bg, { pack_idx = i })
+            local act = (i == self.hero_pack_idx)
+            add_btn("hero_pack", pk.name, cx + (i - 1) * (tab_w + 6), y, tab_w, 28,
+                act and (is_h1 and "azure" or "crimson") or "parchment", { pack_idx = i, small = true, active = act })
         end
+        add_btn("modal_back", "返回战桌", cx + cw - back_w, y, back_w, 28, "wood", { small = true })
         y = y + 38
 
+        -- Compute hovered hero for instant giant vertical art preview on the left!
         local pack = packs[self.hero_pack_idx] or packs[1]
+        local preview_w = 186
+        local preview_h = 372
+        local grid_x = cx + preview_w + 12
+        local grid_w = cw - preview_w - 12
         local cols = 4
-        local gap = 8
-        local cw = math.floor((pw - 36 - (cols - 1) * gap) / cols)
-        local ch = 48
+        local gap = 6
+        local tile_w = math.floor((grid_w - (cols - 1) * gap) / cols)
+        local tile_h = 68
+        local preview_hero = cur_hero
+
         for i, h in ipairs(pack.heroes) do
             local col = (i - 1) % cols
             local row = math.floor((i - 1) / cols)
-            local bx = px + 18 + col * (cw + gap)
-            local by = y + row * (ch + gap)
+            local bx = grid_x + col * (tile_w + gap)
+            local by = y + row * (tile_h + gap)
+            if mx >= bx and mx <= bx + tile_w and my >= by and my <= by + tile_h then
+                preview_hero = h.idx
+            end
             local sel = (cur_hero == h.idx)
-            local bg = sel and (is_h1 and { 35, 130, 215, 250 } or { 195, 62, 68, 250 }) or { 38, 48, 68, 235 }
-            add_btn("pick_hero", string.format("#%d %s", h.idx, h.name), bx, by, cw, ch, bg, { hero_idx = h.idx, small = true })
+            add_btn("pick_hero", h.name, bx, by, tile_w, tile_h, "hero_tile", {
+                hero_idx = h.idx,
+                sub_label = string.format("#%d%s", h.idx, sel and " · 已选" or ""),
+                selected = sel,
+                is_p1 = is_h1,
+                icon_size = 52,
+            })
         end
 
+        -- Left Giant Vertical Hero Showcase Frame
+        ui.draw_vgrad_rect(cx, y, preview_w, preview_h,
+            is_h1 and T.p1_top or T.p2_top, { 26, 16, 10, 255 }, 10)
+        G.setColor(is_h1 and T.p1_border[1] or T.p2_border[1],
+            is_h1 and T.p1_border[2] or T.p2_border[2],
+            is_h1 and T.p1_border[3] or T.p2_border[3], 255)
+        G.setLineWidth(2.2)
+        G.rectangle("line", cx, y, preview_w, preview_h, 10, 10)
+
+        ui.draw_pill(cx + 12, y + 10, preview_w - 24, 20,
+            is_h1 and "1P 蓝方主将预览" or "2P 红方队友预览",
+            { 18, 12, 8, 185 }, T.gold_mid, T.gold_bright, self.font_tiny)
+
+        ui.draw_hero_big_portrait(preview_hero, cx + 12, y + 36, preview_w - 24, 242, {
+            radius = 8, pad = 2, border = T.gold_mid, border_w = 2,
+        })
+        if self.font_title then G.setFont(self.font_title) end
+        ui.print_shadow(catalog.get_hero_label(preview_hero), cx + 8, y + 288, T.gold_bright, preview_w - 16, "center")
+        if self.font_small then G.setFont(self.font_small) end
+        ui.print_shadow(string.format("英雄编号 #%d", preview_hero), cx + 8, y + 314,
+            is_h1 and T.p1_light or T.p2_light, preview_w - 16, "center")
+        if self.font_tiny then G.setFont(self.font_tiny) end
+        G.setColor(232, 212, 174, 210)
+        G.printf("点击右侧头像立即委任出战", cx + 10, y + 344, preview_w - 20, "center")
+
     elseif self.sub_modal == "towers" then
-        -- === 41 选 12 防御塔卡组配置器 ===
+        -- === 皇家军械库 · 41 选 12 ===
         ensure_room_defaults(self.room)
         local selected = {}
         for _, tid in ipairs(self.room.towers) do selected[tid] = true end
 
-        local y = py + 62
-        G.setColor(255, 232, 130, 255)
-        G.print(string.format("配置联机防御塔卡组：已选 %d / 12 座（点击增减）", #self.room.towers), px + 18, y + 4)
-        add_btn("towers_default", "恢复默认12塔", px + pw - 216, y, 102, 26, { 68, 92, 130, 235 })
-        add_btn("modal_back", "完成返回", px + pw - 106, y, 88, 26, { 35, 145, 82, 245 })
-        y = y + 34
+        local y = py + 42
+        local full = (#self.room.towers >= 12)
+        ui.draw_pill(cx, y + 2, 110, 24, string.format("已装备 %d / 12", #self.room.towers),
+            full and { 42, 122, 54, 245 } or { 172, 108, 28, 245 },
+            T.ink_dark, { 255, 250, 232, 255 }, self.font_small)
 
         local packs = catalog.TOWER_PACKS
-        local tab_w = math.floor((pw - 36 - 8) / 2)
         for i, pk in ipairs(packs) do
-            local bg = (i == self.tower_pack_idx) and { 115, 72, 155, 248 } or { 42, 52, 72, 225 }
-            add_btn("tower_pack", pk.name, px + 18 + (i - 1) * (tab_w + 8), y, tab_w, 28, bg, { pack_idx = i })
+            local act = (i == self.tower_pack_idx)
+            add_btn("tower_pack", pk.name, cx + 118 + (i - 1) * 168, y, 162, 28,
+                act and "wood" or "parchment", { pack_idx = i, small = true, active = act })
         end
-        y = y + 36
+        add_btn("towers_default", "默认12塔", cx + cw - 196, y, 90, 28, "parchment", { small = true })
+        add_btn("modal_back", "完成返回", cx + cw - 98, y, 98, 28, "battle", { small = true })
+        y = y + 38
 
         local pack = packs[self.tower_pack_idx] or packs[1]
         local cols = 4
         local gap = 7
-        local cw = math.floor((pw - 36 - (cols - 1) * gap) / cols)
-        local ch = 44
+        local tile_w = math.floor((cw - (cols - 1) * gap) / cols)
+        local tile_h = 56
         for i, tw in ipairs(pack.towers) do
             local col = (i - 1) % cols
             local row = math.floor((i - 1) / cols)
-            local bx = px + 18 + col * (cw + gap)
-            local by = y + row * (ch + gap)
+            local bx = cx + col * (tile_w + gap)
+            local by = y + row * (tile_h + gap)
             local is_sel = selected[tw.idx] == true
-            local bg = is_sel and { 32, 145, 78, 248 } or { 38, 46, 64, 230 }
-            local lbl = (is_sel and "√ " or "") .. tw.name
-            add_btn("pick_tower", lbl, bx, by, cw, ch, bg, { tower_idx = tw.idx, small = true })
+            add_btn("pick_tower", tw.name, bx, by, tile_w, tile_h, "tower_tile", {
+                tower_idx = tw.idx,
+                sub_label = is_sel and "已带入军械盘" or "点击加入卡组",
+                selected = is_sel,
+                icon_size = 44,
+            })
         end
 
     else
-        -- === 房间准备界面（局域网 & 公网共用） ===
+        -- === 战备沙盘（V2 铁皮羊皮纸皇家战桌主界面 · 1:1 复刻定稿样板！） ===
         ensure_room_defaults(self.room)
-        local y = py + 60
-        local rtt = self.transport:get_rtt_ms()
-        local room_prefix = self.transport:is_online()
-            and ("公网房间 #" .. tostring(self.online_room_code or "----") .. " | ")
-            or ("TCP端口:" .. tostring(self.transport:get_port()) .. " (樱花映射填此端口) | ")
-        local conn_txt = self.peer_connected
-            and string.format("%s2/2 已连接（延迟 %dms）", room_prefix, rtt)
-            or string.format("%s1/2 等待 2P 队友加入...", room_prefix)
-        G.setColor(self.peer_connected and 110 or 255, self.peer_connected and 245 or 210, 120, 255)
-        G.print(conn_txt, px + 18, y)
-        y = y + 26
-
-        -- P1 & P2 英雄卡片
-        local cw = math.floor((pw - 48) / 2)
-        G.setColor(28, 52, 88, 225)
-        G.rectangle("fill", px + 18, y, cw, 74, 6, 6)
-        G.setColor(90, 180, 255, 255)
-        G.rectangle("line", px + 18, y, cw, 74, 6, 6)
-        G.print("1P · 房主（蓝方）", px + 28, y + 8)
-        local h1_lbl = "英雄1：" .. catalog.get_hero_label(self.room.heroes[1])
-        if self.role == "host" then
-            add_btn("open_hero1", h1_lbl .. " [更换]", px + 26, y + 36, cw - 16, 28, { 45, 95, 165, 240 })
-        else
-            G.setColor(230, 242, 255, 255)
-            G.print(h1_lbl, px + 28, y + 40)
-        end
-
-        local c2x = px + 30 + cw
-        G.setColor(82, 32, 38, 225)
-        G.rectangle("fill", c2x, y, cw, 74, 6, 6)
-        G.setColor(255, 100, 100, 255)
-        G.rectangle("line", c2x, y, cw, 74, 6, 6)
-        G.print("2P · 队友（红方）" .. (self.peer_connected and " [已就绪]" or " [等待中]"), c2x + 10, y + 8)
-        local h2_lbl = "英雄2：" .. catalog.get_hero_label(self.room.heroes[2])
-        add_btn("open_hero2", h2_lbl .. " [更换]", c2x + 8, y + 36, cw - 16, 28, { 155, 55, 65, 240 })
-        y = y + 86
-
         local is_host = (self.role == "host")
-
-        -- 关卡行
-        G.setColor(34, 44, 64, 220)
-        G.rectangle("fill", px + 18, y, pw - 36, 36, 5, 5)
-        G.setColor(255, 240, 150, 255)
-        G.print("当前关卡：" .. catalog.get_stage_label(self.room.level_idx), px + 28, y + 9)
-        if is_host then
-            add_btn("open_stages", "选择关卡 (100关)", px + pw - 166, y + 4, 140, 28, { 48, 112, 175, 245 })
-        end
-        y = y + 44
-
-        -- 防御塔卡组行
-        G.setColor(34, 44, 64, 220)
-        G.rectangle("fill", px + 18, y, pw - 36, 36, 5, 5)
-        if self.font_small then G.setFont(self.font_small) end
-        G.setColor(210, 232, 255, 245)
-        G.print(string.format("携带卡组(%d/12)：%s", #self.room.towers, catalog.format_tower_summary(self.room.towers)), px + 28, y + 10)
-        if is_host then
-            add_btn("open_towers", "配置卡组 (41选12)", px + pw - 166, y + 4, 140, 28, { 112, 68, 152, 245 })
-        end
-        if self.font then G.setFont(self.font) end
-        y = y + 46
-
-        -- 联机规则四项（含樱花映射抗抖动网络缓冲档位）+ 个人防御塔标志开关
-        local diff_lbl = "难度:" .. (DIFF_NAMES[self.room.level_difficulty] or "普通")
-        local econ_lbl = (self.room.econ_mode == "independent") and "经济:独立(50/50)" or "经济:共享金币"
-        local tower_lbl = (self.room.tower_mode == "owned") and "塔权:红蓝保护" or "塔权:自由共享"
+        local rtt = self.transport:get_rtt_ms()
         local d_turns = normalize_delay_turns(self.room.input_delay_turns)
         local delay_lbl = DELAY_LABELS[d_turns] or "缓冲:局域网100ms"
         local marks_on = (self.coop == nil) or (self.coop.show_tower_marks ~= false)
 
-        if is_host then
-            local rw = math.floor((pw - 36 - 18) / 4)
-            add_btn("diff_cycle", diff_lbl, px + 18, y, rw, 34, { 52, 68, 96, 240 }, { small = true })
-            add_btn("econ_toggle", econ_lbl, px + 18 + (rw + 6), y, rw, 34, { 45, 98, 72, 240 }, { small = true })
-            add_btn("tower_toggle", tower_lbl, px + 18 + (rw + 6) * 2, y, rw, 34, { 108, 65, 130, 240 }, { small = true })
-            local dbg = (d_turns >= 4) and { 155, 95, 32, 245 } or { 45, 92, 132, 240 }
-            add_btn("delay_cycle", delay_lbl, px + 18 + (rw + 6) * 3, y, rw, 34, dbg, { small = true })
-            y = y + 42
-            if self.font_tiny then G.setFont(self.font_tiny) end
-            G.setColor(165, 195, 225, 225)
-            local tip = (rtt >= 65 and d_turns == 2)
-                and "检测到延迟偏高：建议把右侧「缓冲」切换为【樱花200ms】消除跨网抖动卡顿！"
-                or "提示：用樱花映射远程开黑时，建议将「缓冲」调为【樱花200ms】；右侧可自选是否显示塔底归属标志。"
-            G.print(tip, px + 18, y + 6)
-            add_btn("toggle_tower_marks", marks_on and "我的塔标:开" or "我的塔标:关",
-                px + pw - 118, y, 100, 24, marks_on and { 42, 112, 145, 235 } or { 68, 74, 88, 225 }, { tiny = true })
+        -- Row 1: Top Status & Sakura/Marks Compact Strip
+        local y = py + 40
+        ui.draw_ping_dot(cx + 8, y + 12, rtt, self.peer_connected)
+        if self.font_small then G.setFont(self.font_small) end
+        G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
+        G.print(self.peer_connected and "同盟已集结 (2/2)" or "等待 2P 入阵 (1/2)", cx + 20, y + 5)
+
+        local net_info
+        if self.transport:is_online() then
+            net_info = string.format("公网 #%s · %dms", tostring(self.online_room_code or "----"), rtt)
+        elseif is_host then
+            net_info = string.format("TCP:%d (樱花填此端口) · %dms", self.transport:get_port(), rtt)
         else
-            if self.font_small then G.setFont(self.font_small) end
-            G.setColor(215, 230, 250, 245)
-            G.print(string.format("规则：%s | %s | %s | %s", diff_lbl, econ_lbl, tower_lbl, delay_lbl), px + 18, y + 8)
-            y = y + 36
-            if self.font_tiny then G.setFont(self.font_tiny) end
-            G.setColor(165, 195, 225, 225)
-            G.print("提示：可点击红色卡片更换 2P 英雄；右侧可自由开关自己画面中的防御塔归属标志。", px + 18, y + 6)
-            add_btn("toggle_tower_marks", marks_on and "我的塔标:开" or "我的塔标:关",
-                px + pw - 118, y, 100, 24, marks_on and { 42, 112, 145, 235 } or { 68, 74, 88, 225 }, { tiny = true })
+            net_info = string.format("已直连远程主机 · %dms", rtt)
+        end
+        local info_w = is_host and 206 or 158
+        ui.draw_pill(cx + 128, y + 2, info_w, 21, net_info,
+            { 74, 44, 18, 28 }, { 154, 114, 58, 160 }, T.ink_sub, self.font_tiny)
+
+        if is_host then
+            add_btn("delay_cycle", delay_lbl, cx + cw - 216, y, 122, 24, "parchment", {
+                tiny = true, active = (d_turns >= 4),
+            })
+        else
+            ui.draw_pill(cx + cw - 216, y + 1, 122, 22, delay_lbl,
+                { 238, 218, 174, 240 }, { 154, 114, 58, 180 }, T.ink_text, self.font_tiny)
+        end
+        add_btn("toggle_tower_marks", marks_on and "塔底徽记:开" or "塔底徽记:关", cx + cw - 88, y, 88, 24,
+            marks_on and "wood" or "parchment", {
+                tiny = true,
+                fg = marks_on and { 226, 255, 218, 255 } or T.ink_sub,
+            })
+
+        y = y + 29
+        G.setColor(T.parchment_line[1], T.parchment_line[2], T.parchment_line[3], 145)
+        G.setLineWidth(1)
+        G.line(cx, y, cx + cw, y)
+        y = y + 7
+
+        -- Row 2: HEROIC 3-COLUMN STAGE (1P Tall Hero | Pinned Map Postcard + 3 Rules | 2P Tall Hero + Wax Seal)
+        local hero_w = 190
+        local mid_w = cw - hero_w * 2 - 24
+        local stage_h = 216
+        local mid_x = cx + hero_w + 12
+        local c2x = mid_x + mid_w + 12
+
+        -- LEFT: 1P Azure Champion Tall Vertical Card
+        G.setColor(34, 18, 6, 72)
+        G.rectangle("fill", cx + 2, y + 4, hero_w, stage_h, 10, 10)
+        ui.draw_vgrad_rect(cx, y, hero_w, stage_h, T.p1_top, T.p1_bot, 10)
+        G.setColor(168, 222, 255, 78)
+        G.setLineWidth(1.5)
+        G.line(cx + 10, y + 2, cx + hero_w - 10, y + 2)
+        G.setColor(T.p1_border[1], T.p1_border[2], T.p1_border[3], 255)
+        G.setLineWidth(2.2)
+        G.rectangle("line", cx, y, hero_w, stage_h, 10, 10)
+
+        if self.font_tiny then G.setFont(self.font_tiny) end
+        ui.print_shadow("1P 蓝方主将", cx + 10, y + 6, T.p1_light)
+        ui.draw_pill(cx + hero_w - 44, y + 4, 36, 17, "房主", { 12, 26, 48, 175 }, nil, T.gold_bright, self.font_tiny)
+
+        -- Full Vertical Hero Art (1P)
+        local hp_x, hp_y, hp_w, hp_h = cx + 8, y + 24, hero_w - 16, 152
+        ui.draw_hero_big_portrait(self.room.heroes[1], hp_x, hp_y, hp_w, hp_h, {
+            radius = 7, pad = 2, bg = { 16, 34, 58, 255 }, border = T.gold_mid, border_w = 2,
+        })
+        -- Bottom dark scrim inside portrait for crisp hero name
+        ui.draw_vgrad_rect(hp_x + 2, hp_y + hp_h - 46, hp_w - 4, 44, { 10, 22, 38, 0 }, { 8, 18, 32, 232 }, 4)
+        if self.font_hero then G.setFont(self.font_hero) end
+        ui.print_shadow(catalog.get_hero_label(self.room.heroes[1]), hp_x + 8, hp_y + hp_h - 36, T.gold_bright)
+        if self.font_tiny then G.setFont(self.font_tiny) end
+        ui.print_shadow("英雄 #" .. tostring(self.room.heroes[1]), hp_x + 8, hp_y + hp_h - 17, T.p1_light)
+        if is_host then
+            add_btn("open_hero1", "更换 1P 主将", cx + 8, y + 182, hero_w - 16, 26, "azure", { small = true })
+        else
+            ui.draw_pill(cx + 12, y + 184, hero_w - 24, 22, "房主主控主将",
+                { 14, 34, 62, 185 }, { 112, 178, 238, 130 }, T.p1_light, self.font_tiny)
         end
 
-        -- 底部操作栏
-        if self.font then G.setFont(self.font) end
+        -- CENTER: Pinned Painted Campaign Map Postcard + 3 Cohesive Parchment Rule Plaques
+        ui.draw_parchment_card(mid_x, y, mid_w, 148, {
+            top = { 255, 250, 238, 255 },
+            bot = { 238, 218, 174, 255 },
+            border = { 138, 94, 40, 245 },
+            border_w = 2,
+            thumbtack = true,
+            radius = 9,
+        })
+        local mp_x, mp_y, mp_w, mp_h = mid_x + 8, y + 10, mid_w - 16, 128
+        ui.draw_stage_thumb(self.room.level_idx, mp_x, mp_y, mp_w, mp_h, {
+            radius = 6, pad = 1, bg = { 42, 26, 12, 255 }, border = { 88, 56, 24, 255 }, border_w = 1.8,
+        })
+        -- Strong bottom dark scrim so text over bright grass is 100% razor-sharp!
+        ui.draw_vgrad_rect(mp_x + 1, mp_y + mp_h - 52, mp_w - 2, 51, { 24, 12, 4, 0 }, { 22, 10, 4, 235 }, 4)
+        local pk_key = get_stage_pack_info(self.room.level_idx)
+        local pks = PACK_TAG_STYLES[pk_key] or PACK_TAG_STYLES.kr5
+        ui.draw_pill(mp_x + 7, mp_y + 7, 68, 19, pks.era, pks.bg, pks.border, pks.fg, self.font_tiny)
         if is_host then
-            local sbg = self.peer_connected and { 32, 165, 80, 245 } or { 75, 82, 92, 200 }
-            local slbl = self.peer_connected and "开始双人合作守关！" or "等待 2P 队友加入房间..."
-            add_btn("start_match", slbl, px + 18, py + ph - 52, pw - 166, 38, sbg)
-            add_btn("leave_room", "关闭房间", px + pw - 138, py + ph - 52, 120, 38, { 165, 50, 50, 235 })
+            add_btn("open_stages", "切换地图 (100关)", mp_x + mp_w - 114, mp_y + 6, 108, 22, "wood", { tiny = true })
+        end
+        local df_info = DIFF_STYLES[self.room.level_difficulty] or DIFF_STYLES[2]
+        if self.font_tiny then G.setFont(self.font_tiny) end
+        ui.print_shadow("出征战役目标", mp_x + 10, mp_y + mp_h - 40, { 255, 224, 152, 245 })
+        if self.font_hero then G.setFont(self.font_hero) end
+        ui.print_shadow(get_stage_clean_title(self.room.level_idx), mp_x + 10, mp_y + mp_h - 23, { 255, 248, 224, 255 })
+        if self.font_small then G.setFont(self.font_small) end
+        ui.print_shadow(df_info.stars, mp_x + mp_w - 56, mp_y + mp_h - 22, T.gold_bright, 48, "right")
+
+        -- 3 Cohesive Tactile Rule Plaques under Map Postcard
+        local ry_rules = y + 158
+        local rh_rules = 56
+        local rw_rule = math.floor((mid_w - 14) / 3)
+        local econ_short = (self.room.econ_mode == "independent") and "独立 50/50" or "共享金库"
+        local tower_short = (self.room.tower_mode == "owned") and "红蓝保护" or "自由共享"
+
+        if is_host then
+            add_btn("diff_cycle", "战役难度\n" .. df_info.name, mid_x, ry_rules, rw_rule, rh_rules, "parchment", {
+                small = true, fg = df_info.col,
+            })
+            add_btn("econ_toggle", "军费账本\n" .. econ_short, mid_x + rw_rule + 7, ry_rules, rw_rule, rh_rules, "parchment", {
+                small = true,
+            })
+            add_btn("tower_toggle", "防御塔权\n" .. tower_short, mid_x + (rw_rule + 7) * 2, ry_rules, rw_rule, rh_rules, "parchment", {
+                small = true,
+            })
         else
-            local rbg = self.local_ready and { 35, 150, 80, 240 } or { 165, 120, 30, 240 }
-            local rlbl = self.local_ready and "已就绪（等待房主开始游戏）" or "点击准备就绪"
-            add_btn("toggle_ready", rlbl, px + 18, py + ph - 52, pw - 166, 38, rbg)
-            add_btn("leave_room", "离开房间", px + pw - 138, py + ph - 52, 120, 38, { 165, 50, 50, 235 })
+            local ro_rules = {
+                { t = "战役难度", v = df_info.name, col = df_info.col },
+                { t = "军费账本", v = econ_short, col = T.ink_text },
+                { t = "防御塔权", v = tower_short, col = T.ink_text },
+            }
+            for i, rr in ipairs(ro_rules) do
+                local rx_r = mid_x + (i - 1) * (rw_rule + 7)
+                ui.draw_parchment_card(rx_r, ry_rules, rw_rule, rh_rules, { radius = 7 })
+                if self.font_tiny then G.setFont(self.font_tiny) end
+                G.setColor(T.ink_muted[1], T.ink_muted[2], T.ink_muted[3], 240)
+                G.printf(rr.t, rx_r, ry_rules + 9, rw_rule, "center")
+                if self.font_small then G.setFont(self.font_small) end
+                G.setColor(rr.col[1], rr.col[2], rr.col[3], 255)
+                G.printf(rr.v, rx_r, ry_rules + 28, rw_rule, "center")
+            end
+        end
+
+        -- RIGHT: 2P Crimson Ally Tall Vertical Card + Embossed Wax Seal
+        G.setColor(34, 18, 6, 72)
+        G.rectangle("fill", c2x + 2, y + 4, hero_w, stage_h, 10, 10)
+        ui.draw_vgrad_rect(c2x, y, hero_w, stage_h, T.p2_top, T.p2_bot, 10)
+        G.setColor(255, 180, 175, 76)
+        G.setLineWidth(1.5)
+        G.line(c2x + 10, y + 2, c2x + hero_w - 10, y + 2)
+        G.setColor(T.p2_border[1], T.p2_border[2], T.p2_border[3], 255)
+        G.setLineWidth(2.2)
+        G.rectangle("line", c2x, y, hero_w, stage_h, 10, 10)
+
+        if self.font_tiny then G.setFont(self.font_tiny) end
+        ui.print_shadow("2P 红方协防", c2x + 10, y + 6, T.p2_light)
+
+        -- Full Vertical Hero Art (2P)
+        local hp2_x, hp2_y = c2x + 8, y + 24
+        ui.draw_hero_big_portrait(self.room.heroes[2], hp2_x, hp2_y, hp_w, hp_h, {
+            radius = 7, pad = 2, bg = { 44, 12, 14, 255 }, border = T.gold_mid, border_w = 2,
+        })
+        ui.draw_vgrad_rect(hp2_x + 2, hp2_y + hp_h - 46, hp_w - 4, 44, { 36, 8, 10, 0 }, { 32, 6, 8, 232 }, 4)
+        if self.font_hero then G.setFont(self.font_hero) end
+        ui.print_shadow(catalog.get_hero_label(self.room.heroes[2]), hp2_x + 8, hp2_y + hp_h - 36, T.gold_bright)
+        if self.font_tiny then G.setFont(self.font_tiny) end
+        ui.print_shadow("英雄 #" .. tostring(self.room.heroes[2]), hp2_x + 8, hp2_y + hp_h - 17, T.p2_light)
+        add_btn("open_hero2", "更换 2P 英雄", c2x + 8, y + 182, hero_w - 16, 26, "crimson", { small = true })
+
+        -- Embossed Scalloped Wax Seal stamped dramatically on top-right corner of 2P Card!
+        local rdy_ok = self.peer_connected and ((is_host and self.peer_ready) or (not is_host and self.local_ready))
+        local seal_lbl = not self.peer_connected and "等待中" or (rdy_ok and "已就绪" or "已入房")
+        ui.draw_wax_seal(c2x + hero_w - 8, y + 8, 24, seal_lbl, rdy_ok, self.font_tiny)
+
+        y = y + stage_h + 10
+
+        -- Row 3: RECESSED DARK-OAK VELVET 12-TOWER ARMORY CHEST (50x50 Medallions!)
+        local tray_h = 92
+        ui.draw_armory_tray(cx, y, cw, tray_h, 9)
+        local deck = self.room.towers or catalog.DEFAULT_TOWERS
+        local icon_sz = 50
+        local icon_gap = 9
+        local total_tw = 12 * icon_sz + 11 * icon_gap
+        local row_x = cx + math.floor((cw - total_tw) * 0.5)
+        local row_y = y + 34
+        local hovered_tw_name = nil
+
+        for i = 1, 12 do
+            local tid = deck[i]
+            local ix = row_x + (i - 1) * (icon_sz + icon_gap)
+            local is_hov = (tid ~= nil and mx >= ix and mx <= ix + icon_sz and my >= row_y and my <= row_y + icon_sz)
+            local dy_lift = is_hov and -3 or 0
+            if is_hov then hovered_tw_name = catalog.get_tower_name(tid) end
+
+            -- Velvet socket recess
+            G.setColor(22, 12, 6, 245)
+            G.rectangle("fill", ix, row_y + dy_lift, icon_sz, icon_sz, 7, 7)
+            if tid then
+                ui.draw_tower_icon(tid, ix, row_y + dy_lift, icon_sz, icon_sz, {
+                    radius = 7, pad = 2, bg = { 32, 18, 9, 250 },
+                    border = is_hov and T.gold_bright or { 128, 86, 42, 235 },
+                    border_w = is_hov and 2.2 or 1.4,
+                })
+            else
+                G.setColor(92, 62, 32, 125)
+                G.setLineWidth(1.2)
+                G.rectangle("line", ix, row_y, icon_sz, icon_sz, 7, 7)
+            end
+        end
+
+        if self.font_small then G.setFont(self.font_small) end
+        ui.print_shadow(string.format("随军防御塔军械盘 (%d/12)", #deck), cx + 14, y + 8, T.gold_bright)
+        ui.draw_pill(cx + 186, y + 7, 178, 19,
+            hovered_tw_name and ("当前检阅：" .. hovered_tw_name) or "悬停纹章检阅防御塔",
+            { 18, 10, 4, 175 }, { 196, 148, 72, 115 },
+            hovered_tw_name and T.gold_bright or { 228, 202, 154, 215 }, self.font_tiny)
+
+        if is_host then
+            add_btn("open_towers", "配置 41 选 12", cx + cw - 126, y + 5, 114, 23, "wood", { tiny = true })
+        else
+            ui.draw_pill(cx + cw - 114, y + 7, 102, 19, "房主配置卡组",
+                { 18, 10, 4, 165 }, { 164, 122, 64, 115 }, { 224, 198, 152, 210 }, self.font_tiny)
+        end
+
+        y = y + tray_h + 11
+
+        -- Row 4: SCULPTED 3D GLOSSY EMERALD "出征守关！" WAR PLAQUE
+        local cta_h = 42
+        local close_w = 122
+        if is_host then
+            local can_start = self.peer_connected
+            local slbl = can_start and "出 征 守 关 ！" or "等 待 2P 队 友 加 入 ..."
+            add_btn("start_match", slbl, cx, y, cw - close_w - 12, cta_h, "battle", {
+                large = true, disabled = not can_start, radius = 9,
+            })
+            add_btn("leave_room", "关闭房间", cx + cw - close_w, y, close_w, cta_h, "crimson", { radius = 9 })
+        else
+            local rlbl = self.local_ready and "已 盖 印 就 绪 · 等 待 开 局" or "点 击 盖 印 准 备 就 绪 ！"
+            add_btn("toggle_ready", rlbl, cx, y, cw - close_w - 12, cta_h, "battle", {
+                large = true, radius = 9,
+            })
+            add_btn("leave_room", "离开房间", cx + cw - close_w, y, close_w, cta_h, "crimson", { radius = 9 })
         end
     end
 
-    -- Draw all buttons with hover highlight
+    -- Draw all buttons with hover state
     self.buttons = btns
-    local mx, my = 0, 0
-    if love.mouse and love.mouse.getPosition then mx, my = love.mouse.getPosition() end
-
     for _, b in ipairs(btns) do
         local hover = (mx >= b.x and mx <= b.x + b.w and my >= b.y and my <= b.y + b.h)
-        local c = b.bg
-        if hover then
-            G.setColor(math.min(255, c[1] + 28), math.min(255, c[2] + 28), math.min(255, c[3] + 28), 255)
-        else
-            G.setColor(c[1], c[2], c[3], c[4])
-        end
-        G.rectangle("fill", b.x, b.y, b.w, b.h, 5, 5)
-        G.setColor(255, 255, 255, hover and 235 or 125)
-        G.setLineWidth(1.5)
-        G.rectangle("line", b.x, b.y, b.w, b.h, 5, 5)
-        G.setColor(255, 255, 255, 255)
-
-        if b.tiny and self.font_tiny then
-            G.setFont(self.font_tiny)
-            G.printf(b.label, b.x + 2, b.y + 8, b.w - 4, "center")
-        elseif b.small and self.font_small then
-            G.setFont(self.font_small)
-            G.printf(b.label, b.x + 2, b.y + math.floor((b.h - 15) / 2), b.w - 4, "center")
-        else
-            if self.font then G.setFont(self.font) end
-            G.printf(b.label, b.x + 2, b.y + math.floor((b.h - 17) / 2), b.w - 4, "center")
-        end
+        ui.draw_button(b, hover, font_map)
     end
 
     G.pop()
