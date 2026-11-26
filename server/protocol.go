@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	ServerVersion = "2.2.0"
+	ServerVersion = "2.2.3"
 	ProtocolVer   = 3
 )
 
@@ -44,8 +44,11 @@ type IncomingMsg struct {
 	Cmds  json.RawMessage `json:"cmds,omitempty"`
 	HT    *int            `json:"ht,omitempty"`
 	HH    string          `json:"hh,omitempty"`
+	HS    string          `json:"hs,omitempty"`
 	Tick  int             `json:"tick,omitempty"`
 	Hash  string          `json:"hash,omitempty"`
+	Snap  string          `json:"snap,omitempty"`
+	Ents  string          `json:"ents,omitempty"`
 	Speed int             `json:"speed,omitempty"`
 
 	// Ephemeral live voice chat frame (never stored in turn history)

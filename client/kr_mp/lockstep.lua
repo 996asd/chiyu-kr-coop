@@ -461,10 +461,52 @@ function lockstep:on_message(msg)
         end
         return true
     elseif t == "DESYNC_DIAG" then
+        local rtick = tonumber(msg.tick)
+        local rpid = tonumber(msg.pid) or self.remote_pid
         self:log("  REMOTE DIAG (P%s tick=%s): %s",
-            tostring(msg.pid or self.remote_pid), tostring(msg.tick or "?"), tostring(msg.snap or ""))
+            tostring(rpid), tostring(rtick or "?"), tostring(msg.snap or ""))
         if msg.ents and msg.ents ~= "" then
             self:log("  REMOTE ENTS: %s", tostring(msg.ents))
+        end
+        -- If peer hit DESYNC first before sending its hash packet to us, immediately dump OUR local snapshot
+        -- & pause symmetrically so BOTH players see the alert and BOTH logs have full side-by-side diagnostics!
+        if self.phase ~= "DESYNC" then
+            self.phase = "DESYNC"
+            local st = game and game.store
+            if st then st.paused = true end
+            local loc_snap = (rtick and self.local_hashes[rtick]) or (st and state_hash.compute(st, prng, self.coop))
+            local loc_line = loc_snap and state_hash.format_line(loc_snap) or ""
+            local ents_summary = st and state_hash.build_diag_summary(st, 18) or ""
+            local loc_hex = loc_snap and loc_snap.hash or tostring(self.last_hash_hex)
+            self.desync_info = {
+                tick = rtick or (st and st.tick) or 0,
+                local_hash = loc_hex,
+                remote_hash = tostring(msg.hash or "?"),
+                snap = loc_snap,
+                remote_snap = msg.snap,
+            }
+            self:close_hash_log()
+            self:log("!!! MP DESYNC REPORTED BY PEER AT TICK %s !!! local=%s", tostring(rtick or "?"), loc_hex)
+            if loc_line ~= "" then
+                self:log("  LOCAL  SNAP: %s", loc_line)
+            end
+            if ents_summary ~= "" then
+                self:log("  LOCAL  ENTS: %s", ents_summary)
+            end
+            if not self.desync_diag_sent and self.transport and self.transport:is_connected() then
+                self.desync_diag_sent = true
+                pcall(self.transport.send, self.transport, {
+                    t = "DESYNC_DIAG",
+                    pid = self.local_pid,
+                    tick = rtick or (st and st.tick) or 0,
+                    hash = loc_hex,
+                    snap = loc_line,
+                    ents = ents_summary,
+                })
+            end
+            if self.overlay then
+                self.overlay:show_toast(string.format("画面同步异常（第 %s 帧，队友先检出）· 已暂停保护，请双方点「退出」重开", tostring(rtick or "?")), 20)
+            end
         end
         return true
     end
@@ -630,6 +672,7 @@ function lockstep:verify_hash_pair(tick)
                 t = "DESYNC_DIAG",
                 pid = self.local_pid,
                 tick = tick,
+                hash = loc.hash,
                 snap = loc_line,
                 ents = ents_summary,
             })

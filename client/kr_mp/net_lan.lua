@@ -47,6 +47,7 @@ function net_lan.new(boot)
     self.last_error = nil
     self.last_ping_ts = 0
     self.rtt_ms = 0
+    self.accept_enabled = true
     return self
 end
 
@@ -487,22 +488,26 @@ function net_lan:poll()
         end
     end
 
-    -- 3. Host TCP accept (only 1 guest in 2P Co-op)
+    -- 3. Host TCP accept (only 1 guest in 2P Co-op, and never accept stray reconnect probes while mid-match)
     if self.role == "host" and self.server and not self.peer then
         local client = self.server:accept()
         if client then
-            pcall(client.setoption, client, "tcp-nodelay", true)
-            pcall(client.setoption, client, "keepalive", true)
-            client:settimeout(0)
-            local cip = select(1, client:getpeername()) or "?"
-            self.peer = client
-            self.peer_ip = cip
-            self.state = "connected"
-            self.recv_buf = ""
-            self.send_queue = {}
-            self.send_offset = 1
-            self:log("Guest connected from %s", tostring(cip))
-            events[#events + 1] = { type = "peer_connected", ip = cip }
+            if self.accept_enabled == false then
+                pcall(client.close, client)
+            else
+                pcall(client.setoption, client, "tcp-nodelay", true)
+                pcall(client.setoption, client, "keepalive", true)
+                client:settimeout(0)
+                local cip = select(1, client:getpeername()) or "?"
+                self.peer = client
+                self.peer_ip = cip
+                self.state = "connected"
+                self.recv_buf = ""
+                self.send_queue = {}
+                self.send_offset = 1
+                self:log("Guest connected from %s", tostring(cip))
+                events[#events + 1] = { type = "peer_connected", ip = cip }
+            end
         end
     end
 

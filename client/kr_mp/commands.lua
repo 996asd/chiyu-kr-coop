@@ -126,10 +126,17 @@ function commands:execute(cmd, game_ref, boot_ref)
             if mp_on and not coop:can_control_tower(pid, e, "power") then return end
             local power = e.powers[cmd.arg]
             if power.level < power.max_level then
-                local spent = (power.level == 0) and power.price_base or power.price_inc
+                local next_lvl = power.level + 1
+                local ttype = e.tower and e.tower.type
+                local spent
+                if (ttype == "barracks_stage_19" or ttype == "update_1_hunter_outpost") and type(power.price) == "table" then
+                    spent = power.price[math.min(next_lvl, power.max_level)] or 0
+                else
+                    spent = (next_lvl == 1) and power.price_base or power.price_inc
+                end
                 local ok_gold = mp_on and coop:can_afford(pid, spent) or (store.player_gold >= spent)
                 if ok_gold then
-                    power.level = power.level + 1
+                    power.level = next_lvl
                     power.changed = true
                     if mp_on then
                         coop:spend_gold(pid, spent)
@@ -206,6 +213,9 @@ function commands:execute(cmd, game_ref, boot_ref)
             elseif phase == "point_confirm" then
                 e.user_selection.in_progress = false
                 e.user_selection.new_pos = { x = cmd.wx, y = cmd.wy }
+            elseif phase == "cancel" then
+                e.user_selection.in_progress = false
+                e.user_selection.new_pos = nil
             elseif phase == "custom" then
                 e.user_selection.in_progress = true
                 e.user_selection.arg = cmd.arg
@@ -230,6 +240,10 @@ function commands:execute(cmd, game_ref, boot_ref)
             holder.tower.holder_id = tostring(max_holder_id + 1)
             holder.tower.terrain_style = terrain_style
             holder.tower.default_rally_pos = { x = cmd.wx, y = cmd.wy + 50 }
+            local base_sprite = holder.render and holder.render.sprites and holder.render.sprites[1]
+            if base_sprite and type(base_sprite.name) == "string" and string.find(base_sprite.name, "%%") then
+                base_sprite.name = string.format(base_sprite.name, terrain_style)
+            end
             game_ref.simulation:insert_entity(holder)
         end
 
@@ -251,29 +265,80 @@ function commands:execute(cmd, game_ref, boot_ref)
             e.nav_rally.center = { x = cmd.wx, y = cmd.wy }
         end
 
+    elseif op == "REINF_RALLY" then
+        local targets = {}
+        local sid = cmd.sid
+        local e0 = cmd.id and store.entities[cmd.id]
+        if not sid and e0 and e0.reinforcement and e0.reinforcement.squad_id then
+            sid = e0.reinforcement.squad_id
+        end
+        if sid then
+            for _, ee in pairs(store.entities) do
+                if ee and not ee._kr_mp_local and ee.reinforcement and ee.reinforcement.squad_id == sid
+                    and ee.nav_rally and ee.nav_grid and not (ee.health and ee.health.dead) then
+                    targets[#targets + 1] = ee
+                end
+            end
+            table.sort(targets, function(a, b) return (a.id or 0) < (b.id or 0) end)
+        elseif e0 and e0.reinforcement and e0.nav_rally and e0.nav_grid and not (e0.health and e0.health.dead) then
+            targets[1] = e0
+        end
+        for i = 1, #targets do
+            local ee = targets[i]
+            if not ee.nav_grid.ignore_waypoints then
+                ee.nav_grid.waypoints = GR:find_waypoints(
+                    ee.pos,
+                    ee.nav_rally.pos,
+                    { x = cmd.wx, y = cmd.wy },
+                    ee.nav_grid.valid_terrains,
+                    true
+                )
+            end
+            local ox = (ee.nav_rally.pos and ee.nav_rally.center) and (ee.nav_rally.pos.x - ee.nav_rally.center.x) or 0
+            local oy = (ee.nav_rally.pos and ee.nav_rally.center) and (ee.nav_rally.pos.y - ee.nav_rally.center.y) or 0
+            ee.nav_rally.new = true
+            ee.nav_rally.center = { x = cmd.wx, y = cmd.wy }
+            ee.nav_rally.pos = { x = cmd.wx + ox, y = cmd.wy + oy }
+        end
+
     elseif op == "POWER_FIRE" then
         if gui then
             if mp_on and not coop:can_use_power(pid, cmd.idx) then return end
             local btn = gui["power_" .. tostring(cmd.idx)]
             local orig_fn = (cmd.idx == "a" or cmd.idx == "s") and self.orig_hero_ult_fire or self.orig_power_fire[cmd.idx]
             if btn and orig_fn then
+                local slot_info = mp_on and coop:get_power_slot_info(cmd.idx) or nil
+                local is_indep_reinf = (slot_info and slot_info.kind == "reinforcement") or (not slot_info and cmd.idx == 2)
                 if mp_on and pid ~= coop.local_pid then
                     -- Remote player fired power: never interrupt local player's targeting mode,
-                    -- and for Power 2 (Reinforcements) keep local player's cooldown independent!
+                    -- and for Reinforcement slots keep local player's independent cooldown intact!
                     local orig_set_mode = gui.set_mode
                     local saved_btn_mode = btn.mode
                     local saved_cd_start = btn.cooldown_view and btn.cooldown_view.start_ts
                     local saved_cd_sy = btn.cooldown_view and btn.cooldown_view.scale and btn.cooldown_view.scale.y
+                    local saved_cd_hidden = btn.cooldown_view and btn.cooldown_view.hidden
+                    local saved_disabled = btn._disabled
                     gui.set_mode = function() end
                     local ok_p, err_p = pcall(orig_fn, btn, cmd.wx, cmd.wy)
                     gui.set_mode = orig_set_mode
-                    if cmd.idx == 2 then
+                    if is_indep_reinf then
+                        -- Restore local player's reinforcement button state without playing phantom GUISpellRefresh sound
+                        local S_mod = require("sound_db")
+                        local orig_sq = S_mod and S_mod.queue
+                        if S_mod and orig_sq then S_mod.queue = function() end end
                         if btn.set_mode then pcall(btn.set_mode, btn, saved_btn_mode) end
+                        if S_mod and orig_sq then S_mod.queue = orig_sq end
                         if btn.cooldown_view then
                             btn.cooldown_view.start_ts = saved_cd_start
+                            if saved_cd_hidden ~= nil then
+                                btn.cooldown_view.hidden = saved_cd_hidden
+                            end
                             if btn.cooldown_view.scale and saved_cd_sy ~= nil then
                                 btn.cooldown_view.scale.y = saved_cd_sy
                             end
+                        end
+                        if saved_disabled ~= nil then
+                            btn._disabled = saved_disabled
                         end
                     end
                     if not ok_p then error(err_p) end

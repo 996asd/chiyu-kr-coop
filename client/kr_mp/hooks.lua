@@ -637,6 +637,27 @@ function hooks:install_simulation_hooks()
             end
         end
 
+        -- Guard FL 8.2.0 item_medical_kit so lives are added deterministically inside sim tick
+        -- instead of game_gui's wall-clock timer:after(fly_time) callback!
+        local med_tpl = E and E.entities and E.entities["controller_item_medical_kit"]
+        if med_tpl and med_tpl.main_script and med_tpl.main_script.insert and not med_tpl.main_script._kr_mp_med_wrapped then
+            med_tpl.main_script._kr_mp_med_wrapped = true
+            local orig_med_ins = med_tpl.main_script.insert
+            med_tpl.main_script.insert = function(this_m, st_m)
+                if hooks:is_sync_active() and st_m then
+                    local hcnt = tonumber(this_m.hearts) or 3
+                    st_m.lives = (st_m.lives or 0) + hcnt
+                    local saved_hearts = this_m.hearts
+                    this_m.hearts = 0
+                    local ok_m, res_m = pcall(orig_med_ins, this_m, st_m)
+                    this_m.hearts = saved_hearts
+                    if not ok_m then error(res_m) end
+                    return res_m
+                end
+                return orig_med_ins(this_m, st_m)
+            end
+        end
+
         -- Guard simulation-only systems so _kr_mp_local UI entities NEVER enter SSO/events/count_groups/upgrades/health
         local SIM_SKIP_LOCAL_SYS = { "sso_post", "events", "count_groups", "game_upgrades", "game_upgrades_6", "health" }
         for _, sname in ipairs(SIM_SKIP_LOCAL_SYS) do
@@ -1253,7 +1274,18 @@ function hooks:install_gui_hooks(gui)
     local GR = require("grid_db")
     local bit = require("bit")
 
-    -- 1. Hook Power1/2/3Button:fire + Hero/Power Co-op ownership guards
+    -- 1. Hook Power1/2/3Button:fire + Hero/Power Co-op ownership guards (dynamic FL 8.2.0 power_selection aware!)
+    local function power_deny_toast(idx, owner, reason)
+        if not hooks.overlay then return end
+        if reason == "hero_ult" then
+            hooks.overlay:show_toast(string.format("那是 %dP 队友的英雄大招！", owner or 0), 2.2)
+        elseif reason == "cooldown" then
+            local info = hooks.coop and hooks.coop:get_power_slot_info(idx)
+            local msg = (info and info.kind == "reinforcement") and "你的援军正在冷却中！" or "该法术正在冷却中！"
+            hooks.overlay:show_toast(msg, 2.0)
+        end
+    end
+
     local power_classes = { Power1Button, Power2Button, Power3Button }
     for idx = 1, 3 do
         local cls = power_classes[idx]
@@ -1267,14 +1299,13 @@ function hooks:install_gui_hooks(gui)
                 if hooks.replay and hooks.replay:is_replaying() then
                     return
                 end
-                if hooks:is_mp_active() and not hooks.coop:can_use_power(hooks.coop.local_pid, idx) then
-                    game_gui:set_mode()
-                    if hooks.overlay then
-                        local msg = (idx == 2) and "你的援军正在冷却中！"
-                            or "那是队友的英雄大招！"
-                        hooks.overlay:show_toast(msg, 2.5)
+                if hooks:is_mp_active() then
+                    local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, idx)
+                    if not ok_p then
+                        game_gui:set_mode()
+                        power_deny_toast(idx, owner, reason)
+                        return
                     end
-                    return
                 end
                 game_gui:set_mode()
                 hooks:submit_command({
@@ -1285,22 +1316,22 @@ function hooks:install_gui_hooks(gui)
                 })
             end
         end
-        if cls and cls.on_click and (idx == 1 or idx == 3) then
+        if cls and cls.on_click then
             local orig_pclick = cls.on_click
             cls.on_click = function(self_btn, button, x, y)
-                if hooks:is_mp_active() and not hooks.coop:can_use_power(hooks.coop.local_pid, idx) then
-                    if hooks.overlay then
-                        local owner = (idx == 1) and 1 or 2
-                        hooks.overlay:show_toast(string.format("那是 %dP 队友的英雄大招！", owner), 2.0)
+                if hooks:is_mp_active() then
+                    local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, idx)
+                    if not ok_p then
+                        power_deny_toast(idx, owner, reason)
+                        return
                     end
-                    return
                 end
                 return orig_pclick(self_btn, button, x, y)
             end
         end
     end
 
-    -- 1b. Hook FL 8.2.0 HeroUltimateButton ("a" = 1P Hero Ult, "s" = 2P Hero Ult)
+    -- 1b. Hook FL 8.2.0 HeroUltimateButton ("a" / "s" dynamic overflow hero ultimate slots)
     if HeroUltimateButton and HeroUltimateButton.fire then
         local orig_hu_fire = HeroUltimateButton.fire
         commands.orig_hero_ult_fire = orig_hu_fire
@@ -1310,12 +1341,13 @@ function hooks:install_gui_hooks(gui)
             end
             if hooks.replay and hooks.replay:is_replaying() then return end
             local slot = self_btn.hero_slot or "a"
-            if hooks:is_mp_active() and not hooks.coop:can_use_power(hooks.coop.local_pid, slot) then
-                game_gui:set_mode()
-                if hooks.overlay then
-                    hooks.overlay:show_toast("那是队友的英雄大招！", 2.0)
+            if hooks:is_mp_active() then
+                local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, slot)
+                if not ok_p then
+                    game_gui:set_mode()
+                    power_deny_toast(slot, owner, reason)
+                    return
                 end
-                return
             end
             game_gui:set_mode()
             hooks:submit_command({
@@ -1330,12 +1362,12 @@ function hooks:install_gui_hooks(gui)
         local orig_hu_click = HeroUltimateButton.on_click
         HeroUltimateButton.on_click = function(self_btn, button, x, y)
             local slot = self_btn.hero_slot or "a"
-            if hooks:is_mp_active() and not hooks.coop:can_use_power(hooks.coop.local_pid, slot) then
-                if hooks.overlay then
-                    local owner = (slot == "a") and 1 or 2
-                    hooks.overlay:show_toast(string.format("那是 %dP 队友的英雄大招！", owner), 2.0)
+            if hooks:is_mp_active() then
+                local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, slot)
+                if not ok_p then
+                    power_deny_toast(slot, owner, reason)
+                    return
                 end
-                return
             end
             return orig_hu_click(self_btn, button, x, y)
         end
@@ -1486,7 +1518,108 @@ function hooks:install_gui_hooks(gui)
         return false
     end
 
-    -- 4. Hook PickView:on_down (Alt+Click Map Ping + SELECT_POINT + clickable stage props + block manual clicks in replay)
+    -- 3b. Hook PickView:rally_reinforcement (CRITICAL: FL 8.2.0 DragEntityView allows dragging reinforcements!)
+    if PickView.rally_reinforcement then
+        local orig_rally_reinf = PickView.rally_reinforcement
+        PickView.rally_reinforcement = function(self_pv, x, y)
+            if not hooks:is_sync_active() then
+                return orig_rally_reinf(self_pv, x, y)
+            end
+            if hooks.replay and hooks.replay:is_replaying() then return false end
+
+            local wx, wy = game_gui:u2g({ x = x, y = y })
+            wx, wy = commands.quantize(wx), commands.quantize(wy)
+            local e = game_gui.selected_entity
+            if not e or not e.reinforcement or not e.nav_rally or not e.nav_grid or (e.health and e.health.dead) then
+                return false
+            end
+
+            local function check_reinf_rally(tx, ty)
+                return (not e.nav_rally.requires_node_nearby or P:valid_node_nearby(tx, ty, nil, NF_RALLY))
+                    and GR:cell_is_only(tx, ty, e.nav_grid.valid_terrains_dest)
+                    and ((e.teleport and V.dist(tx, ty, e.pos.x, e.pos.y) > e.teleport.min_distance)
+                        or e.nav_grid.ignore_waypoints
+                        or GR:find_waypoints(e.pos, e.nav_rally.pos, { x = tx, y = ty }, e.nav_grid.valid_terrains, true))
+            end
+
+            local fx, fy = nil, nil
+            if check_reinf_rally(wx, wy) then
+                fx, fy = wx, wy
+            else
+                local cx, cy = e.pos.x, e.pos.y
+                for it = 1, 199 do
+                    local lx = commands.quantize((cx * it + wx * (200 - it)) / 200)
+                    local ly = commands.quantize((cy * it + wy * (200 - it)) / 200)
+                    if check_reinf_rally(lx, ly) then
+                        fx, fy = lx, ly
+                        break
+                    end
+                end
+            end
+
+            if fx and fy then
+                hooks:submit_command({
+                    op = "REINF_RALLY",
+                    id = e.id,
+                    sid = e.reinforcement.squad_id,
+                    wx = fx,
+                    wy = fy,
+                })
+                if game_gui.g2u then
+                    local ux, uy = game_gui:g2u({ x = fx, y = fy })
+                    game_gui:show_point_confirm(ux, uy)
+                else
+                    game_gui:show_point_confirm(x, y)
+                end
+                game_gui:deselect_entity()
+                return true
+            end
+            game_gui:show_invalid_point_cross(x, y)
+            return false
+        end
+    end
+
+    -- 4. Hook PickView:on_down (Alt+Click Map Ping + free_holder validation + SELECT_POINT + NEVER mutate e.ui.clicked locally!)
+    local E_gui = require("entity_db")
+    local function can_place_free_holder_sync(store, wx, wy)
+        if not store or not E_gui then return false end
+        local tpl = E_gui:get_template("tower_holder")
+        local rect = tpl and tpl.ui and tpl.ui.click_rect
+        if not rect then return true end
+        local rx, ry, rw, rh = rect.pos.x, rect.pos.y, rect.size.x, rect.size.y
+        local asp = ASPECT or 0.7
+        local tmask = bit.bor(TERRAIN_LAND, TERRAIN_ICE)
+        local pts = {
+            { wx + rx + rw * 0.5, wy + ry + rh * 0.5 },
+            { wx + rx + rw * 0.5, wy + ry + 0.5 * (1 - asp) * rh },
+            { wx + rx + rw * 0.5, wy + ry + 0.5 * (1 + asp) * rh },
+            { wx + rx,            wy + ry + rh * 0.5 },
+            { wx + rx + rw,       wy + ry + rh * 0.5 },
+        }
+        for i = 1, #pts do
+            local px, py = pts[i][1], pts[i][2]
+            if not (GR:cell_is(px, py, tmask) and GR:cell_is_only(px, py, tmask) and not P:valid_node_nearby(px, py, nil, NF_RALLY)) then
+                return false
+            end
+        end
+        local cx, cy = wx + rx, wy + ry
+        local function overlaps(ent)
+            if not ent or ent._kr_mp_local or ent.enemy or ent.soldier or not ent.pos or not ent.ui or not ent.ui.click_rect then
+                return false
+            end
+            local o = ent.ui.click_rect
+            local ox, oy, ow, oh = ent.pos.x + o.pos.x, ent.pos.y + o.pos.y, o.size.x, o.size.y
+            return cx < ox + ow and cx + rw > ox and cy < oy + oh and cy + rh > oy
+        end
+        for _, ent in pairs(store.entities) do
+            if overlaps(ent) then return false end
+        end
+        for _, ent in ipairs(store.pending_inserts or {}) do
+            if overlaps(ent) then return false end
+        end
+        return true
+    end
+
     local orig_pv_down = PickView.on_down
     PickView.on_down = function(self_pv, button, x, y)
         if not hooks:is_sync_active() then
@@ -1509,14 +1642,19 @@ function hooks:install_gui_hooks(gui)
         if button == 1 and game_gui.mode == "free_holder" then
             local wx, wy = game_gui:u2g({ x = x, y = y })
             wx, wy = commands.quantize(wx), commands.quantize(wy)
-            hooks:submit_command({
-                op = "TW_FREE_HOLDER",
-                wx = wx,
-                wy = wy,
-            })
-            game_gui:show_point_confirm(x, y)
-            game_gui:set_mode()
-            S:queue("GUIPlaceRallyPoint")
+            local st = game_gui.game and game_gui.game.store
+            if can_place_free_holder_sync(st, wx, wy) then
+                hooks:submit_command({
+                    op = "TW_FREE_HOLDER",
+                    wx = wx,
+                    wy = wy,
+                })
+                game_gui:show_point_confirm(x, y)
+                game_gui:set_mode()
+                S:queue("GUIPlaceRallyPoint")
+            else
+                game_gui:show_invalid_point_cross(x, y)
+            end
             return true
         elseif button == 1 and game_gui.mode == GUI_MODE_SELECT_POINT then
             local wx, wy = game_gui:u2g({ x = x, y = y })
@@ -1538,25 +1676,34 @@ function hooks:install_gui_hooks(gui)
                 game_gui:deselect_entity()
                 return true
             end
-        elseif button == 1 and game_gui.mode == GUI_MODE_IDLE then
+        elseif button == 1 and (game_gui.mode == GUI_MODE_IDLE or game_gui.mode == GUI_MODE_SWAP_TOWER) then
+            -- Handle all IDLE & SWAP_TOWER clicks directly so orig_pv_down NEVER mutates e.ui.clicked = true locally!
             local wx, wy = game_gui:u2g({ x = x, y = y })
             local e = game_gui:entity_at_pos(wx, wy)
             if e and e.hero and hooks:is_mp_active() and not hooks.coop:can_control_hero(hooks.coop.local_pid, e) then
                 if hooks.overlay then
                     local other = (hooks.coop.local_pid == 1) and 2 or 1
-                    hooks.overlay:show_toast(string.format("That's P%d's Hero!", other), 2.0)
+                    hooks.overlay:show_toast(string.format("那是 %dP 队友的英雄！", other), 2.0)
                 end
                 return true
             end
-            if e and e.ui and e.ui.can_click and not e.tower and not e.hero and not e.soldier and not e.enemy then
-                hooks:submit_command({ op = "CLICK_ENTITY", id = e.id })
+            if e and e.ui and e.ui.can_click then
+                local needs_click_sync = (not e.tower and not e.hero and not e.soldier and not e.enemy)
+                    or (e.clicks_to_destroy ~= nil)
+                    or (e.tap_decal ~= nil)
+                    or (e.click_play ~= nil)
+                if needs_click_sync then
+                    hooks:submit_command({ op = "CLICK_ENTITY", id = e.id })
+                end
                 if e ~= game_gui.selected_entity then
                     game_gui:select_entity(e)
-                else
+                elseif not e.enemy then
                     game_gui:deselect_entity()
                 end
-                return true
+            else
+                game_gui:deselect_entity()
             end
+            return true
         end
         return orig_pv_down(self_pv, button, x, y)
     end
@@ -1614,7 +1761,14 @@ function hooks:install_gui_hooks(gui)
             local power = entity.powers and entity.powers[item.action_arg]
             local store = game_gui.game.store
             if power and power.level < power.max_level then
-                local cost = (power.level == 0) and power.price_base or power.price_inc
+                local next_lvl = power.level + 1
+                local ttype = entity.tower and entity.tower.type
+                local cost
+                if (ttype == "barracks_stage_19" or ttype == "update_1_hunter_outpost") and type(power.price) == "table" then
+                    cost = power.price[math.min(next_lvl, power.max_level)] or 0
+                else
+                    cost = (next_lvl == 1) and power.price_base or power.price_inc
+                end
                 local avail = hooks:is_mp_active() and hooks.coop:get_local_display_gold() or store.player_gold
                 if avail >= cost then
                     hooks:submit_command({
@@ -1813,24 +1967,80 @@ function hooks:install_gui_hooks(gui)
                 return false
             end
             local ks = self_gui.key_shortcuts
+            local ok_ss, ss_mod = pcall(require, "shortcut_settings")
+            local function match_sc(action_name)
+                return ok_ss and ss_mod and ss_mod.matches and ks and ss_mod.matches(ks, action_name, key) == true
+            end
             if hooks:is_mp_active() then
                 -- Route pause hotkey through synchronized Co-op pause
                 if key == "space" or (ks and key == ks.pause) then
                     if hooks.lockstep then hooks.lockstep:request_toggle_pause() end
                     return true
                 end
-                -- Block selecting teammate's power/hero via number keys 1/3 or FL 8.2.0 a/s ultimate keys
-                if ((key == "1" or key == "a") and hooks.coop.local_pid == 2)
-                    or ((key == "3" or key == "s") and hooks.coop.local_pid == 1) then
-                    if hooks.overlay then hooks.overlay:show_toast("那是队友的英雄大招！", 2.0) end
+                -- Dynamic FL 8.2.0 power hotkey ownership guard (works with custom keybinds & any spell/hero combo!)
+                local pow_checks = {
+                    { "pow_1", 1, "1" },
+                    { "pow_2", 2, "2" },
+                    { "pow_3", 3, "3" },
+                    { "pow_a", "a", "a" },
+                    { "pow_s", "s", "s" },
+                }
+                for i = 1, #pow_checks do
+                    local sc_name, slot_id, fallback_k = pow_checks[i][1], pow_checks[i][2], pow_checks[i][3]
+                    if match_sc(sc_name) or ((not ok_ss or not ss_mod or not ss_mod.matches) and key == fallback_k) then
+                        local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, slot_id)
+                        if not ok_p then
+                            power_deny_toast(slot_id, owner, reason)
+                            return true
+                        end
+                        break
+                    end
+                end
+                -- Prevent hero_cycle hotkey from cycling onto teammate's hero
+                local hero_cycle_key = (ok_ss and ss_mod and ss_mod.key and ss_mod.key(ks, "hero_cycle", 1, KEYPRESS_HERO_MAIN)) or KEYPRESS_HERO_MAIN
+                if hero_cycle_key and key == hero_cycle_key then
+                    local my_hid = hooks.coop.hero_ids[hooks.coop.local_pid]
+                    local my_h = my_hid and self_gui.game and self_gui.game.store and self_gui.game.store.entities[my_hid]
+                    if my_h and not (my_h.health and my_h.health.dead) then
+                        if self_gui.selected_entity == my_h then
+                            self_gui:deselect_entity()
+                        else
+                            self_gui:deselect_all()
+                            self_gui:select_entity(my_h)
+                        end
+                    end
                     return true
                 end
             end
+            -- Intercept durax_clone hotkey so it NEVER sets e.ui.clicked = true locally & respects Co-op hero ownership!
+            if match_sc("durax_clone") then
+                local st = self_gui.game and self_gui.game.store
+                if st and st.entities then
+                    local list = {}
+                    for _, ent in pairs(st.entities) do
+                        if ent and ent.template_name == "hero_durax_clone" and not ent._kr_mp_local
+                            and ent.ui and ent.ui.can_click and not (ent.health and ent.health.dead)
+                            and (not hooks:is_mp_active() or hooks.coop:can_control_hero(hooks.coop.local_pid, ent)) then
+                            list[#list + 1] = ent
+                        end
+                    end
+                    table.sort(list, function(a, b) return (a.id or 0) < (b.id or 0) end)
+                    if #list > 0 then
+                        local sel_idx = nil
+                        for i = 1, #list do
+                            if list[i] == self_gui.selected_entity then sel_idx = i; break end
+                        end
+                        self_gui:deselect_entity()
+                        local next_idx = ((sel_idx or (ks and ks._last_durax_clone_idx) or 0) % #list) + 1
+                        if ks then ks._last_durax_clone_idx = next_idx end
+                        self_gui:select_entity(list[next_idx])
+                    end
+                end
+                return true
+            end
             -- Intercept early-wave hotkeys during recording or Co-op (incl. FL 8.2.0 shortcut_settings & 'w')
             local wave_key = (ks and ks.wave) or KEYPRESS_NEXTWAVE or "w"
-            local ok_ss, ss_mod = pcall(require, "shortcut_settings")
-            local ss_wave_match = (ok_ss and ss_mod and ss_mod.matches and ks and ss_mod.matches(ks, "wave", key)) == true
-            if (key == KEYPRESS_RETURN or (not DEBUG and key == wave_key) or ss_wave_match)
+            if (key == KEYPRESS_RETURN or (not DEBUG and key == wave_key) or match_sc("wave"))
                 and self_gui.next_wave_button and not self_gui.next_wave_button:is_disabled() then
                 hooks:submit_command({ op = "SEND_WAVE" })
                 return true
@@ -1850,7 +2060,112 @@ function hooks:install_gui_hooks(gui)
         end
     end
 
-    -- 9. Isolate pure-UI display/hover/stats helpers so they never steal simulation E.last_id or Battle PRNG
+    -- 9a. Preserve simulation fields that FL 8.2.0 UI mutates locally (trigger_deselect, user_selection.menu_shown, user_selection.in_progress)
+    if game_gui.select_entity and not game_gui._kr_mp_td_sel_wrapped then
+        game_gui._kr_mp_td_sel_wrapped = true
+        local orig_sel_ent = game_gui.select_entity
+        game_gui.select_entity = function(self_gui, e, ...)
+            if not hooks:is_sync_active() then
+                return orig_sel_ent(self_gui, e, ...)
+            end
+            local saved_td = e and e.trigger_deselect
+            if e and e ~= self_gui.selected_entity then
+                self_gui._kr_mp_ignored_td_eid = saved_td and e.id or nil
+            end
+            local ok_s, r1, r2 = pcall(orig_sel_ent, self_gui, e, ...)
+            if e then e.trigger_deselect = saved_td end
+            if not ok_s then error(r1) end
+            return r1, r2
+        end
+    end
+
+    if PickView and PickView.update and not PickView._kr_mp_td_upd_wrapped then
+        PickView._kr_mp_td_upd_wrapped = true
+        local orig_pv_upd = PickView.update
+        PickView.update = function(self_pv, dt)
+            if not hooks:is_sync_active() then
+                return orig_pv_upd(self_pv, dt)
+            end
+            local e = game_gui.selected_entity
+            local saved_td = e and e.trigger_deselect
+            if e and not saved_td and game_gui._kr_mp_ignored_td_eid == e.id then
+                game_gui._kr_mp_ignored_td_eid = nil
+            end
+            local masked = (e ~= nil and saved_td == true and game_gui._kr_mp_ignored_td_eid == e.id)
+            if masked then
+                e.trigger_deselect = nil
+            end
+            local ok_u, err_u = pcall(orig_pv_upd, self_pv, dt)
+            if e then
+                e.trigger_deselect = saved_td
+            end
+            if not ok_u then error(err_u) end
+        end
+    end
+
+    if TowerMenu and not TowerMenu._kr_mp_menu_shown_wrapped then
+        TowerMenu._kr_mp_menu_shown_wrapped = true
+        if TowerMenu.show then
+            local orig_tm_show = TowerMenu.show
+            TowerMenu.show = function(self_tm, ...)
+                if not hooks:is_sync_active() then
+                    return orig_tm_show(self_tm, ...)
+                end
+                local e = game_gui.selected_entity
+                local saved_ms = e and e.user_selection and e.user_selection.menu_shown
+                local ok_m, r1 = pcall(orig_tm_show, self_tm, ...)
+                if e and e.user_selection then
+                    e.user_selection.menu_shown = saved_ms
+                end
+                if not ok_m then error(r1) end
+                return r1
+            end
+        end
+        if TowerMenu.hide then
+            local orig_tm_hide = TowerMenu.hide
+            TowerMenu.hide = function(self_tm, ...)
+                if not hooks:is_sync_active() then
+                    return orig_tm_hide(self_tm, ...)
+                end
+                local e = self_tm.entity or game_gui.selected_entity
+                local saved_ms = e and e.user_selection and e.user_selection.menu_shown
+                local ok_m, r1 = pcall(orig_tm_hide, self_tm, ...)
+                if e and e.user_selection then
+                    e.user_selection.menu_shown = saved_ms
+                end
+                if not ok_m then error(r1) end
+                return r1
+            end
+        end
+    end
+
+    if game_gui.deselect_all and not game_gui._kr_mp_desel_all_wrapped then
+        game_gui._kr_mp_desel_all_wrapped = true
+        local orig_desel_all = game_gui.deselect_all
+        game_gui.deselect_all = function(self_gui, ...)
+            if not hooks:is_sync_active() or commands.executing then
+                return orig_desel_all(self_gui, ...)
+            end
+            local e = self_gui.selected_entity
+            local need_cancel = (e ~= nil and e.user_selection ~= nil and e.user_selection.in_progress == true)
+            local saved_inp = need_cancel and e.user_selection.in_progress or nil
+            local saved_pos = need_cancel and e.user_selection.new_pos or nil
+            local ok_d, r1 = pcall(orig_desel_all, self_gui, ...)
+            if need_cancel and e and e.user_selection then
+                e.user_selection.in_progress = saved_inp
+                e.user_selection.new_pos = saved_pos
+                hooks:submit_command({
+                    op = "TW_USER_SEL",
+                    id = e.id,
+                    phase = "cancel",
+                })
+            end
+            if not ok_d then error(r1) end
+            return r1
+        end
+    end
+
+    -- 9b. Isolate pure-UI display/hover/stats/boss-power-block helpers so they never steal simulation E.last_id or Battle PRNG
     local function wrap_local_ui_method(tbl, method_name)
         if not tbl or type(tbl[method_name]) ~= "function" then return end
         local flag = "_kr_mp_locwrap_" .. method_name
@@ -1871,6 +2186,7 @@ function hooks:install_gui_hooks(gui)
     wrap_local_ui_method(game_gui, "show_clickable_hover")
     wrap_local_ui_method(game_gui, "show_ghost_hover")
     wrap_local_ui_method(game_gui, "select_entity")
+    wrap_local_ui_method(game_gui, "block_random_power")
     wrap_local_ui_method(WaveFlag, "on_enter")
     wrap_local_ui_method(TowerMenuButton, "on_enter")
     wrap_local_ui_method(TowerMenuButton, "on_exit")
@@ -1879,6 +2195,61 @@ function hooks:install_gui_hooks(gui)
     wrap_local_ui_method(TowerTooltip, "show")
     wrap_local_ui_method(TowerMenuTooltip, "show")
     wrap_local_ui_method(TowerMenu, "show")
+
+    -- 9c. Guard PauseView / restart_game / go_to_map during Co-op so opening Options never freezes peer or leaks coop.active!
+    if PauseView and not PauseView._kr_mp_pause_wrapped then
+        PauseView._kr_mp_pause_wrapped = true
+        if PauseView.show then
+            local orig_pv_show = PauseView.show
+            PauseView.show = function(self_pv, ...)
+                local st = game_gui.game and game_gui.game.store
+                local mp_on = hooks:is_mp_active()
+                local saved_paused = st and st.paused
+                local ok_p, r1 = pcall(orig_pv_show, self_pv, ...)
+                if mp_on and st then
+                    st.paused = saved_paused
+                end
+                if not ok_p then error(r1) end
+                return r1
+            end
+        end
+        if PauseView.hide then
+            local orig_pv_hide = PauseView.hide
+            PauseView.hide = function(self_pv, ...)
+                local st = game_gui.game and game_gui.game.store
+                local mp_on = hooks:is_mp_active()
+                local ok_p, r1 = pcall(orig_pv_hide, self_pv, ...)
+                if mp_on and st and hooks.lockstep and hooks.lockstep:is_active() then
+                    st.paused = not (hooks.lockstep:is_running() or hooks.lockstep:is_catching_up())
+                end
+                if not ok_p then error(r1) end
+                return r1
+            end
+        end
+    end
+    if game_gui.restart_game and not game_gui._kr_mp_restart_wrapped then
+        game_gui._kr_mp_restart_wrapped = true
+        local orig_restart = game_gui.restart_game
+        game_gui.restart_game = function(self_gui, ...)
+            if hooks:is_mp_active() then
+                if hooks.overlay then
+                    hooks.overlay:show_toast("联机模式无法单人重开，请双方点顶部「退出」返回大厅重开！", 3.5)
+                end
+                return
+            end
+            return orig_restart(self_gui, ...)
+        end
+    end
+    if game_gui.go_to_map and not game_gui._kr_mp_map_wrapped then
+        game_gui._kr_mp_map_wrapped = true
+        local orig_go_map = game_gui.go_to_map
+        game_gui.go_to_map = function(self_gui, ...)
+            if hooks:is_mp_active() and hooks.boot and hooks.boot.on_hud_action then
+                pcall(hooks.boot.on_hud_action, hooks.boot, "mp_leave")
+            end
+            return orig_go_map(self_gui, ...)
+        end
+    end
 
     -- 10. Fix FL 8.2.0 DragEntityView stuck cyan dashed line & prevent dragging teammate's hero/tower in Co-op
     if DragEntityView and not DragEntityView._kr_mp_drag_wrapped then
@@ -1924,6 +2295,23 @@ function hooks:install_gui_hooks(gui)
         if DragEntityView.update then
             local orig_dv_upd = DragEntityView.update
             DragEntityView.update = function(self_dv, dt)
+                -- Cancel drag cleanly if pressed entity died or was removed mid-drag (prevents controller_path_direction 0/0 NaN!)
+                if self_dv.is_pressing and self_dv.pressed_entity then
+                    local pe = self_dv.pressed_entity
+                    local st = game_gui.game and game_gui.game.store
+                    local gone = (not st or not st.entities or not pe.id or st.entities[pe.id] ~= pe)
+                        or (pe.health and pe.health.dead)
+                    if gone then
+                        self_dv.is_pressing = false
+                        self_dv.selected_entity = nil
+                        self_dv.pressed_entity = nil
+                        if self_dv.disable_drag_line then self_dv:disable_drag_line() end
+                        if game_gui and game_gui.is_dragging and game_gui:is_dragging() then
+                            game_gui:set_mode(GUI_MODE_IDLE)
+                        end
+                        return
+                    end
+                end
                 -- Auto-clean orphaned cyan drag line if mouse button 1 is no longer held (desktop)
                 if not IS_ANDROID and love and love.mouse and love.mouse.isDown and not love.mouse.isDown(1) then
                     local stuck_line = self_dv.path_direction and self_dv.path_direction.selected_entity ~= nil

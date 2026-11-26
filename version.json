@@ -1,9 +1,9 @@
 {
-  "version": "2.2.2",
+  "version": "2.2.3",
   "protocol": 3,
   "fl_version": "8.2.0",
   "released_at": "2026-11-26",
-  "notes": "v2.2.2：1) 彻底根治联机局中「点选英雄/兵营、鼠标滑过塔位或波次旗帜后触发不同步（DESYNC）」的引擎级隐患：将本地 UI 悬浮/选中控制器及纯视觉粒子从 FL 8.2.0 的 sys.main_script 尾部交换删除（swap-remove）数组中完全隔离，并保证纯仿真战斗协程严格按实体 ID 升序执行，防止鼠标操作打乱双端战斗协程顺序；2) 保护 store.entity_count 与核心战斗系统不被本地 UI 实体污染，同步禁用双方本地存档可能残留的 hero_enhance_mod 差异；3) 新增 DESYNC 双方快照与战斗实体对账日志（DESYNC_DIAG），局中日志可直接对照本地与队友双方字段，排错效率翻倍。",
+  "notes": "v2.2.3：1) 彻底修复「拖动援军立即触发 DESYNC」的根因：新增同步指令 REINF_RALLY 完整拦截并按确定性顺序同步 FL 8.2.0 的援军整队拖拽集结（同时修复原版拖动援军中途死亡可能导致的青线 NaN 异常与确认光圈坐标偏移）；2) 全量封堵 7 处潜在联机不同步与操作隐患：隔离点击单位时本地写入 e.ui.clicked（含绵羊/青蛙/Boss点爆同步与杜拉斯分身快捷键归属）、禁止本地 UI 清空 e.trigger_deselect 或改写 user_selection.menu_shown、同步取消选点（deselect_all）、隔离 Boss 封锁技能的随机流、修复医疗包按真实时间加血；3) 重写 FL 8.2.0 动态法术/大招槽归属（2P 现可正常释放闪电/火雨等共用天灾，双英雄大招严格按真实槽位归属 1P/2P，并同步提前开波减 CD 与防同帧双放）；4) 修复联机时按 ESC 打开设置界面卡住队友、单人重开/直接退图状态残留，以及双端对称 DESYNC 诊断与 Go 中继服转发。",
   "download_gitee": "https://gitee.com/chiyu-studio/chiyu-kr-coop/releases",
   "download_github": "https://github.com/996asd/chiyu-kr-coop/releases"
 }

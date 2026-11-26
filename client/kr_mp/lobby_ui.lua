@@ -937,6 +937,9 @@ end
 
 function lobby:update(dt)
     updater:update(dt)
+    if self.transport and self.transport.lan_backend then
+        self.transport.lan_backend.accept_enabled = not (self.coop and self.coop:is_active())
+    end
     local events = self.transport:poll()
     for i = 1, #events do
         local ev = events[i]
@@ -1125,6 +1128,14 @@ function lobby:step_auto_coop(dt)
                 local h = self.coop.hero_ids[1] and store.entities[self.coop.hero_ids[1]]
                 if h then self.lockstep:queue_local_command({ op = "POWER_FIRE", idx = 2, wx = h.pos.x + 30, wy = h.pos.y }) end
             end)
+            once("p1_reinf_drag", 390, function()
+                local rs = find_sorted_ents(store, function(e) return e.soldier and e.reinforcement and e.health and not e.health.dead end)
+                if rs[1] and game and game.game_gui and game.game_gui.pickview and game.game_gui.g2u then
+                    game.game_gui.selected_entity = rs[1]
+                    local ux, uy = game.game_gui:g2u({ x = rs[1].pos.x + 55, y = rs[1].pos.y })
+                    pcall(game.game_gui.pickview.rally_reinforcement, game.game_gui.pickview, ux, uy)
+                end
+            end)
             once("p1_sendgold", 450, function() self.lockstep:queue_local_command({ op = "SEND_GOLD", amount = 50 }) end)
             once("p1_ping", 600, function() self.lockstep:queue_local_command({ op = "MAP_PING", wx = 600, wy = 400 }) end)
             once("p1_ult", 900, function()
@@ -1144,10 +1155,26 @@ function lobby:step_auto_coop(dt)
                 local h = self.coop.hero_ids[2] and store.entities[self.coop.hero_ids[2]]
                 if h then self.lockstep:queue_local_command({ op = "POWER_FIRE", idx = 2, wx = h.pos.x + 20, wy = h.pos.y }) end
             end)
+            once("p2_reinf_drag", 420, function()
+                local rs = find_sorted_ents(store, function(e) return e.soldier and e.reinforcement and e.health and not e.health.dead end)
+                local target_r = rs[#rs]
+                if target_r and game and game.game_gui and game.game_gui.pickview and game.game_gui.g2u then
+                    game.game_gui.selected_entity = target_r
+                    local tx, ty = target_r.pos.x + 55, target_r.pos.y - 45
+                    local ok_p, P_db = pcall(require, "path_db")
+                    if ok_p and P_db and P_db.paths and P_db.paths[1] and P_db.paths[1][1] then
+                        local seg = P_db.paths[1][1]
+                        local mid = seg[math.max(1, math.floor(#seg * 0.75))]
+                        if mid and mid.x and mid.y then tx, ty = mid.x, mid.y end
+                    end
+                    local ux, uy = game.game_gui:g2u({ x = tx, y = ty })
+                    pcall(game.game_gui.pickview.rally_reinforcement, game.game_gui.pickview, ux, uy)
+                end
+            end)
             once("p2_ping", 630, function() self.lockstep:queue_local_command({ op = "MAP_PING", wx = 720, wy = 450 }) end)
             once("p2_ult", 960, function()
                 local es = find_sorted_ents(store, function(e) return e.enemy and e.health and not e.health.dead end)
-                if es[1] then self.lockstep:queue_local_command({ op = "POWER_FIRE", idx = 3, wx = es[1].pos.x, wy = es[1].pos.y }) end
+                if es[1] then self.lockstep:queue_local_command({ op = "POWER_FIRE", idx = "a", wx = es[1].pos.x, wy = es[1].pos.y }) end
             end)
             once("p2_illegal_sell", 1100, function()
                 local p1_t = find_sorted_ents(store, function(e) return e.tower and e._mp_owner == 1 end)

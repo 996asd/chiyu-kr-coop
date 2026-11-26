@@ -26,6 +26,8 @@ local coop = {
 
     hero_ids = { [1] = nil, [2] = nil },
     reinf_ready_tick = { [1] = 0, [2] = 0 },
+    shared_power_ready_tick = {},
+    hero_ult_ready_tick = {},
 
     pings = {}, -- { { wx, wy, pid, start_ts, end_ts }, ... }
     signal_registered = false,
@@ -83,6 +85,36 @@ function coop:init(boot, lockstep, overlay)
                 local owner = e._mp_owner or (e.tower and e.tower._mp_actor)
                 if owner then
                     ne._mp_owner = owner
+                end
+            end
+        end)
+        -- Keep deterministic Co-op power cooldown ticks aligned with FL 8.2.0's early-wave & skill cooldown reductions
+        signal.register("early-wave-called", function(_group, _reward, remaining_time)
+            if self.active and type(remaining_time) == "number" and remaining_time > 1 then
+                local dt_ticks = math.floor(remaining_time / (TICK_LENGTH or (1 / 60)) + 0.5)
+                for p = 1, 2 do
+                    self.reinf_ready_tick[p] = math.max(0, (self.reinf_ready_tick[p] or 0) - dt_ticks)
+                end
+                for k, v in pairs(self.shared_power_ready_tick) do
+                    self.shared_power_ready_tick[k] = math.max(0, (v or 0) - dt_ticks)
+                end
+                for k, v in pairs(self.hero_ult_ready_tick) do
+                    self.hero_ult_ready_tick[k] = math.max(0, (v or 0) - dt_ticks)
+                end
+            end
+        end)
+        signal.register("reduce-user-power-cooldown", function(power_idx, amount)
+            if self.active and power_idx ~= nil and type(amount) == "number" and amount > 0 then
+                local dt_ticks = math.floor(amount / (TICK_LENGTH or (1 / 60)) + 0.5)
+                local info = self:get_power_slot_info(power_idx)
+                if info and info.kind == "reinforcement" then
+                    for p = 1, 2 do
+                        self.reinf_ready_tick[p] = math.max(0, (self.reinf_ready_tick[p] or 0) - dt_ticks)
+                    end
+                elseif info and info.kind == "hero_ult" then
+                    self.hero_ult_ready_tick[power_idx] = math.max(0, (self.hero_ult_ready_tick[power_idx] or 0) - dt_ticks)
+                else
+                    self.shared_power_ready_tick[power_idx] = math.max(0, (self.shared_power_ready_tick[power_idx] or 0) - dt_ticks)
                 end
             end
         end)
@@ -176,6 +208,10 @@ function coop:build_host_slot_snapshot(heroes, towers)
     if ok_h6 and h6 and h6.normalize then
         pcall(h6.normalize, snap)
     end
+    local ok_ps, psel = pcall(require, "power_selection")
+    if ok_ps and psel and psel.normalize then
+        pcall(psel.normalize, snap)
+    end
 
     -- Force dual-hero mode with the room's exact 2 selected heroes!
     local h1 = (heroes and heroes[1]) or catalog.DEFAULT_HERO_1 or 53
@@ -227,6 +263,8 @@ function coop:prepare_match(local_pid, cfg, reconnect_data)
     self.gold_split_parity = 0
     self.hero_ids = { [1] = nil, [2] = nil }
     self.reinf_ready_tick = { [1] = 0, [2] = 0 }
+    self.shared_power_ready_tick = {}
+    self.hero_ult_ready_tick = {}
     self.pings = {}
 
     if self.lockstep then
@@ -346,6 +384,8 @@ function coop:on_before_sim_init(store)
     prng:seed_sim(self.cfg.seed or 123456)
     self.hero_ids = { [1] = nil, [2] = nil }
     self.reinf_ready_tick = { [1] = 0, [2] = 0 }
+    self.shared_power_ready_tick = {}
+    self.hero_ult_ready_tick = {}
     self.pings = {}
     self.gold_split_parity = 0
 end
@@ -410,6 +450,19 @@ end
 
 function coop:on_entity_inserted(e)
     if not self.active or not e or not e.hero or not e.id or e._kr_mp_local then return end
+    -- Durax clones & temporary summoned hero copies inherit owner from their original hero rather than taking P1/P2 seat
+    if e.clone or e.template_name == "hero_durax_clone" then
+        local st = game and game.store
+        for pid = 1, 2 do
+            local hid = self.hero_ids[pid]
+            local he = hid and st and st.entities and st.entities[hid]
+            if he and he.template_name == "hero_durax" then
+                e._mp_owner = pid
+                break
+            end
+        end
+        return
+    end
     if not self.hero_ids[1] then
         self.hero_ids[1] = e.id
         e._mp_owner = 1
@@ -540,32 +593,166 @@ end
 
 function coop:can_control_hero(pid, hero_entity)
     if not self.active or not hero_entity then return true end
+    if hero_entity._mp_owner then
+        return hero_entity._mp_owner == pid
+    end
+    if hero_entity.clone or hero_entity.template_name == "hero_durax_clone" then
+        local st = game and game.store
+        for p = 1, 2 do
+            local hid = self.hero_ids[p]
+            local he = hid and st and st.entities and st.entities[hid]
+            if he and he.template_name == "hero_durax" then
+                return p == pid
+            end
+        end
+    end
     local my_hero_id = self.hero_ids[pid]
     if not my_hero_id then return true end
     return hero_entity.id == my_hero_id
 end
 
+-- Mirrors FL 8.2.0 game_gui.lua:hero_ultimate_assignments() & power_selection.get() so every
+-- power slot (1, 2, 3, "a", "s") accurately identifies its true kind and hero owner across all 105 heroes!
+function coop:get_power_slot_info(power_idx)
+    local snap = self.slot_snapshot
+    local ok_ps, psel = pcall(require, "power_selection")
+    local ok_md, map_data = pcall(require, "data.map_data")
+    local st = game and game.store
+
+    local function hero_rank_has_ult(rank)
+        local he = nil
+        if st then
+            if rank == 1 then
+                he = st.main1_hero or (self.hero_ids[1] and st.entities and st.entities[self.hero_ids[1]])
+            elseif rank == 2 then
+                he = st.main_hero or (self.hero_ids[2] and st.entities and st.entities[self.hero_ids[2]])
+            end
+        end
+        local tpl = nil
+        if he and he.template_name then
+            tpl = E:get_template(he.template_name)
+        elseif ok_md and map_data and map_data.hero_data and snap and snap.liuhui_hero and snap.liuhui_hero.herolist then
+            local hidx = snap.liuhui_hero.herolist[rank]
+            local hd = hidx and map_data.hero_data[hidx]
+            if hd and hd.name then
+                tpl = E:get_template(hd.name)
+            end
+        end
+        local skills = (he and he.hero and he.hero.skills) or (tpl and tpl.hero and tpl.hero.skills)
+        local ult = skills and skills.ultimate
+        return ult ~= nil and ult.controller_name ~= nil
+    end
+
+    local function get_opt(slot_num)
+        if ok_ps and psel and psel.get and snap then
+            local ok_g, opt = pcall(psel.get, snap, slot_num)
+            if ok_g and type(opt) == "table" then return opt end
+        end
+        if slot_num == 1 then return { kind = "default_cataclysm" }
+        elseif slot_num == 2 then return { kind = "reinforcement" }
+        else return { kind = "empty" } end
+    end
+
+    local available_ranks = {}
+    for rank = 1, 2 do
+        if hero_rank_has_ult(rank) then
+            available_ranks[#available_ranks + 1] = rank
+        end
+    end
+
+    local base_slots = {}
+    local assigned = {}
+    local next_rank = 1
+    for s = 1, 3 do
+        local opt = get_opt(s)
+        local rank = available_ranks[next_rank]
+        if opt.kind == "empty" and rank then
+            base_slots[s] = rank
+            assigned[rank] = true
+            next_rank = next_rank + 1
+        end
+    end
+
+    local extra_slots = {}
+    local extra_names = { "a", "s" }
+    local extra_i = 1
+    for i = 1, #available_ranks do
+        local rank = available_ranks[i]
+        if not assigned[rank] then
+            local sname = extra_names[extra_i]
+            if sname then
+                extra_slots[sname] = rank
+                extra_i = extra_i + 1
+            end
+        end
+    end
+
+    if type(power_idx) == "number" then
+        if base_slots[power_idx] then
+            return { kind = "hero_ult", owner = base_slots[power_idx], opt = nil }
+        end
+        local opt = get_opt(power_idx)
+        if opt.kind == "reinforcement" then
+            return { kind = "reinforcement", owner = nil, opt = opt }
+        elseif opt.kind == "empty" then
+            return { kind = "empty", owner = nil, opt = opt }
+        else
+            return { kind = "shared_spell", owner = nil, opt = opt }
+        end
+    elseif power_idx == "a" or power_idx == "s" then
+        if extra_slots[power_idx] then
+            return { kind = "hero_ult", owner = extra_slots[power_idx], opt = nil }
+        end
+        return { kind = "empty", owner = nil, opt = nil }
+    end
+    return { kind = "shared_spell", owner = nil, opt = nil }
+end
+
 function coop:can_use_power(pid, power_idx)
     if not self.active then return true end
-    if power_idx == 1 or power_idx == "a" then
-        return pid == 1
-    elseif power_idx == 3 or power_idx == "s" then
-        return pid == 2
-    elseif power_idx == 2 then
-        -- Independent reinforcements: check deterministic tick cooldown
-        local cur_tick = (game and game.store and game.store.tick) or 0
-        return cur_tick >= (self.reinf_ready_tick[pid] or 0)
+    local cur_tick = (game and game.store and game.store.tick) or 0
+    local info = self:get_power_slot_info(power_idx)
+    if info.kind == "hero_ult" then
+        if pid ~= info.owner then
+            return false, info.owner, "hero_ult"
+        end
+        local ready = self.hero_ult_ready_tick[power_idx] or 0
+        if cur_tick < ready then
+            return false, info.owner, "cooldown"
+        end
+        return true, info.owner, "hero_ult"
+    elseif info.kind == "reinforcement" then
+        -- Independent reinforcements: per-player deterministic tick cooldown
+        if cur_tick < (self.reinf_ready_tick[pid] or 0) then
+            return false, pid, "cooldown"
+        end
+        return true, pid, "reinforcement"
+    elseif info.kind == "shared_spell" then
+        -- Shared battlefield spells (Thunderbolt / Rain of Fire / KR6 powers): both players can cast when off cooldown!
+        local ready = self.shared_power_ready_tick[power_idx] or 0
+        if cur_tick < ready then
+            return false, nil, "cooldown"
+        end
+        return true, nil, "shared_spell"
     end
-    return true
+    return true, nil, info.kind
 end
 
 function coop:on_power_fired(pid, power_idx, btn)
     if not self.active then return end
-    if power_idx == 2 then
-        local cd_sec = (btn and btn.cooldown_time) or 15
-        local cd_ticks = math.floor(cd_sec / (TICK_LENGTH or (1 / 60)) + 0.5)
-        local cur_tick = (game and game.store and game.store.tick) or 0
+    local info = self:get_power_slot_info(power_idx)
+    local cd_sec = (btn and tonumber(btn.cooldown_time)) or 15
+    local cd_ticks = math.max(1, math.floor(cd_sec / (TICK_LENGTH or (1 / 60)) + 0.5))
+    local cur_tick = (game and game.store and game.store.tick) or 0
+    if info.kind == "reinforcement" then
         self.reinf_ready_tick[pid] = cur_tick + cd_ticks
+    elseif info.kind == "hero_ult" then
+        self.hero_ult_ready_tick[power_idx] = cur_tick + cd_ticks
+    elseif info.kind == "shared_spell" then
+        self.shared_power_ready_tick[power_idx] = cur_tick + cd_ticks
+        if info.opt and info.opt.kind == "mermaid_gift" then
+            self.hero_ult_ready_tick = {}
+        end
     end
 end
 

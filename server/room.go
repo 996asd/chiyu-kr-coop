@@ -286,6 +286,8 @@ func (h *Hub) HandleMessage(c *Client, msg *IncomingMsg) {
 		h.onReconnectDoneLocked(c, msg)
 	case "VOICE":
 		h.onVoiceLocked(c, msg)
+	case "DESYNC_DIAG":
+		h.onDesyncDiagLocked(c, msg)
 	default:
 		c.Send(map[string]any{"t": "ERROR", "msg": "Unknown message type: " + msg.Type})
 	}
@@ -311,6 +313,28 @@ func (h *Hub) onVoiceLocked(c *Client, msg *IncomingMsg) {
 		"pid": c.pid,
 		"d":   msg.VoiceData,
 		"l":   msg.VoiceLevel,
+	})
+}
+
+func (h *Hub) onDesyncDiagLocked(c *Client, msg *IncomingMsg) {
+	if c.roomCode == "" || c.pid < 1 || c.pid > 2 {
+		return
+	}
+	r, ok := h.rooms[c.roomCode]
+	if !ok {
+		return
+	}
+	other := r.Seats[3-c.pid]
+	if other == nil || !other.Connected || other.Client == nil {
+		return
+	}
+	other.Client.Send(map[string]any{
+		"t":    "DESYNC_DIAG",
+		"pid":  c.pid,
+		"tick": msg.Tick,
+		"hash": msg.Hash,
+		"snap": msg.Snap,
+		"ents": msg.Ents,
 	})
 }
 
@@ -816,6 +840,9 @@ func (h *Hub) onTurnLocked(c *Client, msg *IncomingMsg) {
 		if msg.HT != nil && msg.HH != "" {
 			relay["ht"] = *msg.HT
 			relay["hh"] = msg.HH
+			if msg.HS != "" {
+				relay["hs"] = msg.HS
+			}
 		}
 		other.Client.Send(relay)
 	}
