@@ -160,9 +160,21 @@ function coop:build_host_slot_snapshot(heroes, towers)
     snap.liuhui.hero_auto_rally = false
     snap.liuhui.g3_hprate = false
     snap.liuhui.balance = false
+    snap.liuhui.g4range_balance = true
     snap.liuhui.enemy_count = 1
     snap.liuhui.g5_hero_dark_count = 2
     snap.liuhui.cp_mode = false
+    snap.xingyu = snap.xingyu or { balance = 0 }
+    if snap.xingyu.balance == nil then snap.xingyu.balance = 0 end
+
+    local ok_gu, gen_up = pcall(require, "generation_upgrades")
+    if ok_gu and gen_up and gen_up.normalize then
+        pcall(gen_up.normalize, snap)
+    end
+    local ok_h6, h6 = pcall(require, "hero_upgrades_6")
+    if ok_h6 and h6 and h6.normalize then
+        pcall(h6.normalize, snap)
+    end
 
     -- Force dual-hero mode with the room's exact 2 selected heroes!
     local h1 = (heroes and heroes[1]) or catalog.DEFAULT_HERO_1 or 53
@@ -172,16 +184,30 @@ function coop:build_host_slot_snapshot(heroes, towers)
         herolist = { [1] = h1, [2] = h2 },
         rallylist = { h1, h2, h1, h2 },
     }
-    -- Ensure both chosen heroes have valid status entries
+    -- Ensure both chosen heroes have valid status entries without injecting hr_cost-less skills on KR6/KR1 heroes
+    -- (prevents screen_map.lua:705 hr_cost nil crash when returning to world map after playing a KR6 hero like Bolin!)
     local ok_md, map_data = pcall(require, "data.map_data")
     if ok_md and map_data and map_data.hero_data then
         for _, hidx in ipairs({ h1, h2 }) do
             local hd = map_data.hero_data[hidx]
-            if hd and hd.name and not snap.heroes.status[hd.name] then
-                snap.heroes.status[hd.name] = {
-                    xp = 0,
-                    skills = { ultimate = 1 },
-                }
+            if hd and hd.name then
+                local is_g6 = (ok_h6 and h6 and h6.is_hero and h6.is_hero(hd.name)) == true
+                local existing = snap.heroes.status[hd.name]
+                if not existing then
+                    local default_skills = {}
+                    if not is_g6 then
+                        local tpl = E and E.entities and E.entities[hd.name]
+                        if tpl and tpl.hero and tpl.hero.skills and tpl.hero.skills.ultimate and tpl.hero.skills.ultimate.hr_cost then
+                            default_skills = { ultimate = 1 }
+                        end
+                    end
+                    snap.heroes.status[hd.name] = {
+                        xp = 0,
+                        skills = default_skills,
+                    }
+                elseif is_g6 then
+                    existing.skills = {}
+                end
             end
         end
     end
@@ -296,6 +322,14 @@ function coop:leave_match()
     end
     if game and game.store then
         game.store.paused = false
+    end
+    -- Restore real local slot onto screen_map.user_data so temporary co-op snapshot never leaks to single-player map
+    local ok_st, storage = pcall(require, "storage")
+    if ok_st and storage and storage.load_slot then
+        local ok_ld, local_slot = pcall(storage.load_slot, storage, nil, true)
+        if ok_ld and type(local_slot) == "table" and screen_map then
+            screen_map.user_data = local_slot
+        end
     end
 end
 

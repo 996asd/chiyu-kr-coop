@@ -35,8 +35,10 @@ local voice = {
 
     -- User settings (persisted in kr_mp_prefs.json)
     mode = "ptt",          -- "ptt" (按V说话 / 安卓按住讲) | "vad" (自由麦) | "mute" (闭麦)
+    mic_gain = 1.0,        -- 0.4 .. 2.0 (40% .. 200% local mic volume gain)
     peer_muted = false,    -- mute incoming roommate audio
-    peer_volume = 1.0,     -- 0.0 .. 1.6
+    peer_volume = 1.0,     -- 0.0 .. 1.8 (0% .. 180% peer playback volume)
+    indicator_style = "compact", -- "compact" (极简微标) | "off" (关闭) | "card" (醒目大卡)
     vad_threshold = 0.018, -- normalized RMS threshold for free-mic VAD
     self_test = false,     -- local loopback test (hear yourself in lobby)
 
@@ -228,17 +230,19 @@ local enc_hp_x = 0.0
 local enc_hp_y = 0.0
 local enc_step_index = 0
 
-local function encode_adpcm_and_rms(pcm_ptr, n_samples)
+local function encode_adpcm_and_rms(pcm_ptr, n_samples, gain)
     local sum_sq = 0.0
     local filtered = ffi.new("int16_t[?]", n_samples)
     local prev_x, prev_y = enc_hp_x, enc_hp_y
+    local g = gain or 1.0
     for i = 0, n_samples - 1 do
         local x = tonumber(pcm_ptr[i])
         local y = x - prev_x + 0.992 * prev_y
         prev_x = x
         prev_y = y
-        if y > 32767 then y = 32767 elseif y < -32768 then y = -32768 end
-        local yi = math.floor(y + 0.5)
+        local yg = y * g
+        if yg > 32767 then yg = 32767 elseif yg < -32768 then yg = -32768 end
+        local yi = math.floor(yg + 0.5)
         filtered[i] = yi
         local nf = yi / 32768.0
         sum_sq = sum_sq + nf * nf
@@ -480,6 +484,7 @@ local want_mic = false
 local want_spk = false
 local mode = "ptt"
 local ptt_held = false
+local mic_gain = 1.0
 local peer_muted = false
 local peer_volume = 1.0
 local vad_threshold = 0.018
@@ -505,6 +510,7 @@ while running do
             want_spk = (cmd.want_spk == true)
             mode = cmd.mode or mode
             ptt_held = (cmd.ptt_held == true)
+            mic_gain = tonumber(cmd.mic_gain) or 1.0
             peer_muted = (cmd.peer_muted == true)
             peer_volume = tonumber(cmd.peer_volume) or 1.0
             vad_threshold = tonumber(cmd.vad_threshold) or 0.018
@@ -542,7 +548,7 @@ while running do
             if bit.band(in_hdrs[i].dwFlags, WHDR_DONE) ~= 0 then
                 local bytes = tonumber(in_hdrs[i].dwBytesRecorded) or 0
                 if bytes >= FRAME_BYTES then
-                    local adpcm, rms = encode_adpcm_and_rms(in_bufs[i], FRAME_SAMPLES)
+                    local adpcm, rms = encode_adpcm_and_rms(in_bufs[i], FRAME_SAMPLES, mic_gain)
                     local send_tx = false
                     if mode == "vad" then
                         if rms >= vad_threshold then
@@ -652,14 +658,16 @@ local LA_INDEX_TABLE = { -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8 
 local function la_encode_frame(self, pcm_arr)
     local sum_sq = 0.0
     local prev_x, prev_y = self._rec_hp_x or 0.0, self._rec_hp_y or 0.0
+    local g = self.mic_gain or 1.0
     local filt = {}
     for i = 1, LA_FRAME_SAMPLES do
         local x = pcm_arr[i] or 0
         local y = x - prev_x + 0.992 * prev_y
         prev_x = x
         prev_y = y
-        if y > 32767 then y = 32767 elseif y < -32768 then y = -32768 end
-        local yi = math.floor(y + 0.5)
+        local yg = y * g
+        if yg > 32767 then yg = 32767 elseif yg < -32768 then yg = -32768 end
+        local yi = math.floor(yg + 0.5)
         filt[i] = yi
         local nf = yi / 32768.0
         sum_sq = sum_sq + nf * nf
@@ -985,9 +993,68 @@ function voice:toggle_peer_mute()
     if self.peer_muted then
         self.peer_talking = false
         self.peer_level = 0
+    elseif (self.peer_volume or 0) <= 0.01 then
+        self.peer_volume = 1.0
     end
     self._last_cfg_sig = nil
     return self.peer_muted
+end
+
+function voice:set_mic_gain(val)
+    local v = tonumber(val) or 1.0
+    if v < 0.4 then v = 0.4 elseif v > 2.0 then v = 2.0 end
+    self.mic_gain = math.floor(v * 20 + 0.5) / 20
+    self._last_cfg_sig = nil
+    return self.mic_gain
+end
+
+function voice:step_mic_gain(delta)
+    return self:set_mic_gain((self.mic_gain or 1.0) + (tonumber(delta) or 0))
+end
+
+function voice:set_peer_volume(val)
+    local v = tonumber(val) or 1.0
+    if v < 0.0 then v = 0.0 elseif v > 1.8 then v = 1.8 end
+    self.peer_volume = math.floor(v * 20 + 0.5) / 20
+    if self.peer_volume <= 0.01 then
+        self.peer_volume = 0.0
+        self.peer_muted = true
+        self.peer_talking = false
+        self.peer_level = 0
+    else
+        self.peer_muted = false
+    end
+    self._last_cfg_sig = nil
+    return self.peer_volume
+end
+
+function voice:step_peer_volume(delta)
+    local base = self.peer_muted and 0.0 or (self.peer_volume or 1.0)
+    return self:set_peer_volume(base + (tonumber(delta) or 0))
+end
+
+function voice:set_indicator_style(style)
+    if style ~= "compact" and style ~= "off" and style ~= "card" then
+        style = "compact"
+    end
+    self.indicator_style = style
+    return self.indicator_style
+end
+
+function voice:cycle_indicator_style()
+    if self.indicator_style == "compact" then
+        return self:set_indicator_style("off")
+    elseif self.indicator_style == "off" then
+        return self:set_indicator_style("card")
+    else
+        return self:set_indicator_style("compact")
+    end
+end
+
+function voice:get_indicator_style_label()
+    if self.indicator_style == "off" then return "关闭" end
+    if self.indicator_style == "card" then return "醒目" end
+    return "极简"
 end
 
 function voice:toggle_self_test()
@@ -1215,9 +1282,9 @@ function voice:update(dt, lobby, coop)
         return
     end
 
-    local sig = string.format("%s|%s|%s|%s|%s|%.2f|%s",
+    local sig = string.format("%s|%s|%s|%s|%.2f|%s|%.2f|%s",
         tostring(want_mic), tostring(want_spk), tostring(self.mode),
-        tostring(self.ptt_held), tostring(self.peer_muted), self.peer_volume, tostring(self.self_test))
+        tostring(self.ptt_held), self.mic_gain or 1.0, tostring(self.peer_muted), self.peer_volume or 1.0, tostring(self.self_test))
     if sig ~= self._last_cfg_sig then
         self._last_cfg_sig = sig
         self.ch_cmd:push({
@@ -1226,8 +1293,9 @@ function voice:update(dt, lobby, coop)
             want_spk = want_spk,
             mode = self.mode,
             ptt_held = self.ptt_held,
+            mic_gain = self.mic_gain or 1.0,
             peer_muted = self.peer_muted,
-            peer_volume = self.peer_volume,
+            peer_volume = self.peer_volume or 1.0,
             vad_threshold = self.vad_threshold,
             self_test = self.self_test,
         })

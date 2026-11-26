@@ -153,8 +153,17 @@ function lobby:load_prefs()
         if type(obj.voice_mode) == "string" then
             self.voice:set_mode(obj.voice_mode)
         end
+        if tonumber(obj.voice_mic_gain) then
+            self.voice:set_mic_gain(tonumber(obj.voice_mic_gain))
+        end
+        if tonumber(obj.voice_peer_volume) then
+            self.voice:set_peer_volume(tonumber(obj.voice_peer_volume))
+        end
         if obj.voice_peer_muted ~= nil then
             self.voice.peer_muted = (obj.voice_peer_muted == true)
+        end
+        if type(obj.voice_indicator_style) == "string" then
+            self.voice:set_indicator_style(obj.voice_indicator_style)
         end
     end
     if obj.seen_guide ~= nil then
@@ -170,7 +179,10 @@ function lobby:save_prefs()
         input_delay_turns = normalize_delay_turns(self.room and self.room.input_delay_turns),
         show_tower_marks = (self.coop == nil) or (self.coop.show_tower_marks ~= false),
         voice_mode = self.voice and self.voice.mode or "ptt",
+        voice_mic_gain = self.voice and self.voice.mic_gain or 1.0,
+        voice_peer_volume = self.voice and self.voice.peer_volume or 1.0,
         voice_peer_muted = self.voice and (self.voice.peer_muted == true) or false,
+        voice_indicator_style = self.voice and self.voice.indicator_style or "compact",
         seen_guide = (self.seen_guide == true),
     }
     local f = io.open(get_prefs_path(), "w")
@@ -1550,6 +1562,37 @@ function lobby:handle_button(btn)
             self:save_prefs()
             self.overlay:show_toast(self.voice:get_mode_toast(), 2.4)
         end
+    elseif id == "open_voice_mixer" and self.voice then
+        if not self.voice.supported then
+            self.overlay:show_toast("当前环境未检测到可用语音音频接口。", 2.2)
+        else
+            if self.overlay then self.overlay:clear_toast() end
+            self.sub_modal = "voice"
+        end
+    elseif id == "voice_set_mode" and self.voice and btn.mode then
+        self.voice:set_mode(btn.mode)
+        self:save_prefs()
+    elseif id == "voice_mic_step" and self.voice and btn.delta then
+        self.voice:step_mic_gain(btn.delta)
+        self:save_prefs()
+    elseif id == "voice_mic_set" and self.voice and tonumber(btn.val) then
+        self.voice:set_mic_gain(tonumber(btn.val))
+        self:save_prefs()
+    elseif id == "voice_peer_step" and self.voice and btn.delta then
+        self.voice:step_peer_volume(btn.delta)
+        self:save_prefs()
+    elseif id == "voice_peer_set" and self.voice and tonumber(btn.val) then
+        self.voice:set_peer_volume(tonumber(btn.val))
+        self:save_prefs()
+    elseif id == "voice_peer_mute" and self.voice then
+        self.voice:toggle_peer_mute()
+        self:save_prefs()
+    elseif id == "voice_self_test" and self.voice then
+        local testing = self.voice:toggle_self_test()
+        self.overlay:show_toast(testing and "试麦已开启：现在说话可实时听见自己回放（请戴耳机，再点关闭）" or "已关闭本地试麦回放。", 2.4)
+    elseif id == "voice_style_set" and self.voice and btn.style_id then
+        self.voice:set_indicator_style(btn.style_id)
+        self:save_prefs()
     elseif id == "voice_aux" and self.voice then
         if not self.voice.supported then
             self.overlay:show_toast("当前环境未检测到可用语音音频接口。", 2.2)
@@ -1625,6 +1668,10 @@ function lobby:mousepressed(x, y, button)
         for _, b in ipairs(self.buttons) do
             if lx >= b.x and lx <= b.x + b.w and ly >= b.y and ly <= b.y + b.h then
                 self._consumed_down = true
+                if b.slider_min ~= nil and b.slider_max ~= nil then
+                    local frac = math.max(0, math.min(1, (lx - b.x) / math.max(1, b.w)))
+                    b.val = b.slider_min + frac * (b.slider_max - b.slider_min)
+                end
                 self:handle_button(b)
                 return true
             end
@@ -1746,6 +1793,8 @@ function lobby:draw()
         banner_title = "英雄殿 · 选 2P 队友"
     elseif self.sub_modal == "towers" then
         banner_title = "皇家军械库 · 59选12"
+    elseif self.sub_modal == "voice" then
+        banner_title = "语音调音 · 麦克风设置"
     end
 
     -- Draw Hand-Hewn Dark Oak Shell + Aged Parchment + 4 Iron Corners + Royal Crimson Ribbon
@@ -2383,6 +2432,119 @@ function lobby:draw()
             })
         end
 
+    elseif self.sub_modal == "voice" and self.voice then
+        -- === 语音调音与局内说话微标设置 ===
+        local y = py + 44
+        ui.text("在这里可以随时调整你的麦克风音量、队友声音大小，以及战斗中说话提示标的显示样式（对局顶部点「调音」也能随时改）。",
+            cx, y + 4, T.ink_sub, font_map.tiny, cw - 98, "left")
+        add_btn("modal_back", "返回战桌", cx + cw - 88, y, 88, 28, "battle", { small = true })
+        y = y + 38
+
+        local v = self.voice
+        local is_mob = proto.is_android()
+
+        -- Card 1: Local Mic Gain + Live Input Meter + Self Test
+        ui.draw_parchment_card(cx, y, cw, 118, { border = T.p1_border, border_w = 1.8, radius = 9 })
+        ui.draw_pill(cx + 14, y + 12, 118, 21, "我的麦克风收音", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, font_map.tiny_bold)
+        local loc_lvl = math.max(0, math.min(1, tonumber(v.local_level) or 0))
+        ui.text("实时音量：", cx + 146, y + 16, T.ink_sub, font_map.tiny)
+        local mtr_x, mtr_y, mtr_w, mtr_h = cx + 206, y + 17, 376, 11
+        G.setColor(26, 15, 7, 225)
+        G.rectangle("fill", mtr_x, mtr_y, mtr_w, mtr_h, 5, 5)
+        if loc_lvl > 0.02 then
+            ui.draw_vgrad_rect(mtr_x + 1, mtr_y + 1, math.max(3, math.floor((mtr_w - 2) * loc_lvl)), mtr_h - 2,
+                T.emerald_top, T.emerald_bot, 4)
+        end
+        G.setColor(148, 108, 52, 210)
+        G.setLineWidth(1.1)
+        G.rectangle("line", mtr_x, mtr_y, mtr_w, mtr_h, 5, 5)
+        add_btn("voice_self_test", v.self_test and "关闭试麦监听" or "开启本机试麦", cx + cw - 124, y + 10, 110, 24,
+            v.self_test and "battle" or "wood", { tiny = true })
+
+        local mic_g = tonumber(v.mic_gain) or 1.0
+        ui.text("麦克风增益：", cx + 14, y + 48, T.ink_text, font_map.small_bold)
+        add_btn("voice_mic_step", "-20%", cx + 96, y + 43, 48, 26, "wood", { tiny = true, delta = -0.2 })
+        local bar1_x, bar1_y, bar1_w, bar1_h = cx + 150, y + 45, 428, 22
+        local f1 = math.max(0, math.min(1, (mic_g - 0.4) / 1.6))
+        G.setColor(26, 15, 7, 232)
+        G.rectangle("fill", bar1_x, bar1_y, bar1_w, bar1_h, 6, 6)
+        if f1 > 0.01 then
+            ui.draw_vgrad_rect(bar1_x + 1, bar1_y + 1, math.max(3, math.floor((bar1_w - 2) * f1)), bar1_h - 2,
+                T.emerald_top, T.emerald_bot, 5)
+        end
+        G.setColor(156, 114, 52, 220)
+        G.setLineWidth(1.2)
+        G.rectangle("line", bar1_x, bar1_y, bar1_w, bar1_h, 6, 6)
+        ui.print_shadow(string.format("%d%%（点击进度条可直调）", math.floor(mic_g * 100 + 0.5)),
+            bar1_x, bar1_y + (bar1_h - ui.font_h(font_map.tiny_bold)) * 0.5, { 255, 250, 234, 255 }, bar1_w, "center", nil, font_map.tiny_bold)
+        add_btn("voice_mic_set", "", bar1_x, y + 43, bar1_w, 26, "slider_hit", { slider_min = 0.4, slider_max = 2.0, no_draw = true })
+        add_btn("voice_mic_step", "+20%", bar1_x + bar1_w + 6, y + 43, 48, 26, "wood", { tiny = true, delta = 0.2 })
+        add_btn("voice_mic_set", "默认100%", bar1_x + bar1_w + 60, y + 43, 78, 26, "parchment", { tiny = true, val = 1.0 })
+
+        ui.text("收音模式：", cx + 14, y + 83, T.ink_text, font_map.small_bold)
+        local modes = {
+            { id = "ptt",  lbl = is_mob and "按住说话 (防杂音)" or "按键说话 (按住 V 键)" },
+            { id = "vad",  lbl = "自由麦 (说话自动收音)" },
+            { id = "mute", lbl = "闭麦 (不发声 · 可听队友)" },
+        }
+        local mw_m = 201
+        for idx_m, mm in ipairs(modes) do
+            local act = (v.mode == mm.id)
+            local st_m = act and (mm.id == "mute" and "crimson" or "battle") or "parchment"
+            add_btn("voice_set_mode", mm.lbl, cx + 96 + (idx_m - 1) * (mw_m + 8), y + 78, mw_m, 27, st_m, {
+                tiny = true, mode = mm.id,
+            })
+        end
+
+        y = y + 128
+
+        -- Card 2: Peer Playback Volume + Mute
+        ui.draw_parchment_card(cx, y, cw, 82, { border = T.p2_border, border_w = 1.8, radius = 9 })
+        ui.draw_pill(cx + 14, y + 12, 118, 21, "队友语音音量", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, font_map.tiny_bold)
+        ui.text("觉得队友声音太小或太响，可直接点击下方音量条调节（最高可放大至 180%）。",
+            cx + 144, y + 16, T.ink_sub, font_map.tiny)
+
+        local peer_v = v.peer_muted and 0 or (tonumber(v.peer_volume) or 1.0)
+        ui.text("队友音量：", cx + 14, y + 47, T.ink_text, font_map.small_bold)
+        add_btn("voice_peer_step", "-20%", cx + 96, y + 42, 48, 26, "wood", { tiny = true, delta = -0.2 })
+        local bar2_x, bar2_y, bar2_w, bar2_h = cx + 150, y + 44, 428, 22
+        local f2 = math.max(0, math.min(1, peer_v / 1.8))
+        G.setColor(26, 15, 7, 232)
+        G.rectangle("fill", bar2_x, bar2_y, bar2_w, bar2_h, 6, 6)
+        if f2 > 0.01 then
+            ui.draw_vgrad_rect(bar2_x + 1, bar2_y + 1, math.max(3, math.floor((bar2_w - 2) * f2)), bar2_h - 2,
+                { 84, 186, 255, 255 }, { 34, 112, 188, 255 }, 5)
+        end
+        G.setColor(156, 114, 52, 220)
+        G.setLineWidth(1.2)
+        G.rectangle("line", bar2_x, bar2_y, bar2_w, bar2_h, 6, 6)
+        ui.print_shadow(v.peer_muted and "已静音（点击恢复）" or string.format("%d%%", math.floor(peer_v * 100 + 0.5)),
+            bar2_x, bar2_y + (bar2_h - ui.font_h(font_map.tiny_bold)) * 0.5, { 255, 250, 234, 255 }, bar2_w, "center", nil, font_map.tiny_bold)
+        add_btn("voice_peer_set", "", bar2_x, y + 42, bar2_w, 26, "slider_hit", { slider_min = 0.0, slider_max = 1.8, no_draw = true })
+        add_btn("voice_peer_step", "+20%", bar2_x + bar2_w + 6, y + 42, 48, 26, "wood", { tiny = true, delta = 0.2 })
+        add_btn("voice_peer_mute", v.peer_muted and "取消静音" or "静音队友", bar2_x + bar2_w + 60, y + 42, 78, 26,
+            v.peer_muted and "crimson" or "parchment", { tiny = true })
+
+        y = y + 92
+
+        -- Card 3: In-Battle Speaking Indicator Style
+        ui.draw_parchment_card(cx, y, cw, 92, { border = { 138, 94, 40, 245 }, border_w = 1.8, radius = 9 })
+        ui.draw_pill(cx + 14, y + 12, 152, 21, "战斗中说话图标显示", T.wood_mid, T.ink_dark, T.gold_bright, font_map.tiny_bold)
+        ui.text("默认使用「极简微标」，仅在顶栏下方显示极小半透明音浪小标，绝不遮挡战场！",
+            cx + 178, y + 16, T.ink_sub, font_map.tiny)
+
+        local styles = {
+            { id = "compact", lbl = "极简微标 (默认 · 轻巧不遮屏)" },
+            { id = "off",     lbl = "完全关闭 (最纯净 · 仅听声音)" },
+            { id = "card",    lbl = "醒目大卡 (带头像 · 适合直播)" },
+        }
+        local sw_s = math.floor((cw - 28 - 16) / 3)
+        for idx_s, st_it in ipairs(styles) do
+            local act = ((v.indicator_style or "compact") == st_it.id)
+            add_btn("voice_style_set", st_it.lbl, cx + 14 + (idx_s - 1) * (sw_s + 8), y + 46, sw_s, 32,
+                act and "azure" or "parchment", { small = true, style_id = st_it.id })
+        end
+
     else
         -- === 战备沙盘（V2 铁皮羊皮纸皇家战桌主界面 · 1:1 高清自适应！） ===
         ensure_room_defaults(self.room)
@@ -2401,15 +2563,15 @@ function lobby:draw()
         if self.transport:is_online() then
             net_info = string.format("公网 #%s · %dms", tostring(self.online_room_code or "----"), rtt)
         elseif is_host then
-            net_info = string.format("TCP:%d (樱花端口) · %dms", self.transport:get_port(), rtt)
+            net_info = string.format("TCP:%d · %dms", self.transport:get_port(), rtt)
         else
-            net_info = string.format("已直连远程主机 · %dms", rtt)
+            net_info = string.format("直连主机 · %dms", rtt)
         end
-        local info_w = is_host and 204 or 164
+        local info_w = is_host and 166 or 154
         ui.draw_pill(cx + 136, y + 2, info_w, 21, net_info,
             { 74, 44, 18, 28 }, { 154, 114, 58, 160 }, T.ink_sub, font_map.tiny)
 
-        -- Built-in Livestream Voice Controls cleanly nested in the Row 1 center gap
+        -- Built-in Livestream Voice Controls + Mixer cleanly nested in the Row 1 center gap
         if self.voice then
             local v_ok = self.voice.supported
             local v_mode = self.voice.mode
@@ -2418,22 +2580,26 @@ function lobby:draw()
             local v_style = (v_ok and v_talk) and "battle" or ((v_ok and v_mode ~= "mute") and "wood" or "parchment")
             local v_fg = (v_mode == "mute" or not v_ok) and { 158, 42, 42, 255 }
                 or ((v_mode == "vad") and { 196, 255, 206, 255 } or { 255, 240, 198, 255 })
-            add_btn("voice_cycle", v_lbl, cx + 346, y, 106, 24, v_style, {
+            local vx = cx + 136 + info_w + 6
+            add_btn("voice_cycle", v_lbl, vx, y, 98, 24, v_style, {
                 tiny = true, fg = v_talk and { 255, 255, 242, 255 } or v_fg,
+            })
+            add_btn("open_voice_mixer", "调音", vx + 102, y, 42, 24, "azure", {
+                tiny = true,
             })
             local aux_lbl, aux_style, aux_fg
             if self.peer_connected then
                 local pm = self.voice.peer_muted
-                aux_lbl = pm and "听筒:关" or "听筒:开"
+                aux_lbl = pm and "已静" or "听筒"
                 aux_style = pm and "crimson" or "parchment"
                 aux_fg = pm and { 255, 236, 232, 255 } or { 42, 118, 56, 255 }
             else
                 local st = self.voice.self_test
-                aux_lbl = st and "试麦中" or "试麦"
+                aux_lbl = st and "试麦√" or "试麦"
                 aux_style = st and "battle" or "parchment"
                 aux_fg = st and { 255, 255, 238, 255 } or T.ink_text
             end
-            add_btn("voice_aux", aux_lbl, cx + 456, y, 52, 24, aux_style, {
+            add_btn("voice_aux", aux_lbl, vx + 148, y, 46, 24, aux_style, {
                 tiny = true, fg = aux_fg,
             })
         end
@@ -2688,8 +2854,10 @@ function lobby:draw()
     self.buttons = btns
     local allow_hover = not proto.is_android()
     for _, b in ipairs(btns) do
-        local hover = allow_hover and (mx >= b.x and mx <= b.x + b.w and my >= b.y and my <= b.y + b.h)
-        ui.draw_button(b, hover, font_map)
+        if not b.no_draw then
+            local hover = allow_hover and (mx >= b.x and mx <= b.x + b.w and my >= b.y and my <= b.y + b.h)
+            ui.draw_button(b, hover, font_map)
+        end
     end
 
     ui.end_transform()

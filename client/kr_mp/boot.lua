@@ -268,7 +268,12 @@ function boot:on_update(dt)
         mp_voice_mode = self.voice and self.voice.mode or "mute",
         mp_voice_label = self.voice and self.voice:get_mode_short() or "麦:无",
         mp_voice_ptt = self.voice and self.voice.ptt_held or false,
+        mp_voice_mic_gain = self.voice and self.voice.mic_gain or 1.0,
+        mp_voice_peer_vol = self.voice and (self.voice.peer_muted and 0 or (self.voice.peer_volume or 1.0)) or 1.0,
         mp_voice_peer_muted = self.voice and self.voice.peer_muted or false,
+        mp_voice_style = self.voice and self.voice.indicator_style or "compact",
+        mp_voice_style_label = self.voice and self.voice:get_indicator_style_label() or "极简",
+        mp_voice_local_lvl = self.voice and self.voice.local_level or 0,
         mp_voice_p1_talk = v1_talk,
         mp_voice_p1_lvl = v1_lvl,
         mp_voice_p2_talk = v2_talk,
@@ -334,10 +339,11 @@ function boot:on_keypressed(key, isrepeat)
     return false
 end
 
-function boot:on_hud_action(action_id)
+function boot:on_hud_action(action_id, arg)
     self:log("HUD ACTION: %s", tostring(action_id))
     if action_id == "hide" then
         overlay.visible = not overlay.visible
+        if not overlay.visible then overlay.voice_panel_open = false end
     elseif action_id == "lobby" and self.lobby then
         self.lobby:toggle()
     elseif action_id == "mp_send_gold" and self.lockstep and self.lockstep:is_active() then
@@ -360,11 +366,41 @@ function boot:on_hud_action(action_id)
             if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
             overlay:show_toast(self.voice:get_mode_toast(), 2.4)
         end
+    elseif action_id == "mp_voice_set_mode" and self.voice and type(arg) == "string" then
+        if self.voice.supported then
+            self.voice:set_mode(arg)
+            if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+        end
+    elseif action_id == "mp_voice_mic_down" and self.voice then
+        self.voice:step_mic_gain(-0.2)
+        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+    elseif action_id == "mp_voice_mic_up" and self.voice then
+        self.voice:step_mic_gain(0.2)
+        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+    elseif action_id == "mp_voice_mic_set" and self.voice and tonumber(arg) then
+        self.voice:set_mic_gain(tonumber(arg))
+        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+    elseif action_id == "mp_voice_peer_down" and self.voice then
+        self.voice:step_peer_volume(-0.2)
+        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+    elseif action_id == "mp_voice_peer_up" and self.voice then
+        self.voice:step_peer_volume(0.2)
+        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+    elseif action_id == "mp_voice_peer_set" and self.voice and tonumber(arg) then
+        self.voice:set_peer_volume(tonumber(arg))
+        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+    elseif action_id == "mp_voice_peer_mute" and self.voice then
+        self.voice:toggle_peer_mute()
+        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+    elseif action_id == "mp_voice_style_set" and self.voice and type(arg) == "string" then
+        self.voice:set_indicator_style(arg)
+        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
     elseif action_id == "mp_voice_ptt_down" and self.voice then
         self.voice:set_touch_ptt(true)
     elseif action_id == "mp_voice_ptt_up" and self.voice then
         self.voice:set_touch_ptt(false)
     elseif action_id == "mp_leave" and self.lobby then
+        overlay.voice_panel_open = false
         self.lobby:leave_room()
     elseif action_id == "record" and self.replay then
         self.replay:start_record()
@@ -428,8 +464,8 @@ function boot:init(source)
     self:log("Base dir: %s | Save dir: %s", base,
         (love.filesystem and love.filesystem.getSaveDirectory and love.filesystem.getSaveDirectory()) or "?")
 
-    overlay:init(function(action_id)
-        self:on_hud_action(action_id)
+    overlay:init(function(action_id, arg)
+        self:on_hud_action(action_id, arg)
     end)
     self:check_luasocket()
     self:wrap_love_callbacks()

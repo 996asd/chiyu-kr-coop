@@ -276,8 +276,24 @@ function replay:start_record()
     game:restart()
 end
 
+local function ensure_parent_dir(file_path)
+    local dir = tostring(file_path or ""):match("^(.*)[/\\][^/\\]+$")
+    if not dir or #dir == 0 then return end
+    local ok_ffi, ffi = pcall(require, "ffi")
+    if ok_ffi and ffi and ffi.os == "Windows" then
+        pcall(function()
+            ffi.cdef[[ int CreateDirectoryA(const char* lpPathName, void* lpSecurityAttributes); ]]
+        end)
+        pcall(ffi.C.CreateDirectoryA, dir, nil)
+    elseif love and love.filesystem and love.filesystem.createDirectory then
+        local leaf = dir:match("([^/\\]+)$")
+        if leaf then pcall(love.filesystem.createDirectory, leaf) end
+    end
+end
+
 function replay:save_recording(final_tick)
     local paths = self:get_paths()
+    ensure_parent_dir(paths.rep_file)
     if self.meta then
         self.meta.max_tick = final_tick or (game and game.store and game.store.tick) or 0
     end
@@ -288,6 +304,12 @@ function replay:save_recording(final_tick)
         slot_snapshot = self.slot_snapshot,
     }
     local f, err = io.open(paths.rep_file, "w")
+    if not f then
+        local proto = require("kr_mp.proto")
+        local fallback = proto.path_join(proto.get_writable_dir(), "kr_mp_last.rep")
+        f, err = io.open(fallback, "w")
+        if f then paths.rep_file = fallback end
+    end
     if not f then
         self.boot:log("ERROR saving replay file %s: %s", paths.rep_file, tostring(err))
         self.overlay:show_toast("ERROR saving replay: " .. tostring(err), 4)

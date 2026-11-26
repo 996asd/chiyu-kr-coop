@@ -289,7 +289,17 @@ function lockstep:finish_catchup(tick)
 end
 
 function lockstep:queue_local_command(cmd)
-    if not self.active or (self.phase ~= "RUNNING" and self.phase ~= "PAUSED") then
+    if not self.active then
+        return false
+    end
+    if self.phase == "PAUSED" then
+        if cmd and cmd.op ~= "MAP_PING" then
+            if self.overlay then
+                self.overlay:show_toast("对局已暂停，请先点击顶部「继续」或按空格恢复后再操作！", 2.0)
+            end
+            return false
+        end
+    elseif self.phase ~= "RUNNING" then
         return false
     end
     self.local_seq = self.local_seq + 1
@@ -465,7 +475,7 @@ function lockstep:on_peer_disconnected(reason, can_reconnect, timeout_sec)
     self:close_hash_log()
     self:log("Peer disconnected during match: %s", tostring(reason))
     if self.overlay then
-        self.overlay:show_toast("Disconnected from match! (" .. tostring(reason) .. ")", 10)
+        self.overlay:show_toast("联机连接已断开（局域网/直连无法续局，如需断线重连请使用公网中继服模式）", 10)
     end
 end
 
@@ -583,7 +593,7 @@ function lockstep:verify_hash_pair(tick)
         self:log("!!! MP DESYNC DETECTED AT TICK %d !!! local=%s remote=%s", tick, loc.hash, rem)
         self:log("  LOCAL SNAP: %s", state_hash.format_line(loc))
         if self.overlay then
-            self.overlay:show_toast(string.format("MP DESYNC @ Tick %d! Local:%s Peer:%s", tick, loc.hash, rem), 20)
+            self.overlay:show_toast(string.format("画面同步异常（第 %d 帧，非掉线）· 已暂停保护，请双方点「退出」重开 (本地:%s 队友:%s)", tick, loc.hash, rem), 20)
         end
     end
 end

@@ -11,6 +11,8 @@ local LOCAL_UI_TEMPLATES = {
     entity_marker_controller = true,
     controller_path_direction = true,
     decal_path_hero_movement = true,
+    path_marching_ants_controller = true,
+    decal_path_marching_ant = true,
 }
 
 local function is_local_template(t)
@@ -558,6 +560,22 @@ function hooks:install_simulation_hooks()
             hooks.coop:on_before_sim_init(store)
         elseif hooks.replay then
             hooks.replay:on_before_sim_init(store)
+        end
+
+        -- Canonicalize simulation visible_coords to standard 16:9 during sync so different monitor/window
+        -- aspect ratios (16:9 vs 16:10 vs 3:2 vs 4:3) compute identical path_db start/end nodes & level bounds!
+        if hooks:is_sync_active() and store then
+            local ref_w = REF_W or 1024
+            local ref_h = REF_H or 768
+            local canon_w = ref_h * 16 / 9
+            local panext = store.level and store.level.pan_extension
+            local cur_vc = store.visible_coords
+            store.visible_coords = {
+                top = (cur_vc and cur_vc.top) or ((panext and panext.top or 0) + ref_h),
+                bottom = (cur_vc and cur_vc.bottom) or (panext and panext.bottom or 0),
+                left = (ref_w - canon_w) / 2,
+                right = ref_w + (canon_w - ref_w) / 2,
+            }
         end
 
         -- Wrap visual systems' callbacks once so they never consume battle PRNG or sim entity IDs
@@ -1596,9 +1614,11 @@ function hooks:install_gui_hooks(gui)
                     return true
                 end
             end
-            -- Intercept early-wave hotkeys during recording or Co-op (incl. FL 8.2.0 'w' next-wave key)
+            -- Intercept early-wave hotkeys during recording or Co-op (incl. FL 8.2.0 shortcut_settings & 'w')
             local wave_key = (ks and ks.wave) or KEYPRESS_NEXTWAVE or "w"
-            if (key == KEYPRESS_RETURN or (not DEBUG and key == wave_key))
+            local ok_ss, ss_mod = pcall(require, "shortcut_settings")
+            local ss_wave_match = (ok_ss and ss_mod and ss_mod.matches and ks and ss_mod.matches(ks, "wave", key)) == true
+            if (key == KEYPRESS_RETURN or (not DEBUG and key == wave_key) or ss_wave_match)
                 and self_gui.next_wave_button and not self_gui.next_wave_button:is_disabled() then
                 hooks:submit_command({ op = "SEND_WAVE" })
                 return true
@@ -1644,6 +1664,83 @@ function hooks:install_gui_hooks(gui)
     wrap_local_ui_method(TowerTooltip, "show")
     wrap_local_ui_method(TowerMenuTooltip, "show")
     wrap_local_ui_method(TowerMenu, "show")
+
+    -- 10. Fix FL 8.2.0 DragEntityView stuck cyan dashed line & prevent dragging teammate's hero/tower in Co-op
+    if DragEntityView and not DragEntityView._kr_mp_drag_wrapped then
+        DragEntityView._kr_mp_drag_wrapped = true
+        if DragEntityView.on_down then
+            local orig_dv_down = DragEntityView.on_down
+            DragEntityView.on_down = function(self_dv, button, x, y)
+                orig_dv_down(self_dv, button, x, y)
+                if hooks:is_mp_active() and self_dv.is_pressing and self_dv.pressed_entity then
+                    local pe = self_dv.pressed_entity
+                    local deny = false
+                    if pe.hero and not hooks.coop:can_control_hero(hooks.coop.local_pid, pe) then
+                        deny = true
+                    elseif pe.soldier and pe.soldier.tower_id and game_gui.game and game_gui.game.store then
+                        local tw = game_gui.game.store.entities[pe.soldier.tower_id]
+                        if tw and not hooks.coop:can_control_tower(hooks.coop.local_pid, tw, "rally") then
+                            deny = true
+                        end
+                    end
+                    if deny then
+                        self_dv.is_pressing = false
+                        self_dv.pressed_entity = nil
+                        self_dv.selected_entity = nil
+                        if self_dv.disable_drag_line then self_dv:disable_drag_line() end
+                    end
+                end
+            end
+        end
+        if DragEntityView.on_up then
+            local orig_dv_up = DragEntityView.on_up
+            DragEntityView.on_up = function(self_dv, button, x, y)
+                orig_dv_up(self_dv, button, x, y)
+                if button == 1 then
+                    self_dv.is_pressing = false
+                    self_dv.selected_entity = nil
+                    self_dv.pressed_entity = nil
+                    if self_dv.disable_drag_line then
+                        self_dv:disable_drag_line()
+                    end
+                end
+            end
+        end
+        if DragEntityView.update then
+            local orig_dv_upd = DragEntityView.update
+            DragEntityView.update = function(self_dv, dt)
+                -- Auto-clean orphaned cyan drag line if mouse button 1 is no longer held (desktop)
+                if not IS_ANDROID and love and love.mouse and love.mouse.isDown and not love.mouse.isDown(1) then
+                    local stuck_line = self_dv.path_direction and self_dv.path_direction.selected_entity ~= nil
+                    if self_dv.is_pressing or stuck_line then
+                        self_dv.is_pressing = false
+                        self_dv.selected_entity = nil
+                        self_dv.pressed_entity = nil
+                        if self_dv.disable_drag_line then
+                            self_dv:disable_drag_line()
+                        end
+                        if game_gui and game_gui.is_dragging and game_gui:is_dragging() then
+                            game_gui:set_mode(GUI_MODE_IDLE)
+                        end
+                        return
+                    end
+                end
+                return orig_dv_upd(self_dv, dt)
+            end
+        end
+    end
+    if game_gui.deselect_entity and not game_gui._kr_mp_desel_drag_wrapped then
+        game_gui._kr_mp_desel_drag_wrapped = true
+        local orig_desel = game_gui.deselect_entity
+        game_gui.deselect_entity = function(self_gui, ...)
+            local r = orig_desel(self_gui, ...)
+            if self_gui.drag_view and self_gui.drag_view.disable_drag_line
+                and (not self_gui.is_dragging or not self_gui:is_dragging()) then
+                self_gui.drag_view:disable_drag_line()
+            end
+            return r
+        end
+    end
 
     hooks.boot:log("GUI command hooks installed successfully.")
 end

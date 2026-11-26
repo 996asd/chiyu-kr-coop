@@ -13,8 +13,10 @@ local overlay = {
     _ptt_btn_down = false,
     _ui_scale = 1,
     _last_bar = nil,
+    _last_voice_panel = nil,
     _last_toast_rect = nil,
     _wait_banner_until = 0,
+    voice_panel_open = false,
 }
 
 local PHASE_LABELS = {
@@ -87,6 +89,10 @@ function overlay:is_point_over_hud(x, y)
     if bar and lx >= bar.x and lx <= bar.x + bar.w and ly >= bar.y and ly <= bar.y + bar.h then
         return true
     end
+    local vp = self.voice_panel_open and self._last_voice_panel or nil
+    if vp and lx >= vp.x and lx <= vp.x + vp.w and ly >= vp.y and ly <= vp.y + vp.h then
+        return true
+    end
     return false
 end
 
@@ -104,6 +110,14 @@ function overlay:mousepressed(x, y, button)
                 ui.play_sfx("click")
                 if self.on_action then self.on_action("mp_voice_ptt_down") end
                 return true
+            elseif b.id == "mp_voice_panel" then
+                self.voice_panel_open = not self.voice_panel_open
+                ui.play_sfx(self.voice_panel_open and "open" or "close")
+                return true
+            elseif b.id == "mp_voice_panel_close" then
+                self.voice_panel_open = false
+                ui.play_sfx("close")
+                return true
             elseif b.id == "mp_send_gold" then
                 ui.play_sfx("coin")
             elseif b.id == "mp_leave" then
@@ -112,10 +126,23 @@ function overlay:mousepressed(x, y, button)
                 ui.play_sfx("click")
             end
             if self.on_action then
-                self.on_action(b.id)
+                local arg = b.arg
+                if b.slider_min ~= nil and b.slider_max ~= nil then
+                    local frac = math.max(0, math.min(1, (lx - b.x) / math.max(1, b.w)))
+                    arg = b.slider_min + frac * (b.slider_max - b.slider_min)
+                end
+                self.on_action(b.id, arg)
             end
             return true
         end
+    end
+    if self.voice_panel_open then
+        local vp = self._last_voice_panel
+        if vp and lx >= vp.x and lx <= vp.x + vp.w and ly >= vp.y and ly <= vp.y + vp.h then
+            self._consumed_down = true
+            return true
+        end
+        self.voice_panel_open = false
     end
     return false
 end
@@ -202,8 +229,11 @@ function overlay:draw()
         local is_indep = (s.mp_econ == "independent")
         local show_marks_btn = (s.mp_tower_mode == "owned")
         local show_voice_btn = (s.mp_voice_ok == true)
+        if not show_voice_btn then
+            self.voice_panel_open = false
+        end
 
-        w = math.min(show_voice_btn and 552 or 488, vsw - 20)
+        w = math.min(show_voice_btn and 588 or 488, vsw - 20)
         x = math.max(10, math.floor((vsw - w) / 2))
         if vsw >= 880 and x < 200 then x = 200 end
         y = 7
@@ -292,16 +322,24 @@ function overlay:draw()
             cx = cx + 43
         end
 
+        local voice_btn_cx = nil
         if show_voice_btn then
             local v_mode = s.mp_voice_mode or "ptt"
             local my_talk = (is_p1 and s.mp_voice_p1_talk) or ((not is_p1) and s.mp_voice_p2_talk)
-            local v_style = my_talk and "battle" or ((v_mode == "mute") and "crimson" or "wood")
-            local v_fg = my_talk and { 255, 255, 240, 255 }
-                or ((v_mode == "vad") and T.ok_bright or ((v_mode == "mute") and { 255, 220, 216, 255 } or T.gold_bright))
-            add_btn("mp_voice_mode", s.mp_voice_label or "按V麦", cx, cy, 56, 24, v_style, {
+            -- Keep the HUD mic button calm (no harsh bright-green flashing on every breath)
+            local v_style = (v_mode == "mute") and "crimson" or "wood"
+            local v_fg = my_talk and T.ok_bright
+                or ((v_mode == "vad") and { 196, 246, 206, 255 } or ((v_mode == "mute") and { 255, 220, 216, 255 } or T.gold_bright))
+            voice_btn_cx = cx + 48
+            add_btn("mp_voice_mode", s.mp_voice_label or "按V麦", cx, cy, 54, 24, v_style, {
                 tiny = true, fg = v_fg,
             })
-            cx = cx + 61
+            cx = cx + 58
+            add_btn("mp_voice_panel", "调音", cx, cy, 34, 24, self.voice_panel_open and "azure" or "wood", {
+                tiny = true,
+                fg = self.voice_panel_open and { 242, 250, 255, 255 } or T.gold_bright,
+            })
+            cx = cx + 38
         end
 
         add_btn("mp_leave", "退出", cx, cy, 38, 24, "crimson", { tiny = true })
@@ -356,7 +394,116 @@ function overlay:draw()
                 ptt_x, ptt_y, ptt_w, ptt_h, s.mp_voice_ptt and "battle" or "azure", { small = true, radius = 8 })
             ptt_btn_offset_y = ptt_h + 6
         end
-        if hud_hover and not has_catchup_bar and not is_alert then
+        self._last_voice_panel = nil
+        if self.voice_panel_open and show_voice_btn then
+            -- Compact Carved-Oak Voice Mixer Popover (mic gain + peer volume + mode + speaking indicator style)
+            local pw_v, ph_v = 286, 152
+            local px_v = math.floor((voice_btn_cx or (x + w * 0.6)) - pw_v * 0.5)
+            px_v = math.max(8, math.min(vsw - pw_v - 8, px_v))
+            local py_v = y + h + 6 + ptt_btn_offset_y
+            self._last_voice_panel = { x = px_v, y = py_v, w = pw_v, h = ph_v }
+
+            G.setColor(0, 0, 0, 128)
+            G.rectangle("fill", px_v - 2, py_v + 4, pw_v + 4, ph_v + 3, 10, 10)
+            ui.draw_vgrad_rect(px_v, py_v, pw_v, ph_v, T.wood_top, T.wood_bot, 9)
+            G.setColor(255, 218, 156, 82)
+            G.setLineWidth(1.3)
+            G.line(px_v + 10, py_v + 2, px_v + pw_v - 10, py_v + 2)
+            G.setColor(T.ink_dark[1], T.ink_dark[2], T.ink_dark[3], 255)
+            G.setLineWidth(2.0)
+            G.rectangle("line", px_v, py_v, pw_v, ph_v, 9, 9)
+
+            -- Header
+            ui.print_shadow("语音调音台", px_v + 12, py_v + 7, T.gold_bright, nil, nil, nil, font_map.small_bold)
+            local loc_lvl = math.max(0, math.min(1, tonumber(s.mp_voice_local_lvl) or 0))
+            local mtr_x, mtr_y, mtr_w, mtr_h = px_v + 92, py_v + 11, 96, 8
+            G.setColor(20, 11, 5, 225)
+            G.rectangle("fill", mtr_x, mtr_y, mtr_w, mtr_h, 4, 4)
+            if loc_lvl > 0.02 then
+                G.setColor(94, 232, 142, 230)
+                G.rectangle("fill", mtr_x + 1, mtr_y + 1, math.max(2, math.floor((mtr_w - 2) * loc_lvl)), mtr_h - 2, 3, 3)
+            end
+            G.setColor(148, 104, 48, 175)
+            G.setLineWidth(1)
+            G.rectangle("line", mtr_x, mtr_y, mtr_w, mtr_h, 4, 4)
+            add_btn("mp_voice_panel_close", "×", px_v + pw_v - 28, py_v + 5, 20, 20, "crimson", { tiny = true, radius = 5 })
+
+            local function draw_vol_row(ry, label, val, vmin, vmax, muted_flag, id_down, id_set, id_up, fill_top, fill_bot, extra_w)
+                ui.print_shadow(label, px_v + 12, ry + 4, { 244, 224, 186, 255 }, nil, nil, nil, font_map.tiny_bold)
+                local bx0 = px_v + 60
+                add_btn(id_down, "-", bx0, ry, 22, 22, "wood", { tiny = true, radius = 5 })
+                local bar_x = bx0 + 26
+                local bar_w = pw_v - 60 - 26 - 26 - 12 - (extra_w or 0)
+                local bar_y = ry + 3
+                local bar_h = 16
+                local frac = muted_flag and 0 or math.max(0, math.min(1, (val - vmin) / math.max(0.01, vmax - vmin)))
+                G.setColor(22, 12, 5, 235)
+                G.rectangle("fill", bar_x, bar_y, bar_w, bar_h, 5, 5)
+                local fw = math.floor((bar_w - 2) * frac)
+                if fw > 1 then
+                    ui.draw_vgrad_rect(bar_x + 1, bar_y + 1, fw, bar_h - 2, fill_top, fill_bot, 4)
+                end
+                G.setColor(168, 122, 56, 205)
+                G.setLineWidth(1.1)
+                G.rectangle("line", bar_x, bar_y, bar_w, bar_h, 5, 5)
+                local pct_txt = muted_flag and "已静音" or string.format("%d%%", math.floor(val * 100 + 0.5))
+                ui.print_shadow(pct_txt, bar_x, bar_y + (bar_h - ui.font_h(font_map.tiny_bold)) * 0.5,
+                    { 255, 250, 234, 255 }, bar_w, "center", nil, font_map.tiny_bold)
+                add_btn(id_set, "", bar_x, ry, bar_w, 22, "slider_hit", {
+                    slider_min = vmin, slider_max = vmax, no_draw = true,
+                })
+                add_btn(id_up, "+", bar_x + bar_w + 4, ry, 22, 22, "wood", { tiny = true, radius = 5 })
+                return bar_x + bar_w + 30
+            end
+
+            -- Row 1: Local Mic Gain (40% .. 200%)
+            local mic_g = tonumber(s.mp_voice_mic_gain) or 1.0
+            draw_vol_row(py_v + 33, "我的麦", mic_g, 0.4, 2.0, s.mp_voice_mode == "mute",
+                "mp_voice_mic_down", "mp_voice_mic_set", "mp_voice_mic_up",
+                T.emerald_top, T.emerald_bot, 0)
+
+            -- Row 2: Peer Voice Volume (0% .. 180%) + Mute toggle
+            local peer_v = tonumber(s.mp_voice_peer_vol) or 1.0
+            local peer_m = (s.mp_voice_peer_muted == true)
+            local mute_x = draw_vol_row(py_v + 61, "队友音", peer_v, 0.0, 1.8, peer_m,
+                "mp_voice_peer_down", "mp_voice_peer_set", "mp_voice_peer_up",
+                { 84, 186, 255, 255 }, { 34, 112, 188, 255 }, 44)
+            add_btn("mp_voice_peer_mute", peer_m and "恢复" or "静音", mute_x, py_v + 61, 40, 22,
+                peer_m and "crimson" or "wood", { tiny = true, radius = 5 })
+
+            -- Row 3: Mic Mode quick selector
+            local v_mode = s.mp_voice_mode or "ptt"
+            ui.print_shadow("收音", px_v + 12, py_v + 94, { 244, 224, 186, 255 }, nil, nil, nil, font_map.tiny_bold)
+            local m_items = {
+                { id = "ptt",  lbl = is_mob and "按住讲" or "按V麦" },
+                { id = "vad",  lbl = "自由麦" },
+                { id = "mute", lbl = "闭麦" },
+            }
+            local mx0, mw0 = px_v + 60, 68
+            for idx_m, mi in ipairs(m_items) do
+                local act = (v_mode == mi.id)
+                local mst = act and ((mi.id == "mute") and "crimson" or "battle") or "wood"
+                add_btn("mp_voice_set_mode", mi.lbl, mx0 + (idx_m - 1) * (mw0 + 5), py_v + 90, mw0, 23, mst, {
+                    tiny = true, arg = mi.id, radius = 5,
+                })
+            end
+
+            -- Row 4: Speaking Indicator Style selector
+            local v_ind = s.mp_voice_style or "compact"
+            ui.print_shadow("说话标", px_v + 12, py_v + 123, { 244, 224, 186, 255 }, nil, nil, nil, font_map.tiny_bold)
+            local s_items = {
+                { id = "compact", lbl = "极简微标" },
+                { id = "off",     lbl = "关闭提示" },
+                { id = "card",    lbl = "醒目大卡" },
+            }
+            for idx_s, si in ipairs(s_items) do
+                local act = (v_ind == si.id)
+                add_btn("mp_voice_style_set", si.lbl, mx0 + (idx_s - 1) * (mw0 + 5), py_v + 119, mw0, 23,
+                    act and "azure" or "wood", {
+                        tiny = true, arg = si.id, radius = 5,
+                    })
+            end
+        elseif hud_hover and not has_catchup_bar and not is_alert then
             local tip_y = y + h + 5
             ui.draw_parchment_card(x + 24, tip_y, w - 48, 24, { radius = 6 })
             local net_lbl = s.mp_online and ("公网 #" .. tostring(s.mp_room_code or "----")) or "局域网 2P"
@@ -365,49 +512,89 @@ function overlay:draw()
                 net_lbl, phase_cn, s.mp_sync_ok or 0, hash_hex),
                 x + 28, tip_y + (24 - ui.font_h(font_map.tiny)) * 0.5, T.ink_text, font_map.tiny, w - 56, "center")
         elseif s.mp_voice_ok and (s.mp_voice_p1_talk or s.mp_voice_p2_talk) then
-            -- Livestream Dual-Seat Speaking Bubbles right beneath the Battle HUD (zero corner overlap!)
-            local bubble_y = y + h + 6 + ptt_btn_offset_y
-            local bw, bh = 166, 34
-            local gap = 12
+            local v_ind = s.mp_voice_style or "compact"
             local show1 = (s.mp_voice_p1_talk == true)
             local show2 = (s.mp_voice_p2_talk == true)
             local count = (show1 and 1 or 0) + (show2 and 1 or 0)
-            local total_bw = count * bw + (count - 1) * gap
-            local bx = math.floor(x + (w - total_bw) * 0.5)
 
-            local function draw_speaker_bubble(px_b, pid_b, hero_idx, lvl)
-                local p1 = (pid_b == 1)
-                local top_col = p1 and { 26, 62, 108, 238 } or { 112, 26, 28, 238 }
-                local bot_col = p1 and { 16, 38, 68, 242 } or { 68, 14, 16, 242 }
-                local rim_col = p1 and { 104, 214, 255, 245 } or { 255, 142, 136, 245 }
-                G.setColor(0, 0, 0, 118)
-                G.rectangle("fill", px_b - 1, bubble_y + 3, bw + 2, bh + 1, 9, 9)
-                ui.draw_vgrad_rect(px_b, bubble_y, bw, bh, top_col, bot_col, 8)
-                ui.draw_speaking_glow(px_b, bubble_y, bw, bh, 8, { 98, 246, 152, 255 }, lvl)
-                G.setColor(rim_col[1], rim_col[2], rim_col[3], 220)
-                G.setLineWidth(1.4)
-                G.rectangle("line", px_b, bubble_y, bw, bh, 8, 8)
+            if v_ind == "compact" and count > 0 then
+                -- Subtle translucent micro speaking chips tucked cleanly under the HUD (zero battlefield clutter!)
+                local chip_y = y + h + 4 + ptt_btn_offset_y
+                local cw_c, ch_c, gap_c = 56, 17, 6
+                local total_cw = count * cw_c + (count - 1) * gap_c
+                local cx_c = math.floor(x + (w - total_cw) * 0.5)
 
-                -- Mini framed hero portrait
-                ui.draw_hero_big_portrait(hero_idx, px_b + 5, bubble_y + 3, 28, 28, {
-                    radius = 5, pad = 1, border = T.gold_mid, border_w = 1.4,
-                })
-                ui.print_shadow(p1 and "1P 蓝方" or "2P 红方", px_b + 38, bubble_y + 4,
-                    p1 and T.p1_light or T.p2_light, nil, nil, nil, font_map.tiny_bold)
-                ui.print_shadow("正在语音...", px_b + 38, bubble_y + 18,
-                    { 216, 255, 224, 240 }, nil, nil, nil, font_map.tiny)
+                local function draw_compact_chip(px_c, pid_c, lvl_c)
+                    local p1 = (pid_c == 1)
+                    local dot_col = p1 and { 104, 206, 255, 220 } or { 255, 134, 130, 220 }
+                    local txt_col = p1 and { 188, 232, 255, 230 } or { 255, 204, 202, 230 }
+                    G.setColor(16, 12, 9, 148)
+                    G.rectangle("fill", px_c, chip_y, cw_c, ch_c, 8, 8)
+                    G.setColor(dot_col[1], dot_col[2], dot_col[3], 130)
+                    G.setLineWidth(1.0)
+                    G.rectangle("line", px_c, chip_y, cw_c, ch_c, 8, 8)
+                    G.setColor(dot_col[1], dot_col[2], dot_col[3], 225)
+                    G.circle("fill", px_c + 8, chip_y + ch_c * 0.5, 2.5)
+                    ui.text(p1 and "1P" or "2P", px_c + 14, chip_y + (ch_c - ui.font_h(font_map.tiny_bold)) * 0.5,
+                        txt_col, font_map.tiny_bold)
+                    -- Whisper-quiet 3-bar mini waveform
+                    local lv = math.max(0.15, math.min(1.0, tonumber(lvl_c) or 0.4))
+                    local t_now = love.timer and love.timer.getTime() or 0
+                    for bi = 1, 3 do
+                        local wave = 0.55 + 0.45 * math.abs(math.sin(t_now * 9.0 + bi * 1.4))
+                        local bh_b = math.max(2, math.floor((ch_c - 6) * lv * wave + 0.5))
+                        G.setColor(dot_col[1], dot_col[2], dot_col[3], 200)
+                        G.rectangle("fill", px_c + 36 + (bi - 1) * 5, chip_y + math.floor((ch_c - bh_b) * 0.5), 2.5, bh_b, 1, 1)
+                    end
+                end
 
-                -- Live 5-bar broadcast equalizer
-                ui.draw_voice_eq(px_b + bw - 38, bubble_y + 7, 30, 20, lvl, true,
-                    { 122, 255, 168, 255 }, p1 and { 84, 206, 255, 235 } or { 255, 206, 108, 235 })
-            end
+                if show1 then
+                    draw_compact_chip(cx_c, 1, s.mp_voice_p1_lvl or 0.5)
+                    cx_c = cx_c + cw_c + gap_c
+                end
+                if show2 then
+                    draw_compact_chip(cx_c, 2, s.mp_voice_p2_lvl or 0.5)
+                end
+            elseif v_ind == "card" and count > 0 then
+                -- Optional Full Livestream Speaking Cards (hero portrait + equalizer)
+                local bubble_y = y + h + 6 + ptt_btn_offset_y
+                local bw, bh = 166, 34
+                local gap = 12
+                local total_bw = count * bw + (count - 1) * gap
+                local bx = math.floor(x + (w - total_bw) * 0.5)
 
-            if show1 then
-                draw_speaker_bubble(bx, 1, s.mp_hero1 or 53, s.mp_voice_p1_lvl or 0.6)
-                bx = bx + bw + gap
-            end
-            if show2 then
-                draw_speaker_bubble(bx, 2, s.mp_hero2 or 54, s.mp_voice_p2_lvl or 0.6)
+                local function draw_speaker_bubble(px_b, pid_b, hero_idx, lvl)
+                    local p1 = (pid_b == 1)
+                    local top_col = p1 and { 26, 62, 108, 238 } or { 112, 26, 28, 238 }
+                    local bot_col = p1 and { 16, 38, 68, 242 } or { 68, 14, 16, 242 }
+                    local rim_col = p1 and { 104, 214, 255, 245 } or { 255, 142, 136, 245 }
+                    G.setColor(0, 0, 0, 118)
+                    G.rectangle("fill", px_b - 1, bubble_y + 3, bw + 2, bh + 1, 9, 9)
+                    ui.draw_vgrad_rect(px_b, bubble_y, bw, bh, top_col, bot_col, 8)
+                    ui.draw_speaking_glow(px_b, bubble_y, bw, bh, 8, { 98, 246, 152, 255 }, lvl)
+                    G.setColor(rim_col[1], rim_col[2], rim_col[3], 220)
+                    G.setLineWidth(1.4)
+                    G.rectangle("line", px_b, bubble_y, bw, bh, 8, 8)
+
+                    ui.draw_hero_big_portrait(hero_idx, px_b + 5, bubble_y + 3, 28, 28, {
+                        radius = 5, pad = 1, border = T.gold_mid, border_w = 1.4,
+                    })
+                    ui.print_shadow(p1 and "1P 蓝方" or "2P 红方", px_b + 38, bubble_y + 4,
+                        p1 and T.p1_light or T.p2_light, nil, nil, nil, font_map.tiny_bold)
+                    ui.print_shadow("正在语音...", px_b + 38, bubble_y + 18,
+                        { 216, 255, 224, 240 }, nil, nil, nil, font_map.tiny)
+
+                    ui.draw_voice_eq(px_b + bw - 38, bubble_y + 7, 30, 20, lvl, true,
+                        { 122, 255, 168, 255 }, p1 and { 84, 206, 255, 235 } or { 255, 206, 108, 235 })
+                end
+
+                if show1 then
+                    draw_speaker_bubble(bx, 1, s.mp_hero1 or 53, s.mp_voice_p1_lvl or 0.6)
+                    bx = bx + bw + gap
+                end
+                if show2 then
+                    draw_speaker_bubble(bx, 2, s.mp_hero2 or 54, s.mp_voice_p2_lvl or 0.6)
+                end
             end
         end
     else
@@ -490,8 +677,10 @@ function overlay:draw()
     self.buttons = btns
     local allow_hover = not proto.is_android()
     for _, btn in ipairs(btns) do
-        local hover = allow_hover and (mx >= btn.x and mx <= btn.x + btn.w and my >= btn.y and my <= btn.y + btn.h)
-        ui.draw_button(btn, hover, font_map)
+        if not btn.no_draw then
+            local hover = allow_hover and (mx >= btn.x and mx <= btn.x + btn.w and my >= btn.y and my <= btn.y + btn.h)
+            ui.draw_button(btn, hover, font_map)
+        end
     end
 
     -- Save HUD bar geometry so draw_toast() can anchor cleanly below it when lobby is closed
