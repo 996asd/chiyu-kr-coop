@@ -158,6 +158,7 @@ function coop:build_host_slot_snapshot(heroes, towers)
     snap.liuhui.rand_hero = 0
     snap.liuhui.rand_tower = 0
     snap.liuhui.hero_auto_rally = false
+    snap.liuhui.hero_enhance = false
     snap.liuhui.g3_hprate = false
     snap.liuhui.balance = false
     snap.liuhui.g4range_balance = true
@@ -242,6 +243,12 @@ function coop:prepare_match(local_pid, cfg, reconnect_data)
         storage:create_slot(1)
     end
     storage:set_active_slot(1)
+    -- Clear direct storage.slot cache so hero_enhance_mod always reads the synced Co-op slot_snapshot
+    storage.slot = nil
+    local ok_hem, hem = pcall(require, "hero_enhance_mod")
+    if ok_hem and hem and hem.set_enabled and hem.is_enabled then
+        pcall(hem.set_enabled, hem, false)
+    end
 
     if screen_map == nil then
         screen_map = { user_data = deep_copy(self.slot_snapshot) }

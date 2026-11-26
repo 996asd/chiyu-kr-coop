@@ -1019,6 +1019,13 @@ function lobby:step_auto_coop(dt)
             self.room.econ_mode = "independent"
             self.room.tower_mode = "owned"
             self.room.heroes = { catalog.DEFAULT_HERO_1 or 53, catalog.DEFAULT_HERO_2 or 54 }
+            local env_heroes = os.getenv("KR_MP_TEST_HEROES")
+            if env_heroes then
+                local h1, h2 = env_heroes:match("^(%d+),(%d+)$")
+                if h1 and h2 then
+                    self.room.heroes = { tonumber(h1), tonumber(h2) }
+                end
+            end
             if self:host_lan_room() then
                 self.auto_stage = "HOST_WAIT_GUEST"
             end
@@ -1061,7 +1068,9 @@ function lobby:step_auto_coop(dt)
         if not store then return end
         local tick = store.tick or 0
         local pid = self.coop.local_pid
-        if tick >= 1860 and self.lockstep.sync_ok_count >= 60 then
+        local target_ticks = tonumber(os.getenv("KR_MP_TEST_TICKS")) or 1860
+        local target_sync = math.max(60, math.floor(target_ticks / 30) - 2)
+        if tick >= target_ticks and self.lockstep.sync_ok_count >= target_sync then
             self.boot:log("AUTO_COOP_PASSED pid=%d ticks=%d sync_ok=%d gold=(P1:%d,P2:%d)",
                 pid, tick, self.lockstep.sync_ok_count, self.coop:get_player_gold(1), self.coop:get_player_gold(2))
             self.lockstep:close_hash_log()
@@ -1069,6 +1078,31 @@ function lobby:step_auto_coop(dt)
             return
         end
         if self.lockstep.phase ~= "RUNNING" then return end
+
+        -- Optional P1-only local UI hover/select/deselect chaos stress test (verifies zero main_script/entity_count contamination!)
+        if pid == 1 and os.getenv("KR_MP_TEST_UI_CHAOS") == "1" and game and game.game_gui then
+            local bucket = math.floor(tick / 25)
+            if bucket ~= self._ui_chaos_bucket then
+                self._ui_chaos_bucket = bucket
+                local gui = game.game_gui
+                local phase_c = bucket % 4
+                if phase_c == 0 then
+                    local hs = find_sorted_ents(store, function(e) return e.tower ~= nil end)
+                    if hs[1] and gui.show_clickable_hover then pcall(gui.show_clickable_hover, gui, hs[1]) end
+                    if gui.show_ghost_hover then pcall(gui.show_ghost_hover, gui) end
+                elseif phase_c == 1 then
+                    local h1 = self.coop.hero_ids[1] and store.entities[self.coop.hero_ids[1]]
+                    if h1 and gui.select_entity then pcall(gui.select_entity, gui, h1) end
+                elseif phase_c == 2 then
+                    if gui.hide_clickable_hover then pcall(gui.hide_clickable_hover, gui) end
+                    if gui.hide_ghost_hover then pcall(gui.hide_ghost_hover, gui) end
+                    local es = find_sorted_ents(store, function(e) return e.enemy and e.health and not e.health.dead end)
+                    if es[1] and gui.select_entity then pcall(gui.select_entity, gui, es[1]) end
+                else
+                    if gui.deselect_entity then pcall(gui.deselect_entity, gui) end
+                end
+            end
+        end
 
         local function once(tag, min_tick, fn)
             if tick >= min_tick and not self.auto_sent_ticks[tag] then
@@ -1121,7 +1155,7 @@ function lobby:step_auto_coop(dt)
             end)
         end
 
-        if tick >= 1860 and self.lockstep.sync_ok_count >= 60 then
+        if tick >= target_ticks and self.lockstep.sync_ok_count >= target_sync then
             self.boot:log("AUTO_COOP_PASSED pid=%d ticks=%d sync_ok=%d gold=(P1:%d,P2:%d)",
                 pid, tick, self.lockstep.sync_ok_count, self.coop:get_player_gold(1), self.coop:get_player_gold(2))
             self.lockstep:close_hash_log()

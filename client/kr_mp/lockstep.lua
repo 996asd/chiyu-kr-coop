@@ -40,13 +40,16 @@ local lockstep = {
     reconnect_paused_after = false,
 
     -- Every-30-tick live checksum verification
-    local_hashes = {},    -- [tick] = snap
-    remote_hashes = {},   -- [tick] = hash_hex
+    local_hashes = {},       -- [tick] = snap
+    remote_hashes = {},      -- [tick] = hash_hex
+    remote_hash_snaps = {},  -- [tick] = formatted snap string (when provided)
     pending_hash_tick = nil,
     pending_hash_hex = nil,
+    pending_hash_snap = nil,
     sync_ok_count = 0,
     last_hash_hex = "--------",
     desync_info = nil,
+    desync_diag_sent = false,
     hash_log_file = nil,
 }
 
@@ -122,11 +125,14 @@ function lockstep:reset()
     self.reconnect_paused_after = false
     self.local_hashes = {}
     self.remote_hashes = {}
+    self.remote_hash_snaps = {}
     self.pending_hash_tick = nil
     self.pending_hash_hex = nil
+    self.pending_hash_snap = nil
     self.sync_ok_count = 0
     self.last_hash_hex = "--------"
     self.desync_info = nil
+    self.desync_diag_sent = false
 end
 
 function lockstep:begin_loading(local_pid, cfg)
@@ -391,8 +397,12 @@ function lockstep:send_next_turn()
     if self.pending_hash_tick and self.pending_hash_hex then
         pkt.ht = self.pending_hash_tick
         pkt.hh = self.pending_hash_hex
+        if self.pending_hash_snap then
+            pkt.hs = self.pending_hash_snap
+        end
         self.pending_hash_tick = nil
         self.pending_hash_hex = nil
+        self.pending_hash_snap = nil
     end
     self.transport:send(pkt)
 end
@@ -446,8 +456,15 @@ function lockstep:on_message(msg)
             end
             self.turns_received[turn_id][pid] = msg.cmds or {}
             if msg.ht and msg.hh then
-                self:on_remote_hash(tonumber(msg.ht), tostring(msg.hh))
+                self:on_remote_hash(tonumber(msg.ht), tostring(msg.hh), msg.hs)
             end
+        end
+        return true
+    elseif t == "DESYNC_DIAG" then
+        self:log("  REMOTE DIAG (P%s tick=%s): %s",
+            tostring(msg.pid or self.remote_pid), tostring(msg.tick or "?"), tostring(msg.snap or ""))
+        if msg.ents and msg.ents ~= "" then
+            self:log("  REMOTE ENTS: %s", tostring(msg.ents))
         end
         return true
     end
@@ -543,9 +560,10 @@ function lockstep:on_tick_end(store)
         self.local_hashes[tick] = snap
         self.pending_hash_tick = tick
         self.pending_hash_hex = snap.hash
+        self.pending_hash_snap = state_hash.format_line(snap)
 
         if self.hash_log_file then
-            self.hash_log_file:write(state_hash.format_line(snap) .. "\n")
+            self.hash_log_file:write(self.pending_hash_snap .. "\n")
             self.hash_log_file:flush()
         end
 
@@ -566,9 +584,12 @@ function lockstep:on_tick_end(store)
     end
 end
 
-function lockstep:on_remote_hash(tick, remote_hex)
+function lockstep:on_remote_hash(tick, remote_hex, remote_snap)
     if not tick or not remote_hex then return end
     self.remote_hashes[tick] = remote_hex
+    if type(remote_snap) == "string" and remote_snap ~= "" then
+        self.remote_hash_snaps[tick] = remote_snap
+    end
     if self.local_hashes[tick] then
         self:verify_hash_pair(tick)
     end
@@ -583,15 +604,36 @@ function lockstep:verify_hash_pair(tick)
         self.sync_ok_count = self.sync_ok_count + 1
         self.local_hashes[tick] = nil
         self.remote_hashes[tick] = nil
+        self.remote_hash_snaps[tick] = nil
     else
         self.phase = "DESYNC"
-        self.desync_info = { tick = tick, local_hash = loc.hash, remote_hash = rem, snap = loc }
-        if game and game.store then
-            game.store.paused = true
+        local loc_line = state_hash.format_line(loc)
+        local rem_line = self.remote_hash_snaps[tick]
+        self.desync_info = { tick = tick, local_hash = loc.hash, remote_hash = rem, snap = loc, remote_snap = rem_line }
+        local st = game and game.store
+        if st then
+            st.paused = true
         end
+        local ents_summary = st and state_hash.build_diag_summary(st, 18) or ""
         self:close_hash_log()
         self:log("!!! MP DESYNC DETECTED AT TICK %d !!! local=%s remote=%s", tick, loc.hash, rem)
-        self:log("  LOCAL SNAP: %s", state_hash.format_line(loc))
+        self:log("  LOCAL  SNAP: %s", loc_line)
+        if rem_line then
+            self:log("  REMOTE SNAP: %s", rem_line)
+        end
+        if ents_summary ~= "" then
+            self:log("  LOCAL  ENTS: %s", ents_summary)
+        end
+        if not self.desync_diag_sent and self.transport and self.transport:is_connected() then
+            self.desync_diag_sent = true
+            pcall(self.transport.send, self.transport, {
+                t = "DESYNC_DIAG",
+                pid = self.local_pid,
+                tick = tick,
+                snap = loc_line,
+                ents = ents_summary,
+            })
+        end
         if self.overlay then
             self.overlay:show_toast(string.format("画面同步异常（第 %d 帧，非掉线）· 已暂停保护，请双方点「退出」重开 (本地:%s 队友:%s)", tick, loc.hash, rem), 20)
         end
