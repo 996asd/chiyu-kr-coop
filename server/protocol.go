@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	ServerVersion = "2.0.0"
+	ServerVersion = "2.1.0"
 	ProtocolVer   = 3
 )
 
@@ -47,6 +47,10 @@ type IncomingMsg struct {
 	Tick  int             `json:"tick,omitempty"`
 	Hash  string          `json:"hash,omitempty"`
 	Speed int             `json:"speed,omitempty"`
+
+	// Ephemeral live voice chat frame (never stored in turn history)
+	VoiceData  string `json:"d,omitempty"`
+	VoiceLevel int    `json:"l,omitempty"`
 }
 
 // RoomMeta extracts searchable summary fields from Room JSON for the public lobby list.

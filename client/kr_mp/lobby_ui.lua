@@ -11,6 +11,7 @@ local lobby = {
     lockstep = nil,
     coop = nil,
     overlay = nil,
+    voice = nil,
 
     open = false,
     net_tab = "lan", -- "lan" | "online"
@@ -32,10 +33,18 @@ local lobby = {
     -- Online server connection & room state
     server_connected = false,
     server_ver = nil,
+    server_voice_ok = true,
     online_rooms = {},
     online_room_code = nil,
     online_token = nil,
     saved_session = nil,
+    pending_online_action = nil,
+    pending_lan_join = nil,
+
+    -- Responsive UI transform cache for exact mouse hit-testing
+    _ui_scale = 1,
+    _ui_ox = 0,
+    _ui_oy = 0,
 
     -- Active room role & peers
     role = "none", -- "none" | "host" | "client"
@@ -49,7 +58,7 @@ local lobby = {
         name = "王国保卫战合作房",
         level_idx = 101,
         level_mode = 1,
-        level_difficulty = 2, -- 1=休闲, 2=普通, 3=老兵
+        level_difficulty = 2, -- 1=休闲, 2=普通, 3=老兵, 4=不可能
         econ_mode = "independent", -- "independent" | "shared"
         tower_mode = "owned",      -- "owned" | "open"
         input_delay_turns = proto.INPUT_DELAY_TURNS, -- 2=局域网(100ms), 4=樱花映射(200ms), 6=抗抖(300ms)
@@ -73,7 +82,7 @@ local lobby = {
     auto_saw_reconnect = false,
 }
 
-local DIFF_NAMES = { [1] = "休闲", [2] = "普通", [3] = "老兵" }
+local DIFF_NAMES = { [1] = "休闲", [2] = "普通", [3] = "老兵", [4] = "不可能" }
 local DELAY_LABELS = {
     [2] = "缓冲:局域网100ms",
     [4] = "缓冲:樱花200ms",
@@ -102,7 +111,9 @@ local function ensure_room_defaults(r)
     end
     r.level_idx = tonumber(r.level_idx) or 101
     r.level_mode = tonumber(r.level_mode) or 1
-    r.level_difficulty = tonumber(r.level_difficulty) or 2
+    local d = tonumber(r.level_difficulty) or 2
+    if d < 1 or d > 4 then d = 2 end
+    r.level_difficulty = math.floor(d)
     r.econ_mode = r.econ_mode or "independent"
     r.tower_mode = r.tower_mode or "owned"
     r.input_delay_turns = normalize_delay_turns(r.input_delay_turns)
@@ -136,6 +147,14 @@ function lobby:load_prefs()
     if obj.show_tower_marks ~= nil and self.coop then
         self.coop.show_tower_marks = (obj.show_tower_marks ~= false)
     end
+    if self.voice then
+        if type(obj.voice_mode) == "string" then
+            self.voice:set_mode(obj.voice_mode)
+        end
+        if obj.voice_peer_muted ~= nil then
+            self.voice.peer_muted = (obj.voice_peer_muted == true)
+        end
+    end
 end
 
 function lobby:save_prefs()
@@ -145,6 +164,8 @@ function lobby:save_prefs()
         server_input = self.server_input,
         input_delay_turns = normalize_delay_turns(self.room and self.room.input_delay_turns),
         show_tower_marks = (self.coop == nil) or (self.coop.show_tower_marks ~= false),
+        voice_mode = self.voice and self.voice.mode or "ptt",
+        voice_peer_muted = self.voice and (self.voice.peer_muted == true) or false,
     }
     local f = io.open(get_prefs_path(), "w")
     if f then
@@ -330,6 +351,8 @@ function lobby:switch_tab(tab)
     if self.view ~= "home" or self.net_tab == tab then return end
     self.focused_field = nil
     self.sub_modal = nil
+    self.pending_online_action = nil
+    self.pending_lan_join = nil
     self.net_tab = tab
     if tab == "lan" then
         self.transport:close()
@@ -340,7 +363,8 @@ function lobby:switch_tab(tab)
         self.transport:stop_lan_scan()
         self.transport:switch_mode("online")
         self:load_saved_session()
-        if not self.server_connected then
+        if not self.server_connected and not self.transport:is_connecting() then
+            -- 100% non-blocking background probe: 0ms UI freeze when switching tabs!
             self:connect_online_server(self.server_input, true)
         end
     end
@@ -393,24 +417,15 @@ function lobby:host_lan_room()
     self.peer_name = "等待 2P 加入..."
     self.view = "room"
     self.sub_modal = nil
-    self.overlay:show_toast("局域网房间已创建（端口 " .. tostring(res) .. "），等待 2P 加入...", 4)
+    self.overlay:show_toast("局域网房间已创建（端口 " .. tostring(res) .. "），等待 2P 加入...", 2.0)
     return true
 end
 
-function lobby:join_lan_room(ip, port)
-    local target_ip = ip or self.ip_input or "127.0.0.1"
-    local target_port = tonumber(port) or tonumber(os.getenv("KR_MP_PORT")) or proto.DEFAULT_TCP_PORT
-    local parsed_ip, parsed_port = target_ip:match("^([^:]+):(%d+)$")
-    if parsed_ip and parsed_port then
-        target_ip = parsed_ip
-        target_port = tonumber(parsed_port)
-    end
-
-    local ok, err = self.transport:join_lan(target_ip, target_port)
-    if not ok then
-        self.overlay:show_toast("连接局域网房主失败：" .. tostring(err), 4)
-        return false
-    end
+function lobby:on_lan_connected(target_ip, target_port)
+    local info = self.pending_lan_join
+    self.pending_lan_join = nil
+    target_ip = target_ip or (info and info.ip) or "127.0.0.1"
+    target_port = tonumber(target_port) or (info and info.port) or proto.DEFAULT_TCP_PORT
 
     self.role = "client"
     self.local_pid = 2
@@ -418,7 +433,7 @@ function lobby:join_lan_room(ip, port)
     self.online_token = nil
     self.peer_connected = true
     self.local_ready = true
-    self.peer_name = "房主 (" .. target_ip .. ")"
+    self.peer_name = "房主 (" .. tostring(target_ip) .. ")"
     self.view = "room"
     self.sub_modal = nil
 
@@ -431,22 +446,37 @@ function lobby:join_lan_room(ip, port)
         tick_len = TICK_LENGTH or (1 / 60),
         name = "Player 2",
     })
-    self.overlay:show_toast("已连接到局域网房主 " .. target_ip .. ":" .. tostring(target_port), 3.5)
+    self.overlay:show_toast("已连接到局域网房主 " .. tostring(target_ip) .. ":" .. tostring(target_port), 2.0)
+end
+
+function lobby:join_lan_room(ip, port)
+    local target_ip = ip or self.ip_input or "127.0.0.1"
+    local target_port = tonumber(port) or tonumber(os.getenv("KR_MP_PORT")) or proto.DEFAULT_TCP_PORT
+    local parsed_ip, parsed_port = target_ip:match("^([^:]+):(%d+)$")
+    if parsed_ip and parsed_port then
+        target_ip = parsed_ip
+        target_port = tonumber(parsed_port)
+    end
+
+    self.pending_lan_join = { ip = target_ip, port = target_port }
+    local ok, status_or_err = self.transport:join_lan(target_ip, target_port)
+    if not ok then
+        self.pending_lan_join = nil
+        self.overlay:show_toast("连接局域网房主失败：" .. tostring(status_or_err), 4)
+        return false
+    end
+
+    if status_or_err == "connected" then
+        self:on_lan_connected(target_ip, target_port)
+    else
+        self.overlay:show_toast("正在连接房主 " .. tostring(target_ip) .. ":" .. tostring(target_port) .. "...", 2.5)
+    end
     return true
 end
 
--- === Online Relay Server Actions ===
+-- === Online Relay Server Actions (100% Non-Blocking) ===
 
-function lobby:connect_online_server(addr, silent_fail)
-    local target = (addr and addr ~= "") and addr or self.server_input
-    local ok, err = self.transport:connect_online(target, proto.DEFAULT_ONLINE_PORT)
-    if not ok then
-        self.server_connected = false
-        if not silent_fail then
-            self.overlay:show_toast("连接公网服务器失败：" .. tostring(err), 4.5)
-        end
-        return false
-    end
+function lobby:on_online_connected()
     self.server_connected = true
     self.transport:send({
         t = "HELLO",
@@ -457,24 +487,73 @@ function lobby:connect_online_server(addr, silent_fail)
         tick_len = TICK_LENGTH or (1 / 60),
         name = "Player",
     })
+
+    local act = self.pending_online_action
+    self.pending_online_action = nil
+    if not act then return end
+
+    if act.kind == "list_rooms" then
+        self.transport:send({ t = "LIST_ROOMS" })
+    elseif act.kind == "create_room" then
+        self:send_create_online_room(act.password, act.is_public)
+    elseif act.kind == "join_room" then
+        self:send_join_online_room(act.code, act.password)
+    elseif act.kind == "reconnect" and act.sess then
+        self:send_reconnect_online(act.sess)
+    end
+end
+
+function lobby:connect_online_server(addr, silent_fail)
+    local target = (addr and addr ~= "") and addr or self.server_input
+    local ok, status_or_err = self.transport:connect_online(target, proto.DEFAULT_ONLINE_PORT, silent_fail)
+    if not ok then
+        self.server_connected = false
+        self.pending_online_action = nil
+        if not silent_fail then
+            self.overlay:show_toast("连接公网服务器失败：" .. tostring(status_or_err), 4.5)
+        end
+        return false
+    end
+    if status_or_err == "connected" then
+        self:on_online_connected()
+    else
+        self.server_connected = false
+        if not silent_fail then
+            self.overlay:show_toast("正在连接公网服务器 " .. tostring(target) .. "...", 2.5)
+        end
+    end
     return true
 end
 
-function lobby:ensure_online_connected()
+function lobby:ensure_online_connected(action)
     if self.transport:is_online() and self.transport:is_connected() and self.server_connected then
         return true
     end
-    return self:connect_online_server(self.server_input, false)
+    if action then
+        self.pending_online_action = action
+    end
+    if self.transport:is_online() and self.transport:is_connecting() then
+        -- Already connecting in background; action will run automatically once connected!
+        if self.transport.online_backend then
+            self.transport.online_backend.connect_silent = false
+        end
+        return false, "connecting"
+    end
+    local ok = self:connect_online_server(self.server_input, false)
+    if ok and self.server_connected then
+        return true
+    end
+    return false, ok and "connecting" or "failed"
 end
 
 function lobby:refresh_online_rooms()
-    if not self:ensure_online_connected() then return false end
+    local ready = self:ensure_online_connected({ kind = "list_rooms" })
+    if not ready then return true end
     self.transport:send({ t = "LIST_ROOMS" })
     return true
 end
 
-function lobby:create_online_room(password, is_public)
-    if not self:ensure_online_connected() then return false end
+function lobby:send_create_online_room(password, is_public)
     ensure_room_defaults(self.room)
     local pw = (password ~= nil) and password or self.pw_input or ""
     local pub = (is_public ~= nil) and is_public or self.room_public
@@ -491,16 +570,18 @@ function lobby:create_online_room(password, is_public)
         tick_len = TICK_LENGTH or (1 / 60),
         player_name = "Player 1",
     })
+end
+
+function lobby:create_online_room(password, is_public)
+    local pw = (password ~= nil) and password or self.pw_input or ""
+    local pub = (is_public ~= nil) and is_public or self.room_public
+    local ready, st = self:ensure_online_connected({ kind = "create_room", password = pw, is_public = pub })
+    if not ready then return st == "connecting" end
+    self:send_create_online_room(pw, pub)
     return true
 end
 
-function lobby:join_online_room(code, password)
-    local clean_code = tostring(code or self.code_input or ""):upper():gsub("%s+", "")
-    if #clean_code < 3 then
-        self.overlay:show_toast("请先输入 4 位房间码！", 3)
-        return false
-    end
-    if not self:ensure_online_connected() then return false end
+function lobby:send_join_online_room(clean_code, password)
     self.transport:send({
         t = "JOIN_ROOM",
         code = clean_code,
@@ -512,18 +593,22 @@ function lobby:join_online_room(code, password)
         tick_len = TICK_LENGTH or (1 / 60),
         player_name = "Player 2",
     })
+end
+
+function lobby:join_online_room(code, password)
+    local clean_code = tostring(code or self.code_input or ""):upper():gsub("%s+", "")
+    if #clean_code < 3 then
+        self.overlay:show_toast("请先输入 4 位房间码！", 3)
+        return false
+    end
+    local pw = (password ~= nil) and password or self.pw_input or ""
+    local ready, st = self:ensure_online_connected({ kind = "join_room", code = clean_code, password = pw })
+    if not ready then return st == "connecting" end
+    self:send_join_online_room(clean_code, pw)
     return true
 end
 
-function lobby:reconnect_online_session(sess)
-    sess = sess or self.saved_session or self:load_saved_session()
-    if not sess then
-        self.overlay:show_toast("未找到可重连的公网对局记录！", 3)
-        return false
-    end
-    if not self:connect_online_server(sess.server, false) then
-        return false
-    end
+function lobby:send_reconnect_online(sess)
     self.online_room_code = sess.code
     self.online_token = sess.token
     self.local_pid = tonumber(sess.pid) or 2
@@ -541,6 +626,20 @@ function lobby:reconnect_online_session(sess)
         tick_len = TICK_LENGTH or (1 / 60),
     })
     self.overlay:show_toast("正在向房间 #" .. tostring(sess.code) .. " 发起断线重连...", 4)
+end
+
+function lobby:reconnect_online_session(sess)
+    sess = sess or self.saved_session or self:load_saved_session()
+    if not sess then
+        self.overlay:show_toast("未找到可重连的公网对局记录！", 3)
+        return false
+    end
+    self.pending_online_action = { kind = "reconnect", sess = sess }
+    local ok = self:connect_online_server(sess.server, false)
+    if not ok then
+        self.pending_online_action = nil
+        return false
+    end
     return true
 end
 
@@ -566,12 +665,12 @@ function lobby:leave_room()
         if self.open then
             self.transport:start_lan_scan()
         end
-        self.overlay:show_toast("已退出局域网房间。", 2.5)
+        self.overlay:show_toast("已退出局域网房间。", 1.8)
     else
         if self.server_connected and self.transport:is_connected() then
             self:refresh_online_rooms()
         end
-        self.overlay:show_toast("已退出公网房间。", 2.5)
+        self.overlay:show_toast("已退出公网房间。", 1.8)
     end
 end
 
@@ -628,12 +727,20 @@ function lobby:on_message(msg)
     end
 
     local t = msg.t
-    if t == "SERVER_HELLO" then
+    if t == "VOICE" then
+        if self.voice then
+            self.voice:on_voice_message(msg)
+        end
+        return
+
+    elseif t == "SERVER_HELLO" then
         self.server_connected = true
         self.server_ver = msg.server_ver
+        self.server_voice_ok = (msg.voice_ok == true)
         self.online_rooms = msg.rooms or {}
         updater:note_server_version(msg.server_ver)
-        self.boot:log("[LOBBY] Server hello OK (ver=%s, rooms=%d)", tostring(msg.server_ver), #self.online_rooms)
+        self.boot:log("[LOBBY] Server hello OK (ver=%s, voice_ok=%s, rooms=%d)",
+            tostring(msg.server_ver), tostring(self.server_voice_ok), #self.online_rooms)
 
     elseif t == "ROOM_LIST" then
         self.online_rooms = msg.rooms or {}
@@ -653,7 +760,7 @@ function lobby:on_message(msg)
         self.sub_modal = nil
         self:save_session(msg.code, 1, msg.token)
         self.boot:log("[LOBBY] Created Online Room #%s (token saved)", tostring(msg.code))
-        self.overlay:show_toast("公网房间 #" .. tostring(msg.code) .. " 已创建！把房间码发给好友即可加入！", 5)
+        self.overlay:show_toast("公网房间 #" .. tostring(msg.code) .. " 已创建！把房间码发给好友即可加入！", 2.8)
 
     elseif t == "ROOM_JOINED" then
         self.role = "client"
@@ -670,14 +777,14 @@ function lobby:on_message(msg)
         self.sub_modal = nil
         self:save_session(msg.code, self.local_pid, msg.token)
         self.boot:log("[LOBBY] Joined Online Room #%s as P%d", tostring(msg.code), self.local_pid)
-        self.overlay:show_toast("已加入公网房间 #" .. tostring(msg.code) .. "（你是 2P 红方）！", 4)
+        self.overlay:show_toast("已加入公网房间 #" .. tostring(msg.code) .. "（你是 2P 红方）！", 2.2)
 
     elseif t == "PEER_JOINED" then
         self.peer_connected = true
         self.peer_ready = (msg.peer_ready ~= false)
         self.peer_name = tostring(msg.name or "2P 队友")
         if msg.room then self.room = msg.room; ensure_room_defaults(self.room) end
-        self.overlay:show_toast("2P 队友已加入房间 #" .. tostring(self.online_room_code) .. "，可以开局了！", 4)
+        self.overlay:show_toast("2P 队友已加入房间 #" .. tostring(self.online_room_code) .. "，可以开局了！", 2.2)
 
     elseif t == "PEER_LEFT" then
         self.peer_connected = false
@@ -746,13 +853,13 @@ function lobby:on_message(msg)
             room = self.room,
         })
         self:broadcast_room_state()
-        self.overlay:show_toast("2P 队友已加入局域网房间，可以开局了！", 4)
+        self.overlay:show_toast("2P 队友已加入局域网房间，可以开局了！", 2.2)
 
     elseif t == "WELCOME" and self.role == "client" then
         self.local_pid = tonumber(msg.pid) or 2
         if msg.room then self.room = msg.room; ensure_room_defaults(self.room) end
         self.peer_connected = true
-        self.overlay:show_toast("已加入局域网房间（你是 2P 红方）！", 3.5)
+        self.overlay:show_toast("已加入局域网房间（你是 2P 红方）！", 2.0)
 
     elseif t == "ROOM_STATE" then
         if msg.room then self.room = msg.room; ensure_room_defaults(self.room) end
@@ -795,6 +902,15 @@ function lobby:update(dt)
         if ev.type == "peer_connected" then
             self.peer_connected = true
             self.peer_name = "正在握手 (" .. tostring(ev.ip) .. ")..."
+        elseif ev.type == "lan_connected" then
+            self:on_lan_connected(ev.ip, ev.port)
+        elseif ev.type == "lan_connect_failed" then
+            self.pending_lan_join = nil
+            self.overlay:show_toast("连接局域网房主失败：" .. tostring(ev.reason), 4)
+            if self.auto_role == "guest" and self.auto_stage == "GUEST_WAIT_START" then
+                self.auto_stage = "INIT"
+                self.auto_timer = 0.5
+            end
         elseif ev.type == "peer_disconnected" then
             self.peer_connected = false
             self.peer_ready = false
@@ -804,8 +920,21 @@ function lobby:update(dt)
             else
                 self.overlay:show_toast("队友已断开连接。", 3.5)
             end
+        elseif ev.type == "server_connected" then
+            self:on_online_connected()
+        elseif ev.type == "server_connect_failed" then
+            self.server_connected = false
+            self.pending_online_action = nil
+            if not ev.silent then
+                self.overlay:show_toast("连接公网服务器失败：" .. tostring(ev.reason), 4.5)
+            end
+            if self.auto_m2_role and (self.auto_stage == "HOST_WAIT_ROOM" or self.auto_stage == "GUEST_SCAN_ONLINE" or self.auto_stage == "RECONNECT_WAIT") then
+                self.auto_stage = "INIT"
+                self.auto_timer = 0
+            end
         elseif ev.type == "server_disconnected" then
             self.server_connected = false
+            self.pending_online_action = nil
             if self.lockstep and self.lockstep:is_active() then
                 self.lockstep:on_peer_disconnected("与公网中继服断开连接", false)
             else
@@ -842,6 +971,10 @@ function lobby:step_auto_coop(dt)
     if self.auto_stage == "INIT" then
         if self.auto_role == "host" then
             self.room.level_idx = tonumber(os.getenv("KR_MP_TEST_LEVEL")) or 101
+            local env_diff = tonumber(os.getenv("KR_MP_TEST_DIFF"))
+            if env_diff and env_diff >= 1 and env_diff <= 4 then
+                self.room.level_difficulty = math.floor(env_diff)
+            end
             self.room.econ_mode = "independent"
             self.room.tower_mode = "owned"
             self.room.heroes = { catalog.DEFAULT_HERO_1 or 53, catalog.DEFAULT_HERO_2 or 54 }
@@ -1252,6 +1385,7 @@ function lobby:handle_button(btn)
     if id == "close" then
         self.open = false
         self.sub_modal = nil
+        if self.overlay then self.overlay:clear_toast() end
     elseif id == "check_update" then
         if updater.has_update then
             updater:open_download_page()
@@ -1260,9 +1394,12 @@ function lobby:handle_button(btn)
         end
     elseif id == "modal_back" then
         self.sub_modal = nil
+        if self.overlay then self.overlay:clear_toast() end
     elseif id == "tab_lan" then
+        if self.overlay then self.overlay:clear_toast() end
         self:switch_tab("lan")
     elseif id == "tab_online" then
+        if self.overlay then self.overlay:clear_toast() end
         self:switch_tab("online")
     -- LAN Home
     elseif id == "host_lan" then
@@ -1310,16 +1447,20 @@ function lobby:handle_button(btn)
     elseif id == "start_match" then
         self:host_start_match()
     elseif id == "open_stages" and self.role == "host" then
+        if self.overlay then self.overlay:clear_toast() end
         self.sub_modal = "stages"
     elseif id == "open_hero1" and self.role == "host" then
+        if self.overlay then self.overlay:clear_toast() end
         self.sub_modal = "hero1"
     elseif id == "open_hero2" then
+        if self.overlay then self.overlay:clear_toast() end
         self.sub_modal = "hero2"
     elseif id == "open_towers" and self.role == "host" then
+        if self.overlay then self.overlay:clear_toast() end
         ensure_room_defaults(self.room)
         self.sub_modal = "towers"
     elseif id == "diff_cycle" and self.role == "host" then
-        self.room.level_difficulty = (self.room.level_difficulty % 3) + 1
+        self.room.level_difficulty = (self.room.level_difficulty % 4) + 1
         self:broadcast_room_state()
     elseif id == "econ_toggle" and self.role == "host" then
         self.room.econ_mode = (self.room.econ_mode == "independent") and "shared" or "independent"
@@ -1337,11 +1478,38 @@ function lobby:handle_button(btn)
             [4] = "已切至【樱花映射 200ms 缓冲】：免费 FRP / 跨省联机更丝滑不卡顿！",
             [6] = "已切至【高延迟抗抖 300ms 缓冲】：适合高抖动跨网 / 热点联机",
         }
-        self.overlay:show_toast(tips[self.room.input_delay_turns], 3.2)
+        self.overlay:show_toast(tips[self.room.input_delay_turns], 2.4)
     elseif id == "toggle_tower_marks" and self.coop then
         self.coop.show_tower_marks = not self.coop.show_tower_marks
         self:save_prefs()
-        self.overlay:show_toast(self.coop.show_tower_marks and "已开启本地防御塔底座红蓝标志（仅对自己生效）" or "已关闭本地防御塔归属标志（纯净画面）", 2.8)
+        self.overlay:show_toast(self.coop.show_tower_marks and "已开启本地防御塔底座红蓝标志（仅对自己生效）" or "已关闭本地防御塔归属标志（纯净画面）", 2.0)
+    elseif id == "voice_cycle" and self.voice then
+        if not self.voice.supported then
+            self.overlay:show_toast("当前环境未检测到可用语音音频接口。", 2.2)
+        else
+            self.voice:cycle_mode()
+            self:save_prefs()
+            self.overlay:show_toast(self.voice:get_mode_toast(), 2.4)
+        end
+    elseif id == "voice_aux" and self.voice then
+        if not self.voice.supported then
+            self.overlay:show_toast("当前环境未检测到可用语音音频接口。", 2.2)
+        elseif self.peer_connected then
+            local muted = self.voice:toggle_peer_mute()
+            self:save_prefs()
+            self.overlay:show_toast(muted and "已静音队友语音（听筒关闭）" or "已恢复收听队友语音（听筒开启）", 1.8)
+        else
+            local testing = self.voice:toggle_self_test()
+            self.overlay:show_toast(testing and "试麦已开启：现在说话可实时听见自己回放（请戴耳机，再点关闭）" or "已关闭本地试麦回放。", 2.4)
+        end
+    elseif id == "cycle_font_theme" then
+        local info = fonts.cycle_theme()
+        self:save_prefs()
+        self.overlay:show_toast("已切换字体风格：" .. info.desc, 2.8)
+    elseif id == "cycle_seal_style" then
+        local info = ui.cycle_seal_style()
+        self:save_prefs()
+        self.overlay:show_toast("已切换蜡封样式：" .. info.desc, 2.8)
     elseif id == "toggle_ready" and self.role == "client" then
         self.local_ready = not self.local_ready
         self.transport:send({ t = "SET_GUEST", ready = self.local_ready, hero_idx = self.room.heroes[2] })
@@ -1393,12 +1561,18 @@ end
 function lobby:mousepressed(x, y, button)
     if not self.open then return false end
     if button == 1 then
+        local s = self._ui_scale or 1
+        local lx = (x - (self._ui_ox or 0)) / s
+        local ly = (y - (self._ui_oy or 0)) / s
         for _, b in ipairs(self.buttons) do
-            if x >= b.x and x <= b.x + b.w and y >= b.y and y <= b.y + b.h then
+            if lx >= b.x and lx <= b.x + b.w and ly >= b.y and ly <= b.y + b.h then
                 self._consumed_down = true
                 self:handle_button(b)
                 return true
             end
+        end
+        if self.overlay and self.overlay:dismiss_toast_at(x, y) then
+            return true
         end
         self.focused_field = nil
     end
@@ -1425,9 +1599,10 @@ local PACK_TAG_STYLES = {
 }
 
 local DIFF_STYLES = {
-    [1] = { name = "休闲", stars = "★☆☆", col = { 42, 118, 56, 255 } },
-    [2] = { name = "普通", stars = "★★☆", col = { 168, 92, 24, 255 } },
-    [3] = { name = "老兵", stars = "★★★", col = { 158, 32, 32, 255 } },
+    [1] = { name = "休闲",   stars = "★☆☆",  col = { 42, 118, 56, 255 },  star_col = { 255, 236, 172, 255 } },
+    [2] = { name = "普通",   stars = "★★☆",  col = { 168, 92, 24, 255 },  star_col = { 255, 236, 172, 255 } },
+    [3] = { name = "老兵",   stars = "★★★",  col = { 158, 32, 32, 255 },  star_col = { 255, 236, 172, 255 } },
+    [4] = { name = "不可能", stars = "★★★★", col = { 126, 24, 148, 255 }, star_col = { 242, 168, 255, 255 } },
 }
 
 local function get_stage_pack_info(level_idx)
@@ -1457,30 +1632,25 @@ function lobby:draw()
     local G = love.graphics
     local T = ui.THEME
     local sw, sh = G.getWidth(), G.getHeight()
-    local pw = math.min(780, sw - 40)
-    local ph = math.min(486, sh - 46)
-    local px = math.floor((sw - pw) / 2)
-    local py = math.floor((sh - ph) / 2) + 12
+    local scale = ui.compute_lobby_scale(sw, sh)
+    local pw, ph = 780, 486
+    local ox = math.floor((sw - pw * scale) * 0.5)
+    local oy = math.floor((sh - ph * scale) * 0.5 + 12 * scale)
+    oy = math.max(math.floor(28 * scale), oy)
+    local px, py = 0, 0
 
-    if not self.font_banner then self.font_banner = fonts.get(16) end
-    if not self.font_title then self.font_title = fonts.get(16) end
-    if not self.font_hero then self.font_hero = fonts.get(15) end
-    if not self.font then self.font = fonts.get(13) end
-    if not self.font_small then self.font_small = fonts.get(12) end
-    if not self.font_tiny then self.font_tiny = fonts.get(11) end
+    self._ui_scale = scale
+    self._ui_ox = ox
+    self._ui_oy = oy
 
-    local font_map = {
-        title = self.font_title,
-        hero  = self.font_hero,
-        main  = self.font,
-        small = self.font_small,
-        tiny  = self.font_tiny,
-    }
+    local font_map = ui.make_font_map(scale)
 
-    local mx, my = 0, 0
+    local raw_mx, raw_my = 0, 0
     if love.mouse and love.mouse.getPosition then
-        mx, my = love.mouse.getPosition()
+        raw_mx, raw_my = love.mouse.getPosition()
     end
+    local mx = (raw_mx - ox) / scale
+    local my = (raw_my - oy) / scale
 
     local btns = {}
     local function add_btn(id, label, x, y, w, h, style, extra)
@@ -1497,9 +1667,12 @@ function lobby:draw()
     G.setShader()
     G.setBlendMode("alpha")
 
-    -- Warm darkened backdrop vignette
+    -- Full-screen warm darkened backdrop vignette
     G.setColor(T.backdrop[1], T.backdrop[2], T.backdrop[3], T.backdrop[4])
     G.rectangle("fill", 0, 0, sw, sh)
+
+    -- Scale entire War-Table cleanly to current resolution while rendering all text at native physical DPI!
+    ui.begin_transform(scale, ox, oy)
 
     -- Pick clean single-line Royal Crimson Banner Title (100% centered inside gold stitch!)
     local banner_title = "双人同盟 · 皇家战桌"
@@ -1516,7 +1689,7 @@ function lobby:draw()
     end
 
     -- Draw Hand-Hewn Dark Oak Shell + Aged Parchment + 4 Iron Corners + Royal Crimson Ribbon
-    ui.draw_ironhide_war_table(px, py, pw, ph, banner_title, self.font_banner)
+    ui.draw_ironhide_war_table(px, py, pw, ph, banner_title, font_map.banner)
 
     -- Protruding Ironhide Corner Crimson Close Shield (×)
     add_btn("close", "×", px + pw - 22, py - 10, 32, 30, "crimson", { large = true, radius = 8 })
@@ -1537,10 +1710,8 @@ function lobby:draw()
         local upd_w = updater.has_update and 112 or 76
         add_btn("check_update", upd_lbl, cx + cw - upd_w, y + 1, upd_w, 26,
             updater.has_update and "battle" or "parchment", { tiny = true })
-        if self.font_tiny then G.setFont(self.font_tiny) end
-        G.setColor(T.ink_muted[1], T.ink_muted[2], T.ink_muted[3], 235)
-        G.printf(string.format("FL %s · 补丁 v%s · F10", tostring(KR_FL_VERSION), proto.MOD_VERSION),
-            cx + 356, y + 7, cw - 364 - upd_w, "right")
+        ui.text(string.format("FL %s · 补丁 v%s · F10", tostring(KR_FL_VERSION), proto.MOD_VERSION),
+            cx + 356, y + 7, T.ink_muted, font_map.tiny, cw - 364 - upd_w, "right")
 
         y = y + 36
         G.setColor(T.parchment_line[1], T.parchment_line[2], T.parchment_line[3], 130)
@@ -1561,14 +1732,10 @@ function lobby:draw()
                 border_w = 2,
                 thumbtack = true,
             })
-            ui.draw_pill(cx + 14, y + 14, 124, 20, "1P 房主 · 蓝方旗帜", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, self.font_tiny)
-            if self.font_hero then G.setFont(self.font_hero) end
-            G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
-            G.print("设立双人合作战桌", cx + 14, y + 40)
-            if self.font_tiny then G.setFont(self.font_tiny) end
-            G.setColor(T.ink_sub[1], T.ink_sub[2], T.ink_sub[3], 240)
-            G.printf("开房自动开启局域网发现 (TCP 17777)；异地开黑用樱花映射指向此端口即可零服务器直连。",
-                cx + 14, y + 62, card_w - 28, "left")
+            ui.draw_pill(cx + 14, y + 14, 124, 20, "1P 房主 · 蓝方旗帜", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, font_map.tiny_bold)
+            ui.text("设立双人合作战桌", cx + 14, y + 40, T.ink_text, font_map.hero)
+            ui.text("开房自动开启局域网发现 (TCP 17777)；异地开黑用樱花映射指向此端口即可零服务器直连。",
+                cx + 14, y + 62, T.ink_sub, font_map.tiny, card_w - 28, "left")
             add_btn("host_lan", "创建房间并备战", cx + 14, y + 96, card_w - 28, 32, "battle", { small = false })
             add_btn("join_local", "本机双开快速加入 (127.0.0.1)", cx + 14, y + 134, card_w - 28, 22, "parchment", { tiny = true })
 
@@ -1581,10 +1748,8 @@ function lobby:draw()
                 border_w = 2,
                 thumbtack = true,
             })
-            ui.draw_pill(rx + 14, y + 14, 124, 20, "2P 队友 · 红方驰援", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, self.font_tiny)
-            if self.font_hero then G.setFont(self.font_hero) end
-            G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
-            G.print("粘贴樱花 / 局域网地址直连", rx + 14, y + 40)
+            ui.draw_pill(rx + 14, y + 14, 124, 20, "2P 队友 · 红方驰援", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, font_map.tiny_bold)
+            ui.text("粘贴樱花 / 局域网地址直连", rx + 14, y + 40, T.ink_text, font_map.hero)
 
             local ip_disp = self.ip_input
             if #ip_disp > 32 then ip_disp = "..." .. ip_disp:sub(-29) end
@@ -1593,10 +1758,9 @@ function lobby:draw()
                 small = true, focused = (self.focused_field == "ip"),
             })
             add_btn("paste_ip", "粘贴", rx + 14 + ip_w + 6, y + 66, 58, 28, "wood", { small = true })
-            if self.font_tiny then G.setFont(self.font_tiny) end
-            G.setColor(T.ink_muted[1], T.ink_muted[2], T.ink_muted[3], 235)
-            G.print("复制整行樱花日志后点「粘贴」(或 Ctrl+V) 自动提取地址！", rx + 14, y + 99)
-            add_btn("join_ip", "立即直连队友战桌", rx + 14, y + 120, card_w - 28, 34, "crimson", { small = false })
+            ui.text("复制整行樱花日志后点「粘贴」(或 Ctrl+V) 自动提取地址！", rx + 14, y + 99, T.ink_muted, font_map.tiny)
+            local lan_connecting = (not self.transport:is_online()) and self.transport:is_connecting()
+            add_btn("join_ip", lan_connecting and "正在连接房主..." or "立即直连队友战桌", rx + 14, y + 120, card_w - 28, 34, "crimson", { small = false })
 
             y = y + card_h + 12
 
@@ -1605,15 +1769,12 @@ function lobby:draw()
             ui.draw_armory_tray(cx, y, cw, tray_h, 9)
             local rooms = self.transport:get_lan_rooms()
             ui.draw_ping_dot(cx + 18, y + 18, 12, #rooms > 0)
-            if self.font_small then G.setFont(self.font_small) end
             ui.print_shadow(string.format("酒馆布告栏 · 自动扫描附近局域网战桌 (UDP 17778 · %d 个房间)", #rooms),
-                cx + 30, y + 11, T.gold_bright)
+                cx + 30, y + 11, T.gold_bright, nil, nil, nil, font_map.small_bold)
 
             if #rooms == 0 then
-                if self.font_small then G.setFont(self.font_small) end
-                G.setColor(232, 206, 158, 205)
-                G.printf("暂未扫描到同 Wi-Fi 房间 · 同局域网请等待房主点「创建房间」；异地远程请直接使用右上樱花映射直连。",
-                    cx + 22, y + math.floor(tray_h * 0.46), cw - 44, "center")
+                ui.text("暂未扫描到同 Wi-Fi 房间 · 同局域网请等待房主点「创建房间」；异地远程请直接使用右上樱花映射直连。",
+                    cx + 22, y + math.floor(tray_h * 0.46), { 232, 206, 158, 220 }, font_map.small, cw - 44, "center")
             else
                 local max_lan = math.max(1, math.floor((tray_h - 38) / 48))
                 for idx = 1, math.min(#rooms, max_lan) do
@@ -1621,17 +1782,15 @@ function lobby:draw()
                     local ry = y + 34 + (idx - 1) * 48
                     ui.draw_parchment_card(cx + 12, ry, cw - 24, 42, { radius = 6 })
                     ui.draw_stage_thumb(r.level_idx, cx + 18, ry + 4, 58, 34, { radius = 4, pad = 1, border = { 108, 72, 32, 235 } })
-                    if self.font then G.setFont(self.font) end
-                    G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
-                    G.print(string.format("%s  ·  %s", tostring(r.name), get_stage_clean_title(r.level_idx)), cx + 86, ry + 5)
-                    if self.font_tiny then G.setFont(self.font_tiny) end
-                    G.setColor(T.ink_sub[1], T.ink_sub[2], T.ink_sub[3], 235)
-                    G.print(string.format("%s:%d  ·  %d/2 勇士等待中", tostring(r.ip), tonumber(r.port) or 17777, tonumber(r.players) or 1), cx + 86, ry + 23)
+                    ui.text(string.format("%s  ·  %s", tostring(r.name), get_stage_clean_title(r.level_idx)), cx + 86, ry + 5, T.ink_text, font_map.main_bold)
+                    ui.text(string.format("%s:%d  ·  %d/2 勇士等待中", tostring(r.ip), tonumber(r.port) or 17777, tonumber(r.players) or 1), cx + 86, ry + 23, T.ink_sub, font_map.tiny)
                     add_btn("join_lan_room", "揭榜加入", cx + cw - 110, ry + 6, 86, 28, "battle", { small = true, room = r })
                 end
             end
         else
             -- === 公网中继服首页 ===
+            local is_connecting = self.transport:is_online() and self.transport:is_connecting()
+
             if self.saved_session then
                 local s = self.saved_session
                 add_btn("reconnect_last",
@@ -1642,9 +1801,7 @@ function lobby:draw()
 
             -- Server connection strip
             ui.draw_parchment_card(cx, y, cw, 44, { radius = 7 })
-            if self.font_small then G.setFont(self.font_small) end
-            G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
-            G.print("中继服：", cx + 12, y + 14)
+            ui.text("中继服：", cx + 12, y + 14, T.ink_text, font_map.small_bold)
             local sx = cx + 64
             local sw_in = cw - 64 - 224
             local srv_disp = self.server_input
@@ -1653,8 +1810,10 @@ function lobby:draw()
                 small = true, focused = (self.focused_field == "server"),
             })
             add_btn("paste_server", "粘贴", sx + sw_in + 6, y + 7, 48, 28, "wood", { small = true })
-            local conn_lbl = self.server_connected and ("已连 " .. self.transport:get_rtt_ms() .. "ms") or "连接"
-            add_btn("connect_server", conn_lbl, sx + sw_in + 60, y + 7, 86, 28, self.server_connected and "battle" or "azure", { small = true })
+            local conn_lbl = self.server_connected and ("已连 " .. self.transport:get_rtt_ms() .. "ms")
+                or (is_connecting and "连接中..." or "连接")
+            add_btn("connect_server", conn_lbl, sx + sw_in + 60, y + 7, 86, 28,
+                self.server_connected and "battle" or (is_connecting and "wood" or "azure"), { small = true })
             add_btn("refresh_online", "刷新", sx + sw_in + 152, y + 7, 58, 28, "parchment", { small = true })
             y = y + 52
 
@@ -1664,9 +1823,7 @@ function lobby:draw()
             local rx = cx + lw + 12
 
             ui.draw_parchment_card(cx, y, lw, 92, { border = T.p1_border, border_w = 1.8, thumbtack = true })
-            if self.font_small then G.setFont(self.font_small) end
-            G.setColor(T.p1_border[1], T.p1_border[2], T.p1_border[3], 255)
-            G.print("1P 房主 · 创建公网合作房", cx + 12, y + 8)
+            ui.text("1P 房主 · 创建公网合作房", cx + 12, y + 8, T.p1_border, font_map.small_bold)
             local pw_empty = (#self.pw_input == 0)
             local pw_disp = (pw_empty and "房间密码(选填)" or self.pw_input) .. (self.focused_field == "pw" and "|" or "")
             local pw_w = lw - 122
@@ -1677,9 +1834,7 @@ function lobby:draw()
             add_btn("create_online", "创建公网房间", cx + 12, y + 58, lw - 24, 26, "azure", { small = true })
 
             ui.draw_parchment_card(rx, y, rw, 92, { border = T.p2_border, border_w = 1.8, thumbtack = true })
-            if self.font_small then G.setFont(self.font_small) end
-            G.setColor(T.p2_border[1], T.p2_border[2], T.p2_border[3], 255)
-            G.print("2P 队友 · 凭房间码加入", rx + 12, y + 8)
+            ui.text("2P 队友 · 凭房间码加入", rx + 12, y + 8, T.p2_border, font_map.small_bold)
             local code_empty = (#self.code_input == 0)
             local code_disp = (code_empty and "输入4位房间码(如 A1B2)" or self.code_input) .. (self.focused_field == "code" and "|" or "")
             add_btn("code_box", code_disp, rx + 12, y + 28, rw - 24, 25, "input", {
@@ -1692,31 +1847,28 @@ function lobby:draw()
             local tray_h = (py + ph - 22) - y
             ui.draw_armory_tray(cx, y, cw, tray_h, 9)
             ui.draw_ping_dot(cx + 18, y + 17, self.transport:get_rtt_ms(), self.server_connected)
-            if self.font_small then G.setFont(self.font_small) end
-            ui.print_shadow(string.format("公开在线房间大厅 (%d 个房间)", #self.online_rooms), cx + 30, y + 10, T.gold_bright)
+            ui.print_shadow(string.format("公开在线房间大厅 (%d 个房间)", #self.online_rooms), cx + 30, y + 10, T.gold_bright, nil, nil, nil, font_map.small_bold)
 
-            if not self.server_connected then
-                if self.font_small then G.setFont(self.font_small) end
-                G.setColor(232, 206, 158, 205)
-                G.printf("尚未连接中继服 · 点上方「连接」接入；或自开 kr-mp-server + 樱花映射 TCP 17780 享 5 分钟追帧重连。",
-                    cx + 22, y + math.floor(tray_h * 0.44), cw - 44, "center")
+            if is_connecting then
+                ui.text("正在后台探测公网中继服（不卡界面），也可直接修改上方服务器地址后点「连接」。",
+                    cx + 22, y + math.floor(tray_h * 0.44), { 246, 224, 174, 225 }, font_map.small, cw - 44, "center")
+            elseif not self.server_connected then
+                ui.text("尚未连接中继服 · 点上方「连接」接入；或自开 kr-mp-server + 樱花映射 TCP 17780 享 5 分钟追帧重连。",
+                    cx + 22, y + math.floor(tray_h * 0.44), { 232, 206, 158, 220 }, font_map.small, cw - 44, "center")
             elseif #self.online_rooms == 0 then
-                if self.font_small then G.setFont(self.font_small) end
-                G.setColor(232, 206, 158, 205)
-                G.printf("已连接服务器！当前暂无公开房间，可点左上「创建公网房间」或「刷新」。",
-                    cx + 22, y + math.floor(tray_h * 0.46), cw - 44, "center")
+                ui.text("已连接服务器！当前暂无公开房间，可点左上「创建公网房间」或「刷新」。",
+                    cx + 22, y + math.floor(tray_h * 0.46), { 232, 206, 158, 220 }, font_map.small, cw - 44, "center")
             else
                 local max_show = math.max(1, math.floor((tray_h - 34) / 38))
                 for idx = 1, math.min(#self.online_rooms, max_show) do
                     local r = self.online_rooms[idx]
                     local ry = y + 32 + (idx - 1) * 38
                     ui.draw_parchment_card(cx + 12, ry, cw - 24, 33, { radius = 5 })
-                    ui.draw_pill(cx + 18, ry + 6, 56, 20, "#" .. tostring(r.code), T.wood_mid, T.ink_dark, T.gold_bright, self.font_tiny)
-                    if self.font_small then G.setFont(self.font_small) end
-                    G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
+                    ui.draw_pill(cx + 18, ry + 6, 56, 20, "#" .. tostring(r.code), T.wood_mid, T.ink_dark, T.gold_bright, font_map.tiny_bold)
                     local pw_tag = r.has_password and " [需密码]" or ""
-                    G.print(string.format("%s  ·  %s  (%d/2)%s",
-                        tostring(r.name), get_stage_clean_title(r.level_idx), tonumber(r.players) or 1, pw_tag), cx + 82, ry + 9)
+                    ui.text(string.format("%s  ·  %s  (%d/2)%s",
+                        tostring(r.name), get_stage_clean_title(r.level_idx), tonumber(r.players) or 1, pw_tag),
+                        cx + 82, ry + 9, T.ink_text, font_map.small_bold)
                     add_btn("join_online_room", "加入", cx + cw - 92, ry + 4, 70, 24, "battle", { small = true, room = r })
                 end
             end
@@ -1766,7 +1918,7 @@ function lobby:draw()
             local pby = py + ph - 44
             ui.draw_pill(cx + math.floor(cw / 2) - 56, pby + 2, 112, 24,
                 string.format("第 %d / %d 页", cur_page, total_pages),
-                { 246, 232, 198, 240 }, T.parchment_edge, T.ink_text, self.font_small)
+                { 246, 232, 198, 240 }, T.parchment_edge, T.ink_text, font_map.small_bold)
             if cur_page > 1 then
                 add_btn("stage_page_prev", "上一页", cx + math.floor(cw / 2) - 146, pby, 82, 28, "wood", { small = true })
             end
@@ -1834,19 +1986,15 @@ function lobby:draw()
 
         ui.draw_pill(cx + 12, y + 10, preview_w - 24, 20,
             is_h1 and "1P 蓝方主将预览" or "2P 红方队友预览",
-            { 18, 12, 8, 185 }, T.gold_mid, T.gold_bright, self.font_tiny)
+            { 18, 12, 8, 185 }, T.gold_mid, T.gold_bright, font_map.tiny_bold)
 
         ui.draw_hero_big_portrait(preview_hero, cx + 12, y + 36, preview_w - 24, 242, {
             radius = 8, pad = 2, border = T.gold_mid, border_w = 2,
         })
-        if self.font_title then G.setFont(self.font_title) end
-        ui.print_shadow(catalog.get_hero_label(preview_hero), cx + 8, y + 288, T.gold_bright, preview_w - 16, "center")
-        if self.font_small then G.setFont(self.font_small) end
+        ui.print_shadow(catalog.get_hero_label(preview_hero), cx + 8, y + 288, T.gold_bright, preview_w - 16, "center", nil, font_map.title)
         ui.print_shadow(string.format("英雄编号 #%d", preview_hero), cx + 8, y + 314,
-            is_h1 and T.p1_light or T.p2_light, preview_w - 16, "center")
-        if self.font_tiny then G.setFont(self.font_tiny) end
-        G.setColor(232, 212, 174, 210)
-        G.printf("点击右侧头像立即委任出战", cx + 10, y + 344, preview_w - 20, "center")
+            is_h1 and T.p1_light or T.p2_light, preview_w - 16, "center", nil, font_map.small_bold)
+        ui.text("点击右侧头像立即委任出战", cx + 10, y + 344, { 232, 212, 174, 215 }, font_map.tiny, preview_w - 20, "center")
 
     elseif self.sub_modal == "towers" then
         -- === 皇家军械库 · FL 8.2.0 全 59 选 12（6代 + 5代 + 4代） ===
@@ -1858,7 +2006,7 @@ function lobby:draw()
         local full = (#self.room.towers >= 12)
         ui.draw_pill(cx, y + 2, 102, 24, string.format("已装备 %d/12", #self.room.towers),
             full and { 42, 122, 54, 245 } or { 172, 108, 28, 245 },
-            T.ink_dark, { 255, 250, 232, 255 }, self.font_tiny)
+            T.ink_dark, { 255, 250, 232, 255 }, font_map.tiny_bold)
 
         local packs = catalog.TOWER_PACKS
         local right_w = 180
@@ -1894,7 +2042,7 @@ function lobby:draw()
         end
 
     else
-        -- === 战备沙盘（V2 铁皮羊皮纸皇家战桌主界面 · 1:1 复刻定稿样板！） ===
+        -- === 战备沙盘（V2 铁皮羊皮纸皇家战桌主界面 · 1:1 高清自适应！） ===
         ensure_room_defaults(self.room)
         local is_host = (self.role == "host")
         local rtt = self.transport:get_rtt_ms()
@@ -1905,21 +2053,48 @@ function lobby:draw()
         -- Row 1: Top Status & Sakura/Marks Compact Strip
         local y = py + 40
         ui.draw_ping_dot(cx + 8, y + 12, rtt, self.peer_connected)
-        if self.font_small then G.setFont(self.font_small) end
-        G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
-        G.print(self.peer_connected and "同盟已集结 (2/2)" or "等待 2P 入阵 (1/2)", cx + 20, y + 5)
+        ui.text(self.peer_connected and "同盟已集结 (2/2)" or "等待 2P 入阵 (1/2)", cx + 20, y + 5, T.ink_text, font_map.small_bold)
 
         local net_info
         if self.transport:is_online() then
             net_info = string.format("公网 #%s · %dms", tostring(self.online_room_code or "----"), rtt)
         elseif is_host then
-            net_info = string.format("TCP:%d (樱花填此端口) · %dms", self.transport:get_port(), rtt)
+            net_info = string.format("TCP:%d (樱花端口) · %dms", self.transport:get_port(), rtt)
         else
             net_info = string.format("已直连远程主机 · %dms", rtt)
         end
-        local info_w = is_host and 206 or 158
-        ui.draw_pill(cx + 128, y + 2, info_w, 21, net_info,
-            { 74, 44, 18, 28 }, { 154, 114, 58, 160 }, T.ink_sub, self.font_tiny)
+        local info_w = is_host and 204 or 164
+        ui.draw_pill(cx + 136, y + 2, info_w, 21, net_info,
+            { 74, 44, 18, 28 }, { 154, 114, 58, 160 }, T.ink_sub, font_map.tiny)
+
+        -- Built-in Livestream Voice Controls cleanly nested in the Row 1 center gap
+        if self.voice then
+            local v_ok = self.voice.supported
+            local v_mode = self.voice.mode
+            local v_talk = self.voice.local_talking
+            local v_lbl = self.voice:get_mode_lobby_label()
+            local v_style = (v_ok and v_talk) and "battle" or ((v_ok and v_mode ~= "mute") and "wood" or "parchment")
+            local v_fg = (v_mode == "mute" or not v_ok) and { 158, 42, 42, 255 }
+                or ((v_mode == "vad") and { 196, 255, 206, 255 } or { 255, 240, 198, 255 })
+            add_btn("voice_cycle", v_lbl, cx + 346, y, 106, 24, v_style, {
+                tiny = true, fg = v_talk and { 255, 255, 242, 255 } or v_fg,
+            })
+            local aux_lbl, aux_style, aux_fg
+            if self.peer_connected then
+                local pm = self.voice.peer_muted
+                aux_lbl = pm and "听筒:关" or "听筒:开"
+                aux_style = pm and "crimson" or "parchment"
+                aux_fg = pm and { 255, 236, 232, 255 } or { 42, 118, 56, 255 }
+            else
+                local st = self.voice.self_test
+                aux_lbl = st and "试麦中" or "试麦"
+                aux_style = st and "battle" or "parchment"
+                aux_fg = st and { 255, 255, 238, 255 } or T.ink_text
+            end
+            add_btn("voice_aux", aux_lbl, cx + 456, y, 52, 24, aux_style, {
+                tiny = true, fg = aux_fg,
+            })
+        end
 
         if is_host then
             add_btn("delay_cycle", delay_lbl, cx + cw - 216, y, 122, 24, "parchment", {
@@ -1927,7 +2102,7 @@ function lobby:draw()
             })
         else
             ui.draw_pill(cx + cw - 216, y + 1, 122, 22, delay_lbl,
-                { 238, 218, 174, 240 }, { 154, 114, 58, 180 }, T.ink_text, self.font_tiny)
+                { 238, 218, 174, 240 }, { 154, 114, 58, 180 }, T.ink_text, font_map.tiny)
         end
         add_btn("toggle_tower_marks", marks_on and "塔底徽记:开" or "塔底徽记:关", cx + cw - 88, y, 88, 24,
             marks_on and "wood" or "parchment", {
@@ -1959,9 +2134,8 @@ function lobby:draw()
         G.setLineWidth(2.2)
         G.rectangle("line", cx, y, hero_w, stage_h, 10, 10)
 
-        if self.font_tiny then G.setFont(self.font_tiny) end
-        ui.print_shadow("1P 蓝方主将", cx + 10, y + 6, T.p1_light)
-        ui.draw_pill(cx + hero_w - 44, y + 4, 36, 17, "房主", { 12, 26, 48, 175 }, nil, T.gold_bright, self.font_tiny)
+        ui.print_shadow("1P 蓝方主将", cx + 10, y + 6, T.p1_light, nil, nil, nil, font_map.tiny_bold)
+        ui.draw_pill(cx + hero_w - 44, y + 4, 36, 17, "房主", { 12, 26, 48, 175 }, nil, T.gold_bright, font_map.tiny_bold)
 
         -- Full Vertical Hero Art (1P)
         local hp_x, hp_y, hp_w, hp_h = cx + 8, y + 24, hero_w - 16, 152
@@ -1970,15 +2144,29 @@ function lobby:draw()
         })
         -- Bottom dark scrim inside portrait for crisp hero name
         ui.draw_vgrad_rect(hp_x + 2, hp_y + hp_h - 46, hp_w - 4, 44, { 10, 22, 38, 0 }, { 8, 18, 32, 232 }, 4)
-        if self.font_hero then G.setFont(self.font_hero) end
-        ui.print_shadow(catalog.get_hero_label(self.room.heroes[1]), hp_x + 8, hp_y + hp_h - 36, T.gold_bright)
-        if self.font_tiny then G.setFont(self.font_tiny) end
-        ui.print_shadow("英雄 #" .. tostring(self.room.heroes[1]), hp_x + 8, hp_y + hp_h - 17, T.p1_light)
+        ui.print_shadow(catalog.get_hero_label(self.room.heroes[1]), hp_x + 8, hp_y + hp_h - 36, T.gold_bright, nil, nil, nil, font_map.hero)
+        ui.print_shadow("英雄 #" .. tostring(self.room.heroes[1]), hp_x + 8, hp_y + hp_h - 17, T.p1_light, nil, nil, nil, font_map.tiny)
+        -- 1P Live Voice Equalizer Badge & Speaking Aura
+        if self.voice and self.voice.supported then
+            local v1_talk, v1_lvl = self.voice:get_seat_state(1, self.local_pid)
+            if v1_talk or (self.local_pid == 1 and v1_lvl > 0.06 and self.voice.mode ~= "mute") then
+                G.setColor(10, 26, 44, 215)
+                G.rectangle("fill", hp_x + hp_w - 44, hp_y + hp_h - 24, 38, 18, 5, 5)
+                G.setColor(v1_talk and 92 or 120, v1_talk and 242 or 178, v1_talk and 148 or 230, 220)
+                G.setLineWidth(1.2)
+                G.rectangle("line", hp_x + hp_w - 44, hp_y + hp_h - 24, 38, 18, 5, 5)
+                ui.draw_voice_eq(hp_x + hp_w - 40, hp_y + hp_h - 22, 30, 14, v1_lvl, v1_talk,
+                    { 118, 255, 168, 255 }, { 84, 206, 255, 230 })
+            end
+            if v1_talk then
+                ui.draw_speaking_glow(cx, y, hero_w, stage_h, 10, { 92, 242, 152, 255 }, v1_lvl)
+            end
+        end
         if is_host then
             add_btn("open_hero1", "更换 1P 主将", cx + 8, y + 182, hero_w - 16, 26, "azure", { small = true })
         else
             ui.draw_pill(cx + 12, y + 184, hero_w - 24, 22, "房主主控主将",
-                { 14, 34, 62, 185 }, { 112, 178, 238, 130 }, T.p1_light, self.font_tiny)
+                { 14, 34, 62, 185 }, { 112, 178, 238, 130 }, T.p1_light, font_map.tiny_bold)
         end
 
         -- CENTER: Pinned Painted Campaign Map Postcard + 3 Cohesive Parchment Rule Plaques
@@ -1998,17 +2186,14 @@ function lobby:draw()
         ui.draw_vgrad_rect(mp_x + 1, mp_y + mp_h - 52, mp_w - 2, 51, { 24, 12, 4, 0 }, { 22, 10, 4, 235 }, 4)
         local pk_key = get_stage_pack_info(self.room.level_idx)
         local pks = PACK_TAG_STYLES[pk_key] or PACK_TAG_STYLES.kr5
-        ui.draw_pill(mp_x + 7, mp_y + 7, 68, 19, pks.era, pks.bg, pks.border, pks.fg, self.font_tiny)
+        ui.draw_pill(mp_x + 7, mp_y + 7, 68, 19, pks.era, pks.bg, pks.border, pks.fg, font_map.tiny_bold)
         if is_host then
             add_btn("open_stages", string.format("切换地图 (%d关)", catalog.TOTAL_STAGES or 201), mp_x + mp_w - 114, mp_y + 6, 108, 22, "wood", { tiny = true })
         end
         local df_info = DIFF_STYLES[self.room.level_difficulty] or DIFF_STYLES[2]
-        if self.font_tiny then G.setFont(self.font_tiny) end
-        ui.print_shadow("出征战役目标", mp_x + 10, mp_y + mp_h - 40, { 255, 224, 152, 245 })
-        if self.font_hero then G.setFont(self.font_hero) end
-        ui.print_shadow(get_stage_clean_title(self.room.level_idx), mp_x + 10, mp_y + mp_h - 23, { 255, 248, 224, 255 })
-        if self.font_small then G.setFont(self.font_small) end
-        ui.print_shadow(df_info.stars, mp_x + mp_w - 56, mp_y + mp_h - 22, T.gold_bright, 48, "right")
+        ui.print_shadow("出征战役目标", mp_x + 10, mp_y + mp_h - 40, { 255, 224, 152, 245 }, nil, nil, nil, font_map.tiny)
+        ui.print_shadow(get_stage_clean_title(self.room.level_idx), mp_x + 10, mp_y + mp_h - 23, { 255, 248, 224, 255 }, nil, nil, nil, font_map.hero)
+        ui.print_shadow(df_info.stars, mp_x + mp_w - 72, mp_y + mp_h - 22, df_info.star_col or T.gold_bright, 64, "right", nil, font_map.small_bold)
 
         -- 3 Cohesive Tactile Rule Plaques under Map Postcard
         local ry_rules = y + 158
@@ -2036,12 +2221,8 @@ function lobby:draw()
             for i, rr in ipairs(ro_rules) do
                 local rx_r = mid_x + (i - 1) * (rw_rule + 7)
                 ui.draw_parchment_card(rx_r, ry_rules, rw_rule, rh_rules, { radius = 7 })
-                if self.font_tiny then G.setFont(self.font_tiny) end
-                G.setColor(T.ink_muted[1], T.ink_muted[2], T.ink_muted[3], 240)
-                G.printf(rr.t, rx_r, ry_rules + 9, rw_rule, "center")
-                if self.font_small then G.setFont(self.font_small) end
-                G.setColor(rr.col[1], rr.col[2], rr.col[3], 255)
-                G.printf(rr.v, rx_r, ry_rules + 28, rw_rule, "center")
+                ui.text(rr.t, rx_r, ry_rules + 9, T.ink_muted, font_map.tiny, rw_rule, "center")
+                ui.text(rr.v, rx_r, ry_rules + 28, rr.col, font_map.small_bold, rw_rule, "center")
             end
         end
 
@@ -2056,8 +2237,7 @@ function lobby:draw()
         G.setLineWidth(2.2)
         G.rectangle("line", c2x, y, hero_w, stage_h, 10, 10)
 
-        if self.font_tiny then G.setFont(self.font_tiny) end
-        ui.print_shadow("2P 红方协防", c2x + 10, y + 6, T.p2_light)
+        ui.print_shadow("2P 红方协防", c2x + 10, y + 6, T.p2_light, nil, nil, nil, font_map.tiny_bold)
 
         -- Full Vertical Hero Art (2P)
         local hp2_x, hp2_y = c2x + 8, y + 24
@@ -2065,16 +2245,30 @@ function lobby:draw()
             radius = 7, pad = 2, bg = { 44, 12, 14, 255 }, border = T.gold_mid, border_w = 2,
         })
         ui.draw_vgrad_rect(hp2_x + 2, hp2_y + hp_h - 46, hp_w - 4, 44, { 36, 8, 10, 0 }, { 32, 6, 8, 232 }, 4)
-        if self.font_hero then G.setFont(self.font_hero) end
-        ui.print_shadow(catalog.get_hero_label(self.room.heroes[2]), hp2_x + 8, hp2_y + hp_h - 36, T.gold_bright)
-        if self.font_tiny then G.setFont(self.font_tiny) end
-        ui.print_shadow("英雄 #" .. tostring(self.room.heroes[2]), hp2_x + 8, hp2_y + hp_h - 17, T.p2_light)
+        ui.print_shadow(catalog.get_hero_label(self.room.heroes[2]), hp2_x + 8, hp2_y + hp_h - 36, T.gold_bright, nil, nil, nil, font_map.hero)
+        ui.print_shadow("英雄 #" .. tostring(self.room.heroes[2]), hp2_x + 8, hp2_y + hp_h - 17, T.p2_light, nil, nil, nil, font_map.tiny)
+        -- 2P Live Voice Equalizer Badge & Speaking Aura
+        if self.voice and self.voice.supported then
+            local v2_talk, v2_lvl = self.voice:get_seat_state(2, self.local_pid)
+            if v2_talk or (self.local_pid == 2 and v2_lvl > 0.06 and self.voice.mode ~= "mute") then
+                G.setColor(44, 12, 14, 215)
+                G.rectangle("fill", hp2_x + hp_w - 44, hp2_y + hp_h - 24, 38, 18, 5, 5)
+                G.setColor(v2_talk and 106 or 236, v2_talk and 244 or 162, v2_talk and 148 or 156, 220)
+                G.setLineWidth(1.2)
+                G.rectangle("line", hp2_x + hp_w - 44, hp2_y + hp_h - 24, 38, 18, 5, 5)
+                ui.draw_voice_eq(hp2_x + hp_w - 40, hp2_y + hp_h - 22, 30, 14, v2_lvl, v2_talk,
+                    { 255, 226, 118, 255 }, { 255, 132, 128, 235 })
+            end
+            if v2_talk then
+                ui.draw_speaking_glow(c2x, y, hero_w, stage_h, 10, { 112, 244, 148, 255 }, v2_lvl)
+            end
+        end
         add_btn("open_hero2", "更换 2P 英雄", c2x + 8, y + 182, hero_w - 16, 26, "crimson", { small = true })
 
-        -- Embossed Scalloped Wax Seal stamped dramatically on top-right corner of 2P Card!
+        -- Large smooth Royal Wax Seal cleanly nested in top-right of 2P Card (zero clipping, zero overlap!)
         local rdy_ok = self.peer_connected and ((is_host and self.peer_ready) or (not is_host and self.local_ready))
-        local seal_lbl = not self.peer_connected and "等待中" or (rdy_ok and "已就绪" or "已入房")
-        ui.draw_wax_seal(c2x + hero_w - 8, y + 8, 24, seal_lbl, rdy_ok, self.font_tiny)
+        local seal_st = (not self.peer_connected) and "waiting" or (rdy_ok and "ready" or "joined")
+        ui.draw_wax_seal(c2x + hero_w - 28, y + 28, 28, seal_st, font_map)
 
         y = y + stage_h + 10
 
@@ -2112,18 +2306,17 @@ function lobby:draw()
             end
         end
 
-        if self.font_small then G.setFont(self.font_small) end
-        ui.print_shadow(string.format("随军防御塔军械盘 (%d/12)", #deck), cx + 14, y + 8, T.gold_bright)
+        ui.print_shadow(string.format("随军防御塔军械盘 (%d/12)", #deck), cx + 14, y + 8, T.gold_bright, nil, nil, nil, font_map.small_bold)
         ui.draw_pill(cx + 186, y + 7, 178, 19,
             hovered_tw_name and ("当前检阅：" .. hovered_tw_name) or "悬停纹章检阅防御塔",
             { 18, 10, 4, 175 }, { 196, 148, 72, 115 },
-            hovered_tw_name and T.gold_bright or { 228, 202, 154, 215 }, self.font_tiny)
+            hovered_tw_name and T.gold_bright or { 228, 202, 154, 215 }, font_map.tiny)
 
         if is_host then
             add_btn("open_towers", string.format("配置 %d 选 12", catalog.TOTAL_TOWERS or 59), cx + cw - 126, y + 5, 114, 23, "wood", { tiny = true })
         else
             ui.draw_pill(cx + cw - 114, y + 7, 102, 19, "房主配置卡组",
-                { 18, 10, 4, 165 }, { 164, 122, 64, 115 }, { 224, 198, 152, 210 }, self.font_tiny)
+                { 18, 10, 4, 165 }, { 164, 122, 64, 115 }, { 224, 198, 152, 210 }, font_map.tiny)
         end
 
         y = y + tray_h + 11
@@ -2133,13 +2326,13 @@ function lobby:draw()
         local close_w = 122
         if is_host then
             local can_start = self.peer_connected
-            local slbl = can_start and "出 征 守 关 ！" or "等 待 2P 队 友 加 入 ..."
+            local slbl = can_start and "出征守关！" or "等待 2P 队友加入..."
             add_btn("start_match", slbl, cx, y, cw - close_w - 12, cta_h, "battle", {
                 large = true, disabled = not can_start, radius = 9,
             })
             add_btn("leave_room", "关闭房间", cx + cw - close_w, y, close_w, cta_h, "crimson", { radius = 9 })
         else
-            local rlbl = self.local_ready and "已 盖 印 就 绪 · 等 待 开 局" or "点 击 盖 印 准 备 就 绪 ！"
+            local rlbl = self.local_ready and "已就绪 · 等待房主开局" or "点击准备就绪！"
             add_btn("toggle_ready", rlbl, cx, y, cw - close_w - 12, cta_h, "battle", {
                 large = true, radius = 9,
             })
@@ -2154,6 +2347,7 @@ function lobby:draw()
         ui.draw_button(b, hover, font_map)
     end
 
+    ui.end_transform()
     G.pop()
 end
 

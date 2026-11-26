@@ -75,6 +75,151 @@ local KR6_TOWER_NAMES = {
 }
 
 local catalog = require("kr_mp.catalog")
+local fonts = require("kr_mp.fonts")
+
+local _tf = { s = 1, ox = 0, oy = 0 }
+
+-- Responsive scale for the 780x486 Ironhide War-Table Lobby (scales cleanly up to 1080p/2K/4K)
+function ui.compute_lobby_scale(sw, sh)
+    sw = tonumber(sw) or 960
+    sh = tonumber(sh) or 540
+    local s = math.min((sw * 0.86) / 780, (sh * 0.84) / 486)
+    if s < 1.0 and sw >= 812 and sh >= 526 then
+        s = 1.0
+    end
+    s = math.floor(s * 20 + 0.5) / 20
+    return math.max(0.75, math.min(3.2, s))
+end
+
+-- Responsive scale for the top Battle HUD & Title Toolbar (leaves generous clearance for KR native corners)
+function ui.compute_hud_scale(sw, sh)
+    sw = tonumber(sw) or 960
+    sh = tonumber(sh) or 540
+    local s = math.min(sw / 1180, sh / 660)
+    if s < 1.0 and sw >= 540 and sh >= 420 then
+        s = 1.0
+    end
+    s = math.floor(s * 20 + 0.5) / 20
+    return math.max(0.8, math.min(2.6, s))
+end
+
+function ui.begin_transform(scale, ox, oy)
+    local G = love.graphics
+    _tf.s = scale or 1
+    _tf.ox = math.floor((ox or 0) + 0.5)
+    _tf.oy = math.floor((oy or 0) + 0.5)
+    G.push()
+    G.translate(_tf.ox, _tf.oy)
+    G.scale(_tf.s, _tf.s)
+end
+
+function ui.end_transform()
+    love.graphics.pop()
+    _tf.s = 1
+    _tf.ox = 0
+    _tf.oy = 0
+end
+
+function ui.get_transform()
+    return _tf.s, _tf.ox, _tf.oy
+end
+
+-- Set LÖVE scissor in logical coordinates (automatically mapped to raw screen pixels)
+function ui.set_scissor_logical(x, y, w, h)
+    local G = love.graphics
+    local s, ox, oy = _tf.s, _tf.ox, _tf.oy
+    local sx = math.floor(ox + x * s)
+    local sy = math.floor(oy + y * s)
+    local ex = math.ceil(ox + (x + w) * s)
+    local ey = math.ceil(oy + (y + h) * s)
+    G.setScissor(sx, sy, math.max(0, ex - sx), math.max(0, ey - sy))
+end
+
+-- Wax Seal style default: "callig" (Large smooth emerald/amber royal wax seal with JIMOJW 2-char stamp)
+ui.seal_style = "callig"
+ui.SEAL_STYLES = {
+    { id = "callig", label = "圆章", desc = "翡翠/琥珀大蜡封 + 官配手绘双字盖印" },
+    { id = "ribbon", label = "缎带", desc = "翡翠/琥珀徽标蜡封 + 底部金边小缎带" },
+    { id = "stack",  label = "双行", desc = "经典朱红/琥珀蜡封 + 图标与双字双行" },
+    { id = "medal",  label = "飘带", desc = "双飘带皇家勋章 + 图标与双字" },
+}
+
+function ui.get_seal_style_info(id)
+    id = id or ui.seal_style
+    for i = 1, #ui.SEAL_STYLES do
+        if ui.SEAL_STYLES[i].id == id then
+            return ui.SEAL_STYLES[i], i
+        end
+    end
+    return ui.SEAL_STYLES[1], 1
+end
+
+function ui.set_seal_style(id)
+    local info = ui.get_seal_style_info(id)
+    ui.seal_style = info.id
+    return info
+end
+
+function ui.cycle_seal_style()
+    local _, idx = ui.get_seal_style_info(ui.seal_style)
+    local next_idx = (idx % #ui.SEAL_STYLES) + 1
+    ui.seal_style = ui.SEAL_STYLES[next_idx].id
+    return ui.SEAL_STYLES[next_idx]
+end
+
+-- Build native physical-pixel font map for the active UI scale & font theme (zero stretched/blurred glyphs!)
+function ui.make_font_map(scale)
+    local s = scale or 1
+    local tinfo = fonts.get_theme_info()
+    local ds = (tinfo and tinfo.disp_scale) or 1.0
+    return {
+        scale      = s,
+        banner     = fonts.get(16.5 * ds * s, "display"),
+        title      = fonts.get(16 * ds * s, "display"),
+        hero       = fonts.get(15 * ds * s, "display"),
+        main       = fonts.get(13 * s, "regular"),
+        main_bold  = fonts.get(13 * ds * s, "display"),
+        small      = fonts.get(12 * s, "regular"),
+        small_bold = fonts.get(12 * s, "bold"),
+        tiny       = fonts.get(11 * s, "regular"),
+        tiny_bold  = fonts.get(11 * s, "bold"),
+        seal       = fonts.get(10.2 * s, "bold"),
+        seal_disp  = fonts.get(11.0 * ds * s, "display"),
+        seal_small = fonts.get(9.6 * ds * s, "display"),
+    }
+end
+
+function ui.font_h(f)
+    if not f then return 13 end
+    return f:getHeight() / (_tf.s > 0 and _tf.s or 1)
+end
+
+function ui.font_w(f, text)
+    if not f then return 0 end
+    return f:getWidth(tostring(text or "")) / (_tf.s > 0 and _tf.s or 1)
+end
+
+-- Crisp 1:1 physical-pixel text draw (snapped to exact integer screen pixels, never bilinear-stretched)
+function ui.text(text, x, y, col, font, align_w, align)
+    local G = love.graphics
+    local s, ox, oy = _tf.s, _tf.ox, _tf.oy
+    local f = font or G.getFont()
+    if f then G.setFont(f) end
+    local px = math.floor(ox + x * s + 0.5)
+    local py = math.floor(oy + y * s + 0.5)
+    G.push()
+    G.origin()
+    if col then
+        G.setColor(col[1], col[2], col[3], col[4] or 255)
+    end
+    if align_w then
+        local pw = math.max(1, math.floor(align_w * s + 0.5))
+        G.printf(tostring(text or ""), px, py, pw, align or "left")
+    else
+        G.print(tostring(text or ""), px, py)
+    end
+    G.pop()
+end
 
 local _base_dir = nil
 local _atlas_meta = {}
@@ -464,20 +609,33 @@ function ui.draw_vgrad_rect(x, y, w, h, c1, c2, radius)
     end
 end
 
--- Crisp shadow text helper
-function ui.print_shadow(text, x, y, col, align_w, align, shadow_col)
+-- Crisp shadow text helper (exact 1:1 physical pixel alignment + integer drop shadow)
+function ui.print_shadow(text, x, y, col, align_w, align, shadow_col, font)
     local G = love.graphics
-    local sc = shadow_col or { 24, 12, 4, 185 }
-    G.setColor(sc[1], sc[2], sc[3], sc[4] or 185)
+    local s, ox, oy = _tf.s, _tf.ox, _tf.oy
+    local f = font or G.getFont()
+    if f then G.setFont(f) end
+    local px = math.floor(ox + x * s + 0.5)
+    local py = math.floor(oy + y * s + 0.5)
+    local sh_dy = math.max(1, math.floor(s * 0.85 + 0.5))
+    local sc = shadow_col or { 20, 10, 4, 210 }
+    local str = tostring(text or "")
+
+    G.push()
+    G.origin()
     if align_w then
-        G.printf(text, x, y + 1.2, align_w, align or "left")
+        local pw = math.max(1, math.floor(align_w * s + 0.5))
+        G.setColor(sc[1], sc[2], sc[3], sc[4] or 210)
+        G.printf(str, px, py + sh_dy, pw, align or "left")
         G.setColor(col[1], col[2], col[3], col[4] or 255)
-        G.printf(text, x, y, align_w, align or "left")
+        G.printf(str, px, py, pw, align or "left")
     else
-        G.print(text, x, y + 1.2)
+        G.setColor(sc[1], sc[2], sc[3], sc[4] or 210)
+        G.print(str, px, py + sh_dy)
         G.setColor(col[1], col[2], col[3], col[4] or 255)
-        G.print(text, x, y)
+        G.print(str, px, py)
     end
+    G.pop()
 end
 
 -- Draw sprite cleanly inside (x, y, w, h) with optional cover/top-align crop & frame
@@ -513,7 +671,7 @@ function ui.draw_sprite_box(sp, x, y, w, h, opts)
 
         local prev_sx, prev_sy, prev_sw, prev_sh = G.getScissor()
         if opts.clip ~= false and inner_w > 0 and inner_h > 0 then
-            G.setScissor(math.floor(x + pad), math.floor(y + pad), math.ceil(inner_w), math.ceil(inner_h))
+            ui.set_scissor_logical(x + pad, y + pad, inner_w, inner_h)
         end
         G.setColor(255, 255, 255, opts.alpha or 255)
         G.draw(sp.img, sp.quad, dx, dy, 0, sc, sc)
@@ -592,7 +750,7 @@ function ui.draw_ironhide_war_table(px, py, pw, ph, banner_title, font_banner)
     local grain = ui.get_ext_image("parchment_grain.png", true)
     if grain then
         local prev_sx, prev_sy, prev_sw, prev_sh = G.getScissor()
-        G.setScissor(ix + 2, iy + 2, iw - 4, ih - 4)
+        ui.set_scissor_logical(ix + 2, iy + 2, iw - 4, ih - 4)
         G.setColor(255, 255, 255, 165)
         local gw, gh = grain:getWidth(), grain:getHeight()
         for ty = iy, iy + ih, gh do
@@ -648,11 +806,10 @@ function ui.draw_ironhide_war_table(px, py, pw, ph, banner_title, font_banner)
         G.setColor(255, 255, 255, 255)
         G.draw(ribbon, rx, ry, 0, rsc, rsc)
         if banner_title and #banner_title > 0 then
-            if font_banner then G.setFont(font_banner) end
-            local fh = font_banner and font_banner:getHeight() or 16
+            local fh = font_banner and ui.font_h(font_banner) or 16
             -- Perfectly centered INSIDE the inner stitched gold field!
-            local ty = math.floor(ry + drh * 0.48 - fh * 0.5)
-            ui.print_shadow(banner_title, rx, ty, T.gold_bright, drw, "center", { 52, 8, 5, 235 })
+            local ty = ry + drh * 0.48 - fh * 0.5
+            ui.print_shadow(banner_title, rx, ty, T.gold_bright, drw, "center", { 52, 8, 5, 235 }, font_banner)
         end
     end
 end
@@ -713,26 +870,173 @@ function ui.draw_brass_rivet(cx, cy, r)
     G.circle("line", cx, cy, r)
 end
 
--- Embossed Scalloped Wax Seal with crisp centered label
-function ui.draw_wax_seal(cx, cy, radius, label, is_red, font)
+-- Crisp vector icons for wax seals
+local function draw_seal_check(cx, cy, sz, col, sh)
+    local G = love.graphics
+    local x1, y1 = cx - sz * 0.48, cy + sz * 0.02
+    local x2, y2 = cx - sz * 0.12, cy + sz * 0.38
+    local x3, y3 = cx + sz * 0.52, cy - sz * 0.36
+    G.setLineJoin("bevel")
+    G.setLineWidth(sz * 0.28)
+    G.setColor(sh[1], sh[2], sh[3], sh[4] or 220)
+    G.line(x1, y1 + 1.1, x2, y2 + 1.1, x3, y3 + 1.1)
+    G.setColor(col[1], col[2], col[3], col[4] or 255)
+    G.line(x1, y1, x2, y2, x3, y3)
+end
+
+local function draw_seal_dots(cx, cy, r, col, sh)
+    local G = love.graphics
+    for i = -1, 1 do
+        local dx = cx + i * r * 3.1
+        G.setColor(sh[1], sh[2], sh[3], sh[4] or 210)
+        G.circle("fill", dx, cy + 1, r)
+        G.setColor(col[1], col[2], col[3], col[4] or 255)
+        G.circle("fill", dx, cy, r)
+    end
+end
+
+-- Smooth high-segment scalloped royal wax seal (emerald for ready, rich amber-gold for waiting/joined)
+local function draw_scalloped_vector_seal(cx, cy, rad, is_emerald)
+    local G = love.graphics
+    local pts = {}
+    local n = 36
+    for i = 0, n - 1 do
+        local a = (i / n) * math.pi * 2
+        local rr = rad * ((i % 2 == 0) and 1.0 or 0.87)
+        pts[#pts + 1] = cx + math.cos(a) * rr
+        pts[#pts + 1] = cy + math.sin(a) * rr
+    end
+    local body_c = is_emerald and { 34, 146, 62, 255 } or { 166, 102, 28, 255 }
+    local ink_c  = is_emerald and { 12, 54, 24, 255 }  or { 62, 32, 8, 255 }
+    local disc_c = is_emerald and { 22, 108, 46, 255 } or { 126, 74, 16, 255 }
+    local gloss_c = is_emerald and { 200, 255, 206, 155 } or { 255, 236, 186, 155 }
+
+    -- Soft drop shadow
+    G.setColor(14, 7, 3, 155)
+    G.circle("fill", cx + 1.2, cy + 2.6, rad * 0.96, 48)
+    -- Scalloped wax body + dark comic ink contour
+    G.setColor(body_c[1], body_c[2], body_c[3], body_c[4])
+    G.polygon("fill", pts)
+    G.setColor(ink_c[1], ink_c[2], ink_c[3], ink_c[4])
+    G.setLineWidth(2.0)
+    G.polygon("line", pts)
+    -- Recessed inner seal bed (smooth 48 segments!)
+    G.setColor(disc_c[1], disc_c[2], disc_c[3], disc_c[4])
+    G.circle("fill", cx, cy, rad * 0.74, 48)
+    -- Subtle inner shadow ring for stamped depth
+    G.setColor(ink_c[1], ink_c[2], ink_c[3], 90)
+    G.setLineWidth(1.5)
+    G.circle("line", cx, cy, rad * 0.69, 48)
+    -- Specular glossy highlight arc on upper-left rim
+    G.setColor(gloss_c[1], gloss_c[2], gloss_c[3], gloss_c[4])
+    G.setLineWidth(2.2)
+    G.arc("line", "open", cx, cy, rad * 0.80, -math.pi * 0.84, -math.pi * 0.36, 24)
+    -- Smooth embossed gold inner circle (48 segments, generous clearance around text!)
+    G.setColor(248, 224, 146, 242)
+    G.setLineWidth(1.6)
+    G.circle("line", cx, cy, rad * 0.72, 48)
+end
+
+local function draw_scalloped_emerald_seal(cx, cy, rad)
+    draw_scalloped_vector_seal(cx, cy, rad, true)
+end
+
+local function draw_png_seal(cx, cy, rad, is_red)
     local G = love.graphics
     local img = ui.get_ext_image(is_red and "wax_seal_red.png" or "wax_seal_amber.png")
-    local sz = radius * 2
+    local sz = rad * 2
     if img then
         local sc = sz / img:getWidth()
         G.setColor(255, 255, 255, 255)
-        G.draw(img, cx - radius, cy - radius, 0, sc, sc)
+        G.draw(img, cx - rad, cy - rad, 0, sc, sc)
     else
         G.setColor(is_red and 172 or 136, is_red and 32 or 88, is_red and 32 or 40, 255)
-        G.circle("fill", cx, cy, radius)
+        G.circle("fill", cx, cy, rad)
         G.setColor(64, 12, 10, 255)
         G.setLineWidth(1.8)
-        G.circle("line", cx, cy, radius)
+        G.circle("line", cx, cy, rad)
     end
-    if label and #label > 0 then
-        if font then G.setFont(font) end
-        local fh = font and font:getHeight() or 11
-        ui.print_shadow(label, cx - radius, cy - fh * 0.5, { 255, 245, 214, 255 }, sz, "center", { 48, 8, 6, 235 })
+end
+
+-- Redesigned Embossed Scalloped Wax Seal (supports 4 live-switchable styles: ribbon / callig / stack / medal)
+-- status: "ready" | "joined" | "waiting"
+function ui.draw_wax_seal(cx, cy, radius, status, font_map, style_override)
+    local G = love.graphics
+    local style = style_override or ui.seal_style or "ribbon"
+    local is_ready = (status == "ready" or status == true)
+    local is_joined = (status == "joined")
+    local fm = type(font_map) == "table" and font_map or {}
+
+    if style == "ribbon" then
+        -- 方案 A：徽标蜡封 + 底部金边小缎带（已就绪 / 等待中 / 已入房）
+        local rad = math.max(20, (radius or 24) - 2)
+        if is_ready then
+            draw_scalloped_emerald_seal(cx, cy - 2, rad)
+            draw_seal_check(cx, cy - 2, 13.5, { 255, 248, 214, 255 }, { 14, 52, 22, 235 })
+        else
+            draw_png_seal(cx, cy - 2, rad, false)
+            draw_seal_dots(cx + 0.5, cy - 1, 2.2, { 255, 244, 206, 255 }, { 54, 24, 6, 235 })
+        end
+        local rw, rh = 52, 16
+        local rx, ry = cx - rw * 0.5, cy + 11
+        local rc1 = is_ready and { 42, 152, 64, 255 } or { 166, 98, 24, 255 }
+        local rc2 = is_ready and { 24, 96, 38, 255 } or { 112, 60, 12, 255 }
+        G.setColor(18, 8, 4, 155)
+        G.rectangle("fill", rx - 1, ry + 2, rw + 2, rh + 1, 4, 4)
+        ui.draw_vgrad_rect(rx, ry, rw, rh, rc1, rc2, 4)
+        G.setColor(246, 214, 134, 245)
+        G.setLineWidth(1.3)
+        G.rectangle("line", rx, ry, rw, rh, 4, 4)
+        local lbl = is_ready and "已就绪" or (is_joined and "已入房" or "等待中")
+        local tf = fm.seal or fm.tiny_bold
+        ui.print_shadow(lbl, rx, ry + (rh - ui.font_h(tf)) * 0.5, { 255, 250, 230, 255 }, rw, "center", { 24, 12, 4, 235 }, tf)
+
+    elseif style == "callig" then
+        -- 方案 1 精修：大号平滑翡翠/琥珀皇家蜡封圆章 + 官配 JIMOJW 双字居中（内环留白充足、绝不穿模）
+        local rad = math.max(27, radius or 28)
+        draw_scalloped_vector_seal(cx, cy, rad, is_ready)
+        local lbl = is_ready and "就绪" or (is_joined and "已入" or "等待")
+        local tf = fm.seal_disp or fm.small_bold
+        ui.print_shadow(lbl, cx - rad, cy - ui.font_h(tf) * 0.5,
+            { 255, 248, 214, 255 }, rad * 2, "center",
+            is_ready and { 10, 44, 18, 245 } or { 50, 22, 5, 245 }, tf)
+
+    elseif style == "stack" then
+        -- 方案 C：原版朱红/琥珀蜡封 + 内圈图标双行精排（√ 就绪 / ••• 等待）
+        local rad = (radius or 24) + 1
+        draw_png_seal(cx, cy, rad, is_ready)
+        local tf = fm.seal or fm.tiny_bold
+        if is_ready then
+            draw_seal_check(cx + 0.5, cy - 6.5, 9.5, { 255, 236, 156, 255 }, { 54, 10, 8, 240 })
+            ui.print_shadow("就绪", cx - rad + 0.5, cy + 1.5, { 255, 246, 214, 255 }, rad * 2, "center", { 54, 10, 8, 240 }, tf)
+        else
+            draw_seal_dots(cx + 0.5, cy - 6, 1.9, { 255, 236, 166, 255 }, { 54, 24, 6, 240 })
+            ui.print_shadow(is_joined and "已入" or "等待", cx - rad + 0.5, cy + 1.5, { 255, 246, 214, 255 }, rad * 2, "center", { 54, 24, 6, 240 }, tf)
+        end
+
+    else
+        -- 方案 D：双飘带皇家勋章 + 图标与主字体双行
+        local rad = radius or 24
+        local tc1 = is_ready and { 38, 134, 58, 255 } or { 158, 94, 24, 255 }
+        local tbd = is_ready and { 16, 56, 24, 255 } or { 68, 36, 8, 255 }
+        G.setColor(tc1[1], tc1[2], tc1[3], 255)
+        G.polygon("fill", cx - 11, cy + 12, cx - 2, cy + 14, cx - 5, cy + 36, cx - 10, cy + 30, cx - 15, cy + 34)
+        G.polygon("fill", cx + 2, cy + 14, cx + 11, cy + 12, cx + 15, cy + 34, cx + 10, cy + 30, cx + 5, cy + 36)
+        G.setColor(tbd[1], tbd[2], tbd[3], 255)
+        G.setLineWidth(1.4)
+        G.polygon("line", cx - 11, cy + 12, cx - 2, cy + 14, cx - 5, cy + 36, cx - 10, cy + 30, cx - 15, cy + 34)
+        G.polygon("line", cx + 2, cy + 14, cx + 11, cy + 12, cx + 15, cy + 34, cx + 10, cy + 30, cx + 5, cy + 36)
+        if is_ready then
+            draw_scalloped_emerald_seal(cx, cy, rad)
+            draw_seal_check(cx, cy - 6.5, 9.5, { 255, 242, 168, 255 }, { 14, 52, 22, 240 })
+            local tf = fm.seal_small or fm.seal
+            ui.print_shadow("就绪", cx - rad, cy + 1.5, { 255, 250, 224, 255 }, rad * 2, "center", { 14, 52, 22, 240 }, tf)
+        else
+            draw_png_seal(cx, cy, rad, false)
+            draw_seal_dots(cx + 0.5, cy - 6, 1.9, { 255, 238, 174, 255 }, { 54, 24, 6, 240 })
+            local tf = fm.seal_small or fm.seal
+            ui.print_shadow(is_joined and "已入" or "等待", cx - rad + 0.5, cy + 1.5, { 255, 246, 214, 255 }, rad * 2, "center", { 54, 24, 6, 240 }, tf)
+        end
     end
 end
 
@@ -748,11 +1052,9 @@ function ui.draw_pill(x, y, w, h, text, bg, border, fg, font)
         G.rectangle("line", x, y, w, h, r, r)
     end
     if text and #text > 0 then
-        if font then G.setFont(font) end
-        local fh = font and font:getHeight() or 11
-        local ty = y + math.floor((h - fh) * 0.5)
-        G.setColor(fg[1], fg[2], fg[3], fg[4] or 255)
-        G.printf(text, x, ty, w, "center")
+        local fh = font and ui.font_h(font) or 11
+        local ty = y + (h - fh) * 0.5
+        ui.text(text, x, ty, fg, font, w, "center")
     end
 end
 
@@ -817,12 +1119,10 @@ function ui.draw_button(b, hover, font_map)
         G.rectangle("line", b.x, b.y, b.w, b.h, r, r)
 
         local f = (b.small and font_map.small) or font_map.main
-        if f then G.setFont(f) end
-        local fh = f and f:getHeight() or 13
-        local ty = b.y + math.floor((b.h - fh) * 0.5)
+        local fh = f and ui.font_h(f) or 13
+        local ty = b.y + (b.h - fh) * 0.5
         local tc = b.placeholder and T.ink_muted or T.ink_text
-        G.setColor(tc[1], tc[2], tc[3], tc[4])
-        G.printf(b.label or "", b.x + 9, ty, b.w - 18, "left")
+        ui.text(b.label or "", b.x + 9, ty, tc, f, b.w - 18, "left")
         return
     end
 
@@ -851,18 +1151,14 @@ function ui.draw_button(b, hover, font_map)
         local tx = b.x + isz + 9
         local tw = math.max(10, b.x + b.w - tx - (sel and 19 or 4))
         local lbl = b.label or ""
-        local f = font_map.small or font_map.main
-        if f and font_map.tiny and f:getWidth(lbl) > tw then
+        local f = font_map.small_bold or font_map.small or font_map.main
+        if f and font_map.tiny and ui.font_w(f, lbl) > tw then
             f = font_map.tiny
         end
-        if f then G.setFont(f) end
-        local fh = f and f:getHeight() or 12
-        G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
-        G.print(lbl, tx, b.y + math.floor(b.h * 0.5 - fh - 1))
+        local fh = f and ui.font_h(f) or 12
+        ui.text(lbl, tx, b.y + b.h * 0.5 - fh - 1, T.ink_text, f)
         if b.sub_label and font_map.tiny then
-            G.setFont(font_map.tiny)
-            G.setColor(T.ink_sub[1], T.ink_sub[2], T.ink_sub[3], 235)
-            G.print(b.sub_label, tx, b.y + math.floor(b.h * 0.5 + 3))
+            ui.text(b.sub_label, tx, b.y + b.h * 0.5 + 3, T.ink_sub, font_map.tiny)
         end
         if sel then
             local bx, by = b.x + b.w - 17, b.y + 4
@@ -872,9 +1168,9 @@ function ui.draw_button(b, hover, font_map)
             G.setColor(255, 240, 190, 240)
             G.setLineWidth(1)
             G.rectangle("line", bx, by, 14, 14, 4, 4)
-            if font_map.tiny then G.setFont(font_map.tiny) end
-            G.setColor(255, 255, 255, 255)
-            G.printf("√", bx, by, 14, "center")
+            local cf = font_map.tiny_bold or font_map.tiny
+            local cfh = cf and ui.font_h(cf) or 11
+            ui.text("√", bx, by + (14 - cfh) * 0.5, { 255, 255, 255, 255 }, cf, 14, "center")
         end
         return
     end
@@ -899,17 +1195,17 @@ function ui.draw_button(b, hover, font_map)
             border = sel and T.gold_mid or { 118, 82, 42, 230 }, border_w = 1.4,
         })
         local tx = b.x + isz + 10
-        local tw = math.max(10, b.x + b.w - tx - 4)
-        local f = font_map.small or font_map.main
-        if f then G.setFont(f) end
-        local fh = f and f:getHeight() or 12
-        G.setColor(T.ink_text[1], T.ink_text[2], T.ink_text[3], 255)
-        G.printf(b.label or "", tx, b.y + math.floor(b.h * 0.5 - fh), tw, "left")
+        local tw = math.max(10, b.x + b.w - tx - (sel and 19 or 4))
+        local lbl = b.label or ""
+        local f = font_map.small_bold or font_map.small or font_map.main
+        if f and font_map.tiny and ui.font_w(f, lbl) > tw then
+            f = font_map.tiny
+        end
+        local fh = f and ui.font_h(f) or 12
+        ui.text(lbl, tx, b.y + b.h * 0.5 - fh, T.ink_text, f, tw, "left")
         if b.sub_label and font_map.tiny then
-            G.setFont(font_map.tiny)
             local sc = sel and { 34, 108, 42, 255 } or T.ink_muted
-            G.setColor(sc[1], sc[2], sc[3], sc[4])
-            G.printf(b.sub_label, tx, b.y + math.floor(b.h * 0.5 + 2), tw, "left")
+            ui.text(b.sub_label, tx, b.y + b.h * 0.5 + 2, sc, font_map.tiny, tw, "left")
         end
         if sel then
             local bx, by = b.x + b.w - 17, b.y + 4
@@ -918,9 +1214,9 @@ function ui.draw_button(b, hover, font_map)
             G.setColor(255, 248, 220, 240)
             G.setLineWidth(1)
             G.rectangle("line", bx, by, 14, 14, 4, 4)
-            if font_map.tiny then G.setFont(font_map.tiny) end
-            G.setColor(255, 255, 255, 255)
-            G.printf("√", bx, by, 14, "center")
+            local cf = font_map.tiny_bold or font_map.tiny
+            local cfh = cf and ui.font_h(cf) or 11
+            ui.text("√", bx, by + (14 - cfh) * 0.5, { 255, 255, 255, 255 }, cf, 14, "center")
         end
         return
     end
@@ -981,8 +1277,8 @@ function ui.draw_button(b, hover, font_map)
     -- Signature Ironhide glossy cartoon specular bar on battle/crimson/azure/wood
     if not disabled then
         if style == "battle" then
-            G.setColor(238, 255, 208, 118)
-            G.rectangle("fill", b.x + 8, b.y + 3, b.w - 16, math.max(5, math.floor(b.h * 0.32)), r - 2, r - 2)
+            G.setColor(238, 255, 208, 76)
+            G.rectangle("fill", b.x + 8, b.y + 3, b.w - 16, math.max(5, math.floor(b.h * 0.30)), r - 2, r - 2)
             -- Twin hammered gold rivets only on wide primary battle plaques (never crowd compact buttons!)
             if b.w >= 200 and b.rivets ~= false then
                 ui.draw_brass_rivet(b.x + 22, b.y + b.h * 0.5, 4.5)
@@ -992,8 +1288,8 @@ function ui.draw_button(b, hover, font_map)
             G.setColor(255, 255, 255, 130)
             G.line(b.x + 6, b.y + 1.5, b.x + b.w - 6, b.y + 1.5)
         else
-            G.setColor(255, 232, 185, hover and 68 or 48)
-            G.rectangle("fill", b.x + 4, b.y + 2, b.w - 8, math.max(4, math.floor(b.h * 0.34)), r - 2, r - 2)
+            G.setColor(255, 232, 185, hover and 56 or 38)
+            G.rectangle("fill", b.x + 4, b.y + 2, b.w - 8, math.max(4, math.floor(b.h * 0.32)), r - 2, r - 2)
         end
     end
 
@@ -1002,26 +1298,80 @@ function ui.draw_button(b, hover, font_map)
     G.setLineWidth(style == "battle" and 2.4 or 1.8)
     G.rectangle("line", b.x, b.y, b.w, b.h, r, r)
 
-    -- Crisp centered label (supports multi-line \n)
+    -- Crisp centered label (supports multi-line \n; uses bold on dark/colored 3D buttons for crisp contrast)
+    local use_bold = (style ~= "parchment")
     local f
-    if b.large and font_map.title then f = font_map.title
-    elseif b.tiny and font_map.tiny then f = font_map.tiny
-    elseif b.small and font_map.small then f = font_map.small
-    else f = font_map.main end
-    if f then G.setFont(f) end
+    if b.large and font_map.title then
+        f = font_map.title
+    elseif b.tiny then
+        f = (use_bold and font_map.tiny_bold) or font_map.tiny
+    elseif b.small then
+        f = (use_bold and font_map.small_bold) or font_map.small
+    else
+        f = (use_bold and font_map.main_bold) or font_map.main
+    end
 
     local lbl = b.label or ""
     local lines = 1
     for _ in lbl:gmatch("\n") do lines = lines + 1 end
-    local fh = f and f:getHeight() or 13
+    local fh = f and ui.font_h(f) or 13
     local total_h = fh * lines + (lines - 1) * 2
-    local ty = b.y + math.floor((b.h - total_h) * 0.5)
+    local ty = b.y + (b.h - total_h) * 0.5
     if sh_c then
-        ui.print_shadow(lbl, b.x + 4, ty, fg_c, b.w - 8, "center", sh_c)
+        ui.print_shadow(lbl, b.x + 4, ty, fg_c, b.w - 8, "center", sh_c, f)
     else
-        G.setColor(fg_c[1], fg_c[2], fg_c[3], fg_c[4] or 255)
-        G.printf(lbl, b.x + 4, ty, b.w - 8, "center")
+        ui.text(lbl, b.x + 4, ty, fg_c, f, b.w - 8, "center")
     end
+end
+
+-- Animated 5-bar broadcast voice equalizer (purely visual, driven by wall clock; never touches sim/PRNG)
+function ui.draw_voice_eq(x, y, w, h, level, active, col_hi, col_lo)
+    local G = love.graphics
+    local n = 5
+    local gap = 2
+    local bw = math.max(2, math.floor((w - (n - 1) * gap) / n))
+    local total_w = bw * n + gap * (n - 1)
+    local sx = x + math.floor((w - total_w) * 0.5)
+    local t = (love.timer and love.timer.getTime and love.timer.getTime()) or 0
+    local lvl = math.max(0, math.min(1, tonumber(level) or 0))
+    local hi = col_hi or { 104, 244, 152, 255 }
+    local lo = col_lo or { 52, 186, 98, 220 }
+    local weights = { 0.62, 0.94, 1.0, 0.86, 0.58 }
+    local freqs = { 13.5, 17.2, 11.8, 15.6, 19.1 }
+    local phases = { 0.0, 1.4, 2.7, 0.8, 3.9 }
+
+    for i = 1, n do
+        local bx = sx + (i - 1) * (bw + gap)
+        local bh
+        if active then
+            local wave = 0.55 + 0.45 * math.sin(t * freqs[i] + phases[i])
+            local amp = math.max(0.20, math.min(1.0, (0.28 + lvl * 0.92) * weights[i] * wave))
+            bh = math.max(3, math.floor(h * amp + 0.5))
+            local c = (amp > 0.62) and hi or lo
+            G.setColor(c[1], c[2], c[3], c[4] or 255)
+        else
+            bh = 2
+            G.setColor(lo[1], lo[2], lo[3], 95)
+        end
+        local by = y + (h - bh) * 0.5
+        G.rectangle("fill", bx, by, bw, bh, 1.2, 1.2)
+    end
+end
+
+-- Pulsing emerald/gold livestream speaking highlight around a card or portrait frame
+function ui.draw_speaking_glow(x, y, w, h, radius, col, level)
+    local G = love.graphics
+    local t = (love.timer and love.timer.getTime and love.timer.getTime()) or 0
+    local pulse = 0.65 + 0.35 * math.sin(t * 9.5)
+    local lvl = math.max(0.25, math.min(1.0, tonumber(level) or 0.5))
+    local r = radius or 10
+    local c = col or { 96, 242, 146, 255 }
+    G.setColor(c[1], c[2], c[3], math.floor(78 * pulse * lvl))
+    G.setLineWidth(5.5)
+    G.rectangle("line", x - 2, y - 2, w + 4, h + 4, r + 2, r + 2)
+    G.setColor(c[1], c[2], c[3], math.floor(235 * (0.75 + 0.25 * pulse)))
+    G.setLineWidth(2.4)
+    G.rectangle("line", x, y, w, h, r, r)
 end
 
 return ui

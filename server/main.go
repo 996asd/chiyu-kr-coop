@@ -62,6 +62,24 @@ func (c *Client) Send(v any) {
 	}
 }
 
+// SendDropIfBusy queues ephemeral traffic (such as live voice frames) only when plenty of buffer headroom exists,
+// guaranteeing voice traffic can NEVER congest or disconnect 60Hz lockstep match frames.
+func (c *Client) SendDropIfBusy(v any) {
+	if len(c.sendCh) >= cap(c.sendCh)/2 {
+		return
+	}
+	line, err := encodeLine(v)
+	if err != nil {
+		return
+	}
+	select {
+	case <-c.done:
+		return
+	case c.sendCh <- line:
+	default:
+	}
+}
+
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		close(c.done)

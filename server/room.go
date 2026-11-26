@@ -284,9 +284,34 @@ func (h *Hub) HandleMessage(c *Client, msg *IncomingMsg) {
 		h.onReconnectLocked(c, msg)
 	case "RECONNECT_DONE":
 		h.onReconnectDoneLocked(c, msg)
+	case "VOICE":
+		h.onVoiceLocked(c, msg)
 	default:
 		c.Send(map[string]any{"t": "ERROR", "msg": "Unknown message type: " + msg.Type})
 	}
+}
+
+func (h *Hub) onVoiceLocked(c *Client, msg *IncomingMsg) {
+	if c.roomCode == "" || c.pid < 1 || c.pid > 2 {
+		return
+	}
+	if len(msg.VoiceData) == 0 || len(msg.VoiceData) > 2048 {
+		return
+	}
+	r, ok := h.rooms[c.roomCode]
+	if !ok {
+		return
+	}
+	other := r.Seats[3-c.pid]
+	if other == nil || !other.Connected || other.Client == nil {
+		return
+	}
+	other.Client.SendDropIfBusy(map[string]any{
+		"t":   "VOICE",
+		"pid": c.pid,
+		"d":   msg.VoiceData,
+		"l":   msg.VoiceLevel,
+	})
 }
 
 func (h *Hub) onHelloLocked(c *Client, msg *IncomingMsg) {
@@ -314,6 +339,7 @@ func (h *Hub) onHelloLocked(c *Client, msg *IncomingMsg) {
 		"t":          "SERVER_HELLO",
 		"server_ver": ServerVersion,
 		"proto":      ProtocolVer,
+		"voice_ok":   true,
 		"client_id":  c.id,
 		"rooms":      h.buildRoomListLocked(),
 	})

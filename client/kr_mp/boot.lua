@@ -84,12 +84,16 @@ function boot:wrap_love_callbacks()
         if self.lobby then
             self.lobby:draw()
         end
+        overlay:draw_toast(self.lobby)
     end
 
     local orig_update = love.update
     love.update = function(dt, ...)
         if self.lobby then
             self.lobby:update(dt)
+        end
+        if self.voice then
+            self.voice:update(dt, self.lobby, self.coop)
         end
         if orig_update then orig_update(dt, ...) end
         self:on_update(dt)
@@ -144,6 +148,9 @@ function boot:wrap_love_callbacks()
     local orig_quit = love.quit
     love.quit = function(...)
         self:log("Shutting down KR-MP...")
+        if self.voice then
+            self.voice:shutdown()
+        end
         -- Do NOT send LEAVE_ROOM on window close so Online matches retain their 300s reconnect window!
         if self.transport then
             self.transport:close()
@@ -183,6 +190,19 @@ function boot:on_update(dt)
     end
 
     local mp_active = self.coop and self.coop:is_active() or false
+    local local_pid = (self.coop and self.coop:is_active() and self.coop.local_pid)
+        or (self.lobby and self.lobby.local_pid) or 1
+    local v1_talk, v1_lvl = false, 0
+    local v2_talk, v2_lvl = false, 0
+    if self.voice then
+        v1_talk, v1_lvl = self.voice:get_seat_state(1, local_pid)
+        v2_talk, v2_lvl = self.voice:get_seat_state(2, local_pid)
+    end
+    local h1_idx = (self.coop and self.coop.cfg and self.coop.cfg.heroes and self.coop.cfg.heroes[1])
+        or (self.lobby and self.lobby.room and self.lobby.room.heroes and self.lobby.room.heroes[1]) or 53
+    local h2_idx = (self.coop and self.coop.cfg and self.coop.cfg.heroes and self.coop.cfg.heroes[2])
+        or (self.lobby and self.lobby.room and self.lobby.room.heroes and self.lobby.room.heroes[2]) or 54
+
     local st = {
         mp_active = mp_active,
         mp_online = self.transport and self.transport:is_online() or false,
@@ -199,6 +219,17 @@ function boot:on_update(dt)
         mp_sync_ok = self.lockstep and self.lockstep.sync_ok_count or 0,
         mp_waiting = self.lockstep and self.lockstep.waiting_for_peer or false,
         mp_catchup_target = self.lockstep and self.lockstep.catchup_target_tick or 0,
+        mp_voice_ok = self.voice and self.voice.supported or false,
+        mp_voice_mode = self.voice and self.voice.mode or "mute",
+        mp_voice_label = self.voice and self.voice:get_mode_short() or "麦:无",
+        mp_voice_ptt = self.voice and self.voice.ptt_held or false,
+        mp_voice_peer_muted = self.voice and self.voice.peer_muted or false,
+        mp_voice_p1_talk = v1_talk,
+        mp_voice_p1_lvl = v1_lvl,
+        mp_voice_p2_talk = v2_talk,
+        mp_voice_p2_lvl = v2_lvl,
+        mp_hero1 = h1_idx,
+        mp_hero2 = h2_idx,
 
         mode = self.replay and self.replay:get_mode() or "IDLE",
         tick = (game and game.store and game.store.tick) or 0,
@@ -228,6 +259,19 @@ end
 
 function boot:on_keypressed(key, isrepeat)
     if isrepeat then return false end
+    -- Global quick voice mute hotkey (M) when in room or battle & not typing into an input field
+    local typing = (self.lobby ~= nil and self.lobby.open == true and self.lobby.focused_field ~= nil)
+    local in_voice_ctx = (self.coop and self.coop:is_active()) or (self.lobby and self.lobby.view == "room")
+    if not typing and in_voice_ctx and self.voice and self.voice.supported then
+        if key == "m" then
+            self.voice:toggle_mute()
+            if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+            overlay:show_toast(self.voice:get_mode_toast(), 2.0)
+            return true
+        elseif key == "v" and self.voice.mode == "ptt" and not (self.lobby and self.lobby.open) then
+            return true
+        end
+    end
     if self.lobby and self.lobby:keypressed(key) then
         return true
     end
@@ -262,7 +306,15 @@ function boot:on_hud_action(action_id)
         if self.lobby and self.lobby.save_prefs then
             self.lobby:save_prefs()
         end
-        overlay:show_toast(self.coop.show_tower_marks and "已开启：防御塔底座红蓝归属标志" or "已关闭：防御塔归属标志（纯净画面，仅对你自己生效）", 2.8)
+        overlay:show_toast(self.coop.show_tower_marks and "已开启：防御塔底座红蓝归属标志" or "已关闭：防御塔归属标志（纯净画面，仅对你自己生效）", 2.0)
+    elseif action_id == "mp_voice_mode" and self.voice then
+        if not self.voice.supported then
+            overlay:show_toast("当前环境不支持内置语音连麦。", 2.2)
+        else
+            self.voice:cycle_mode()
+            if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+            overlay:show_toast(self.voice:get_mode_toast(), 2.4)
+        end
     elseif action_id == "mp_leave" and self.lobby then
         self.lobby:leave_room()
     elseif action_id == "record" and self.replay then
@@ -329,6 +381,7 @@ function boot:init(source)
     local ok_c, coop_mod = pcall(require, "kr_mp.coop")
     local ok_l, lockstep_mod = pcall(require, "kr_mp.lockstep")
     local ok_lb, lobby_mod = pcall(require, "kr_mp.lobby_ui")
+    local ok_v, voice_mod = pcall(require, "kr_mp.voice")
 
     if ok_t and ok_c and ok_l and ok_lb then
         self.transport = transport_mod
@@ -336,10 +389,17 @@ function boot:init(source)
         self.lockstep = lockstep_mod
         self.lobby = lobby_mod
         self.transport:init(self)
+        if ok_v and voice_mod then
+            self.voice = voice_mod
+            pcall(voice_mod.init, voice_mod, self, self.transport)
+            self.lobby.voice = self.voice
+        else
+            self:log("ERROR loading kr_mp.voice: %s", tostring(voice_mod))
+        end
         self.coop:init(self, self.lockstep, overlay)
         self.lockstep:init(self, self.transport, self.coop, overlay)
         self.lobby:init(self, self.transport, self.lockstep, self.coop, overlay)
-        self:log("M2 Co-op modules loaded (LAN+Online Transport + Lockstep Reconnect + Co-op + Lobby).")
+        self:log("M2 Co-op modules loaded (LAN+Online Transport + Lockstep Reconnect + Co-op + Lobby + Voice).")
     else
         self:log("ERROR loading M2 modules: t=%s c=%s l=%s lb=%s",
             tostring(transport_mod), tostring(coop_mod), tostring(lockstep_mod), tostring(lobby_mod))

@@ -148,7 +148,7 @@ function coop:build_host_slot_snapshot(heroes, towers)
     snap.liuhui.use3tower = true
     snap.liuhui.use3tower_count = 0
     snap.liuhui.tower_generations = { true, true, true, true, true }
-    snap.liuhui.impossiblerate = snap.liuhui.impossiblerate or 1.5
+    snap.liuhui.impossiblerate = 1.5
     snap.liuhui.cheat = false
     snap.liuhui.cheat5 = false
     snap.liuhui.cheat6 = false
@@ -221,6 +221,25 @@ function coop:prepare_match(local_pid, cfg, reconnect_data)
         screen_map = { user_data = deep_copy(self.slot_snapshot) }
     else
         screen_map.user_data = deep_copy(self.slot_snapshot)
+    end
+
+    -- Synchronize FL 8.2.0 global difficulty multipliers identically on both clients
+    -- (prevents DESYNC if either player tweaked Impossible HP rate or debug speed factor in single-player!)
+    local ok_gs, GS = pcall(require, "game_settings")
+    if ok_gs and GS then
+        local imp_rate = (self.slot_snapshot and self.slot_snapshot.liuhui and tonumber(self.slot_snapshot.liuhui.impossiblerate)) or 1.5
+        if GS.difficulty_enemy_hp_max_factor then
+            GS.difficulty_enemy_hp_max_factor[1] = 0.8
+            GS.difficulty_enemy_hp_max_factor[2] = 1
+            GS.difficulty_enemy_hp_max_factor[3] = 1.2
+            GS.difficulty_enemy_hp_max_factor[4] = imp_rate
+        end
+        if GS.difficulty_enemy_speed_factor then
+            GS.difficulty_enemy_speed_factor[1] = 1
+            GS.difficulty_enemy_speed_factor[2] = 1
+            GS.difficulty_enemy_speed_factor[3] = 1
+            GS.difficulty_enemy_speed_factor[4] = 1.1
+        end
     end
 
     if main and main.handler then
@@ -591,19 +610,21 @@ function coop:draw_world_overlays()
 
     local G = love.graphics
     local scale = game.game_scale or 1
+    local bs = math.max(1.0, math.min(2.2, math.floor(scale * 10 + 0.5) / 10))
 
     G.push("all")
     G.origin()
     G.setScissor()
     G.setShader()
     G.setBlendMode("alpha")
-    local badge_font = fonts.get(12)
+    local badge_font = fonts.get(12 * bs, "bold")
     if badge_font then G.setFont(badge_font) end
 
     -- 1. Draw sleek lower-front pedestal crescent + compact 1P/2P mini pill (ONLY in 'owned' mode & when enabled!)
     -- Never draws across the upper tower body so original hand-drawn tower artwork stays 100% clean.
     if self.show_tower_marks and self.tower_mode == "owned" then
-        local mini_font = fonts.get(10) or badge_font
+        local mini_font = fonts.get(10.5 * bs, "bold") or badge_font
+        local mfh = mini_font and mini_font:getHeight() or math.floor(11 * bs)
         for _, e in pairs(game.store.entities) do
             if e and e.tower and e._mp_owner and e.pos and not e._kr_mp_local then
                 local sx, sy = world_to_screen(e.pos.x, e.pos.y)
@@ -626,7 +647,7 @@ function coop:draw_world_overlays()
                     end
 
                     -- Soft outer ground glow
-                    G.setLineWidth(4.0)
+                    G.setLineWidth(4.0 * bs)
                     if is_p1 then
                         G.setColor(55, 165, 255, 60)
                     else
@@ -635,7 +656,7 @@ function coop:draw_world_overlays()
                     G.line(pts)
 
                     -- Crisp refined inner pedestal rim
-                    G.setLineWidth(1.6)
+                    G.setLineWidth(1.6 * bs)
                     if is_p1 then
                         G.setColor(95, 198, 255, 215)
                     else
@@ -644,21 +665,22 @@ function coop:draw_world_overlays()
                     G.line(pts)
 
                     -- Compact rounded glass mini pill nestled cleanly at the front tip of the pedestal
-                    local pw, ph = 22, 13
-                    local bx = cx - pw / 2
-                    local by = cy + ry - 5
+                    local pw = math.floor(23 * bs + 0.5)
+                    local ph = math.floor(14 * bs + 0.5)
+                    local bx = math.floor(cx - pw / 2 + 0.5)
+                    local by = math.floor(cy + ry - 5 * bs + 0.5)
                     G.setColor(10, 16, 26, 200)
-                    G.rectangle("fill", bx, by, pw, ph, 5, 5)
-                    G.setLineWidth(1.1)
+                    G.rectangle("fill", bx, by, pw, ph, 5 * bs, 5 * bs)
+                    G.setLineWidth(1.2 * bs)
                     if is_p1 then
                         G.setColor(95, 198, 255, 235)
                     else
                         G.setColor(255, 110, 105, 235)
                     end
-                    G.rectangle("line", bx, by, pw, ph, 5, 5)
+                    G.rectangle("line", bx, by, pw, ph, 5 * bs, 5 * bs)
                     if mini_font then G.setFont(mini_font) end
                     G.setColor(is_p1 and 155 or 255, is_p1 and 220 or 165, is_p1 and 255 or 165, 255)
-                    G.printf(is_p1 and "1P" or "2P", bx, by, pw, "center")
+                    G.printf(is_p1 and "1P" or "2P", bx, math.floor(by + (ph - mfh) * 0.5 + 0.5), pw, "center")
                 end
             end
         end
@@ -666,6 +688,7 @@ function coop:draw_world_overlays()
     end
 
     -- 2. Draw crisp P1 (Blue) / P2 (Red) floating badges above the two Heroes (auto-stagger if stacked at spawn)
+    local bfh = badge_font and badge_font:getHeight() or math.floor(13 * bs)
     local hpos = {}
     for pid = 1, 2 do
         local hid = self.hero_ids[pid]
@@ -678,25 +701,26 @@ function coop:draw_world_overlays()
         end
     end
     local stacked = hpos[1] and hpos[2]
-        and math.abs(hpos[1].sx - hpos[2].sx) < 42
-        and math.abs(hpos[1].sy - hpos[2].sy) < 28
+        and math.abs(hpos[1].sx - hpos[2].sx) < 42 * bs
+        and math.abs(hpos[1].sy - hpos[2].sy) < 28 * bs
     for pid = 1, 2 do
         local p = hpos[pid]
         if p then
             local tag = (pid == self.local_pid) and (pid .. "P (你)") or (pid .. "P")
-            local bw = (pid == self.local_pid) and 54 or 28
-            local bx = p.sx - bw / 2
-            local by = p.sy - 58 * scale - ((stacked and pid == 1) and 19 or 0)
+            local bw = math.floor(((pid == self.local_pid) and 56 or 30) * bs + 0.5)
+            local bh = math.floor(17 * bs + 0.5)
+            local bx = math.floor(p.sx - bw / 2 + 0.5)
+            local by = math.floor(p.sy - 58 * scale - ((stacked and pid == 1) and (20 * bs) or 0) + 0.5)
             G.setColor(0, 0, 0, 195)
-            G.rectangle("fill", bx, by, bw, 16, 4, 4)
+            G.rectangle("fill", bx, by, bw, bh, 4 * bs, 4 * bs)
             if pid == 1 then
                 G.setColor(70, 180, 255, 255)
             else
                 G.setColor(255, 90, 90, 255)
             end
-            G.setLineWidth(1.5)
-            G.rectangle("line", bx, by, bw, 16, 4, 4)
-            G.printf(tag, bx, by + 1, bw, "center")
+            G.setLineWidth(1.5 * bs)
+            G.rectangle("line", bx, by, bw, bh, 4 * bs, 4 * bs)
+            G.printf(tag, bx, math.floor(by + (bh - bfh) * 0.5 + 0.5), bw, "center")
         end
     end
 
@@ -718,13 +742,17 @@ function coop:draw_world_overlays()
                 else
                     G.setColor(255, 95, 95, alpha)
                 end
-                G.setLineWidth(3)
+                G.setLineWidth(3 * bs)
                 G.circle("line", sx, sy, r)
                 G.circle("fill", sx, sy, 5 * scale)
+                local pbw = math.floor(74 * bs + 0.5)
+                local pbh = math.floor(19 * bs + 0.5)
+                local pbx = math.floor(sx - pbw * 0.5 + 0.5)
+                local pby = math.floor(sy - 28 * bs + 0.5)
                 G.setColor(0, 0, 0, 200)
-                G.rectangle("fill", sx - 36, sy - 26, 72, 18, 4, 4)
+                G.rectangle("fill", pbx, pby, pbw, pbh, 4 * bs, 4 * bs)
                 G.setColor(255, 240, 120, 255)
-                G.printf(p.pid .. "P 标记!", sx - 36, sy - 25, 72, "center")
+                G.printf(p.pid .. "P 标记!", pbx, math.floor(pby + (pbh - bfh) * 0.5 + 0.5), pbw, "center")
             end
         end
     end

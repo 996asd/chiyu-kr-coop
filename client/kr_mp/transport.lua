@@ -77,9 +77,13 @@ end
 
 -- === Online Relay Mode Methods (M2) ===
 
-function transport:connect_online(host, port)
+function transport:connect_online(host, port, silent_fail)
     self:switch_mode("online")
-    return self.online_backend:connect(host, port)
+    return self.online_backend:connect(host, port, silent_fail)
+end
+
+function transport:is_connecting()
+    return self.backend ~= nil and self.backend.is_connecting and self.backend:is_connecting() or false
 end
 
 function transport:get_server_addr()
@@ -136,6 +140,13 @@ end
 
 function transport:get_last_error()
     return self.backend and self.backend.last_error or nil
+end
+
+function transport:get_send_queue_len()
+    if self.backend and type(self.backend.send_queue) == "table" then
+        return #self.backend.send_queue
+    end
+    return 0
 end
 
 return transport
