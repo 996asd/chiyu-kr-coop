@@ -16,7 +16,9 @@ local lobby = {
     open = false,
     net_tab = "lan", -- "lan" | "online"
     view = "home",   -- "home" | "room"
-    sub_modal = nil, -- nil | "stages" | "hero1" | "hero2" | "towers"
+    sub_modal = nil, -- nil | "guide" | "stages" | "hero1" | "hero2" | "towers"
+    guide_tab = 1,   -- 1..4 (新手教程四分页)
+    seen_guide = false,
     stage_pack_idx = 1,
     stage_page = 1,
     hero_pack_idx = 1,
@@ -155,6 +157,9 @@ function lobby:load_prefs()
             self.voice.peer_muted = (obj.voice_peer_muted == true)
         end
     end
+    if obj.seen_guide ~= nil then
+        self.seen_guide = (obj.seen_guide == true)
+    end
 end
 
 function lobby:save_prefs()
@@ -166,6 +171,7 @@ function lobby:save_prefs()
         show_tower_marks = (self.coop == nil) or (self.coop.show_tower_marks ~= false),
         voice_mode = self.voice and self.voice.mode or "ptt",
         voice_peer_muted = self.voice and (self.voice.peer_muted == true) or false,
+        seen_guide = (self.seen_guide == true),
     }
     local f = io.open(get_prefs_path(), "w")
     if f then
@@ -1374,7 +1380,8 @@ function lobby:handle_button(btn)
     elseif id == "start_match" or id == "toggle_ready" then
         ui.play_sfx("start")
     elseif id == "tab_lan" or id == "tab_online" or id == "stage_pack" or id == "hero_pack" or id == "tower_pack"
-        or id == "open_stages" or id == "open_hero1" or id == "open_hero2" or id == "open_towers" then
+        or id == "open_stages" or id == "open_hero1" or id == "open_hero2" or id == "open_towers"
+        or id == "open_guide" or id == "guide_tab" then
         ui.play_sfx("tab")
     elseif id == "econ_toggle" then
         ui.play_sfx("coin")
@@ -1395,6 +1402,20 @@ function lobby:handle_button(btn)
     elseif id == "modal_back" then
         self.sub_modal = nil
         if self.overlay then self.overlay:clear_toast() end
+    elseif id == "open_guide" then
+        if self.overlay then self.overlay:clear_toast() end
+        if not self.seen_guide then
+            self.seen_guide = true
+            self:save_prefs()
+        end
+        self.guide_tab = tonumber(btn.tab) or ((self.view == "room") and 2 or 1)
+        self.sub_modal = "guide"
+    elseif id == "guide_tab" and btn.tab then
+        self.guide_tab = math.max(1, math.min(4, tonumber(btn.tab) or 1))
+    elseif id == "guide_prev" then
+        self.guide_tab = math.max(1, (self.guide_tab or 1) - 1)
+    elseif id == "guide_next" then
+        self.guide_tab = math.min(4, (self.guide_tab or 1) + 1)
     elseif id == "tab_lan" then
         if self.overlay then self.overlay:clear_toast() end
         self:switch_tab("lan")
@@ -1676,7 +1697,9 @@ function lobby:draw()
 
     -- Pick clean single-line Royal Crimson Banner Title (100% centered inside gold stitch!)
     local banner_title = "双人同盟 · 皇家战桌"
-    if self.view == "home" then
+    if self.sub_modal == "guide" then
+        banner_title = "新手指南 · 1分钟开黑"
+    elseif self.view == "home" then
         banner_title = "联机酒馆 · 冒险驿站"
     elseif self.sub_modal == "stages" then
         banner_title = "战役舆图 · 选择关卡"
@@ -1698,7 +1721,261 @@ function lobby:draw()
     local cx = px + 25
     local cw = pw - 50
 
-    if self.view == "home" then
+    if self.sub_modal == "guide" then
+        -- === 零基础小白 1 分钟上手图文教程（4 分页羊皮纸卷轴） ===
+        local y = py + 42
+        local tabs = {
+            { idx = 1, label = "1. 怎么联机" },
+            { idx = 2, label = "2. 双人玩法" },
+            { idx = 3, label = "3. 连麦直播" },
+            { idx = 4, label = "4. 按键与排错" },
+        }
+        local cur_tab = math.max(1, math.min(4, tonumber(self.guide_tab) or 1))
+        self.guide_tab = cur_tab
+        local back_w = 92
+        local t_gap = 6
+        local tab_w = math.floor((cw - back_w - 10 - (#tabs - 1) * t_gap) / #tabs)
+        for i, tb in ipairs(tabs) do
+            local act = (cur_tab == tb.idx)
+            add_btn("guide_tab", tb.label, cx + (i - 1) * (tab_w + t_gap), y, tab_w, 28,
+                act and "wood" or "parchment", { tab = tb.idx, small = true, active = act })
+        end
+        add_btn("modal_back", self.view == "room" and "返回战桌" or "返回大厅", cx + cw - back_w, y, back_w, 28, "crimson", { small = true })
+        y = y + 36
+
+        if cur_tab == 1 then
+            -- TAB 1: 怎么联机（3 种情况一步步说清楚）
+            local cards = {
+                {
+                    badge = "最简单 · 同宿舍 / 同 Wi-Fi",
+                    badge_bg = { 38, 128, 62, 245 },
+                    badge_rim = { 26, 86, 40, 255 },
+                    border = { 54, 132, 68, 235 },
+                    title = "什么都不用填，10 秒直接开玩！",
+                    lines = {
+                        "第1步：两台电脑都双击游戏目录里的「启动联机版_FL8.2.0.bat」，进入后点左上角「联机大厅 (F10)」。",
+                        "第2步：一人当房主点左边「创建房间并备战」；队友等 2 秒，在最下方酒馆布告栏点「揭榜加入」就行！",
+                        "小提示：首次开房若弹出 Windows 防火墙提示，请务必勾选专用/公用网络并点「允许访问」。",
+                    },
+                },
+                {
+                    badge = "异地免费 · 樱花映射直连",
+                    badge_bg = { 36, 98, 158, 245 },
+                    badge_rim = { 22, 64, 108, 255 },
+                    border = { 46, 106, 162, 235 },
+                    title = "不在同一个房间？用免费内网穿透（零服务器费用）",
+                    lines = {
+                        "第1步：房主在樱花映射 (SakuraFrp) 开一条免费 TCP 隧道，本地端口填 17777，复制生成的地址发给朋友。",
+                        "第2步：房主点「创建房间并备战」，把房间顶部「缓冲」点一下切到【缓冲:樱花200ms】（更稳不卡顿）。",
+                        "第3步：朋友复制整段地址 -> 点右边「粘贴」（自动去掉多余汉字）-> 点「立即直连队友战桌」秒进！",
+                    },
+                },
+                {
+                    badge = "不怕闪退 · 公网中继服重连",
+                    badge_bg = { 116, 42, 138, 245 },
+                    badge_rim = { 76, 24, 92, 255 },
+                    border = { 126, 56, 146, 235 },
+                    title = "打超长关卡怕中途掉线？支持 5 分钟保局 + 高速追帧重连",
+                    lines = {
+                        "第1步：房主运行完整包里的「启动公网中继服.bat」（映射本地端口 17780）或使用已有公网服地址。",
+                        "第2步：双方切到「公网中继服」页点连接 -> 房主建房后把 4 位房间码发给朋友，朋友输码进房。",
+                        "第3步：中途谁闪退/断网，5 分钟内重开游戏切到公网页，点顶部绿色「一键高速追帧重连」瞬间回到战场！",
+                    },
+                },
+            }
+            local ch = 104
+            local cgap = 8
+            for i, c in ipairs(cards) do
+                local cy = y + (i - 1) * (ch + cgap)
+                ui.draw_parchment_card(cx, cy, cw, ch, { border = c.border, border_w = 1.8, radius = 8 })
+                ui.draw_pill(cx + 12, cy + 8, 174, 20, c.badge, c.badge_bg, c.badge_rim, { 255, 252, 238, 255 }, font_map.tiny_bold)
+                ui.text(c.title, cx + 196, cy + 9, T.ink_text, font_map.small_bold)
+                for j, line in ipairs(c.lines) do
+                    local ly = cy + 33 + (j - 1) * 21
+                    ui.text(line, cx + 14, ly, (j == 3) and T.ink_muted or T.ink_sub, font_map.tiny, cw - 28, "left")
+                end
+            end
+
+        elseif cur_tab == 2 then
+            -- TAB 2: 双人玩法与规则大白话
+            local half_w = math.floor((cw - 12) / 2)
+            local top_h = 144
+
+            -- Left: 1P Blue Host
+            ui.draw_parchment_card(cx, y, half_w, top_h, {
+                top = { 234, 242, 250, 252 }, bot = { 222, 224, 206, 250 },
+                border = T.p1_border, border_w = 2.0, thumbtack = true, radius = 8,
+            })
+            ui.draw_pill(cx + 12, y + 11, 134, 20, "1P 蓝方主将（房主）", T.p1_top, T.p1_border, { 244, 250, 255, 255 }, font_map.tiny_bold)
+            ui.text("· 操控【1 号英雄】和左侧专属英雄大招。", cx + 12, y + 38, T.ink_text, font_map.small)
+            ui.text("· 拥有【独立冷却援军】，与 2P 互不抢冷却！", cx + 12, y + 60, T.ink_text, font_map.small)
+            ui.text("· 负责挑选地图（全 6 代 201 关）、战役难度", cx + 12, y + 83, T.ink_sub, font_map.tiny)
+            ui.text("  （含第 4 档「不可能」）以及 59 选 12 防御塔卡组。", cx + 12, y + 100, T.ink_sub, font_map.tiny)
+            ui.text("· 等 2P 进房、蜡封变绿「就绪」后点「出征守关！」", cx + 12, y + 120, T.p1_border, font_map.tiny_bold)
+
+            -- Right: 2P Red Guest
+            local rx = cx + half_w + 12
+            ui.draw_parchment_card(rx, y, half_w, top_h, {
+                top = { 252, 238, 234, 252 }, bot = { 236, 218, 190, 250 },
+                border = T.p2_border, border_w = 2.0, thumbtack = true, radius = 8,
+            })
+            ui.draw_pill(rx + 12, y + 11, 134, 20, "2P 红方协防（队友）", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, font_map.tiny_bold)
+            ui.text("· 操控【2 号英雄】和右侧专属英雄大招。", rx + 12, y + 38, T.ink_text, font_map.small)
+            ui.text("· 同样拥有【独立冷却援军】，随便放不冲突！", rx + 12, y + 60, T.ink_text, font_map.small)
+            ui.text("· 进房后点「更换 2P 英雄」，可在 105 位全系列", rx + 12, y + 83, T.ink_sub, font_map.tiny)
+            ui.text("  英雄中任选自己喜欢的搭档（含 6 代新英雄）。", rx + 12, y + 100, T.ink_sub, font_map.tiny)
+            ui.text("· 选好英雄确认「已就绪」，等房主一键发车！", rx + 12, y + 120, T.p2_border, font_map.tiny_bold)
+
+            -- Bottom 3 Rule Cards
+            local ry2 = y + top_h + 10
+            local rh2 = 176
+            local rw3 = math.floor((cw - 20) / 3)
+            local rules = {
+                {
+                    title = "军费账本（钱怎么算？）",
+                    tag = "推荐：独立 50/50",
+                    col = { 164, 102, 22, 255 },
+                    body = "【独立50/50】：杀怪与过波金币一人一半，各花各的。钱不够时喊队友点局内顶部「转50」立刻打钱救场！\n\n【共享金库】：两人共用同一个钱包，一起花钱建塔。",
+                },
+                {
+                    title = "防御塔权（谁能动塔？）",
+                    tag = "推荐：红蓝保护",
+                    col = { 42, 118, 56, 255 },
+                    body = "【红蓝保护】：自己建的塔底座带蓝/红光弧，队友不能误卖或乱升级，保护各自分工！觉得花哨可点「塔底徽记:关」隐藏。\n\n【自由共享】：双方都能升级/出售任意塔。",
+                },
+                {
+                    title = "全 6 代自由混搭卡组",
+                    tag = "59 座塔随心选 12",
+                    col = { 126, 24, 148, 255 },
+                    body = "房主点击军械盘右上「配置59选12」，可以把6代创世、5代联盟、4代复仇的防御塔自由混搭进同一局！\n\n难度支持休闲/普通/老兵/不可能（4档），双端自动锁定一致。",
+                },
+            }
+            for i, r in ipairs(rules) do
+                local rx3 = cx + (i - 1) * (rw3 + 10)
+                ui.draw_parchment_card(rx3, ry2, rw3, rh2, { radius = 8 })
+                ui.text(r.title, rx3 + 12, ry2 + 9, T.ink_text, font_map.small_bold)
+                ui.draw_pill(rx3 + 12, ry2 + 30, rw3 - 24, 19, r.tag,
+                    { r.col[1], r.col[2], r.col[3], 230 }, T.ink_dark, { 255, 250, 236, 255 }, font_map.tiny_bold)
+                ui.text(r.body, rx3 + 12, ry2 + 56, T.ink_sub, font_map.tiny, rw3 - 24, "left")
+            end
+
+        elseif cur_tab == 3 then
+            -- TAB 3: 内置连麦与直播动效教程
+            local rw3 = math.floor((cw - 20) / 3)
+            local top_h = 148
+            local modes = {
+                {
+                    badge = "默认 · 按V说话",
+                    bg = { 156, 102, 26, 245 },
+                    sub = "最防回声 · 零杂音",
+                    body = "进房默认就是这个模式。\n\n按住键盘【V键】就能讲话，松开立刻静音。就算没戴耳机用电脑外放，也不容易出现回声啸叫！",
+                },
+                {
+                    badge = "直播首选 · 自由麦",
+                    bg = { 42, 138, 62, 245 },
+                    sub = "开口即说 · 解放双手",
+                    body = "戴上耳机开黑或直播强烈推荐！\n\n点房间顶部或战局顶栏切到「自由麦」，说话自动收音、闭嘴自动静音，双手专心微操英雄和防御塔！",
+                },
+                {
+                    badge = "快捷键 M · 闭麦",
+                    bg = { 158, 38, 38, 245 },
+                    sub = "随时秒闭 · 仍能听队友",
+                    body = "临时咳嗽、接电话或有人敲门？\n\n随时按一下键盘【M键】立刻闭麦（不会传出你的声音，但仍能听见队友），再按一次M键马上恢复开麦！",
+                },
+            }
+            for i, m in ipairs(modes) do
+                local rx3 = cx + (i - 1) * (rw3 + 10)
+                ui.draw_parchment_card(rx3, y, rw3, top_h, { radius = 8, thumbtack = true })
+                ui.draw_pill(rx3 + 12, y + 13, rw3 - 24, 22, m.badge, m.bg, T.ink_dark, { 255, 252, 238, 255 }, font_map.tiny_bold)
+                ui.text(m.sub, rx3 + 12, y + 39, T.ink_text, font_map.small_bold, rw3 - 24, "center")
+                ui.text(m.body, rx3 + 12, y + 61, T.ink_sub, font_map.tiny, rw3 - 24, "left")
+            end
+
+            -- Bottom Dark-Oak Livestream Tips Panel
+            local by = y + top_h + 10
+            local bh = 172
+            ui.draw_armory_tray(cx, by, cw, bh, 9)
+            ui.print_shadow("直播效果 & 开播前试麦小贴士（无需任何第三方语音软件！）", cx + 16, by + 11, T.gold_bright, nil, nil, nil, font_map.small_bold)
+            local tips = {
+                "1. 开播前先点【试麦】：队友还没进房时，点房间顶部「试麦」按钮并戴上耳机讲两句——能听到自己清晰回放、且 1P 英雄头像右下声波条跳动，就说明麦克风完全正常！",
+                "2. 直播声波特效自动触发：在战桌说话时对应英雄卡亮起翡翠呼吸光圈；进战局后谁开口，顶部 HUD 下方自动弹出【英雄头像 + 1P/2P + 5段动态声波气泡】，观众一眼分清谁在喊话！",
+                "3. 队友太吵或自己没插麦？：队友进房后顶部可一键点「听筒:关」静音对方；没插麦克风的电脑也完全不报错，可以直接清楚收听队友指挥。",
+                "4. 零卡帧零掉线：语音跑在独立后台线程且仅占 ~10KB/s，网络抖动时自动让路给游戏操作帧，绝不影响 60Hz 同步！",
+            }
+            for i, line in ipairs(tips) do
+                ui.text(line, cx + 16, by + 37 + (i - 1) * 32, { 244, 226, 188, 240 }, font_map.tiny, cw - 32, "left")
+            end
+
+        else
+            -- TAB 4: 常用快捷键 & 小白常见 4 大问题急救
+            local lw = 304
+            local rw = cw - lw - 12
+            local card_h = 330
+
+            -- Left: Hotkey Cheat Sheet
+            ui.draw_parchment_card(cx, y, lw, card_h, { border = { 138, 94, 40, 245 }, border_w = 1.8, radius = 8 })
+            ui.draw_pill(cx + 12, y + 10, lw - 24, 22, "常用快捷键 & 顶栏按钮速查", T.wood_mid, T.ink_dark, T.gold_bright, font_map.tiny_bold)
+            local keys = {
+                { k = "F10",        d = "随时打开 / 关闭联机大厅" },
+                { k = "F9",         d = "隐藏 / 显示顶部联机信息条" },
+                { k = "按住 V",     d = "按键说话（按V麦模式）" },
+                { k = "M 键",       d = "一键闭麦 / 恢复开麦" },
+                { k = "Alt + 左键", d = "在地图打点标记提醒队友" },
+                { k = "Space 空格", d = "双端同步暂停 / 继续战斗" },
+                { k = "A / S 键",   d = "1P / 2P 释放各自英雄大招" },
+                { k = "顶栏 转50",  d = "独立经济下给队友转 50 金" },
+                { k = "顶栏 1x/2x", d = "双端同步切换 1 倍/2 倍速" },
+            }
+            for i, item in ipairs(keys) do
+                local ky = y + 39 + (i - 1) * 31
+                ui.draw_pill(cx + 12, ky, 82, 22, item.k, { 236, 214, 168, 245 }, { 148, 108, 52, 210 }, T.ink_text, font_map.tiny_bold)
+                ui.text(item.d, cx + 102, ky + 4, T.ink_text, font_map.tiny, lw - 114, "left")
+            end
+
+            -- Right: Top 4 Newbie Troubleshooting Q&A
+            local rx = cx + lw + 12
+            ui.draw_parchment_card(rx, y, rw, card_h, { border = T.p2_border, border_w = 1.8, radius = 8 })
+            ui.draw_pill(rx + 12, y + 10, rw - 24, 22, "小白最常遇到的 4 个问题急救箱", T.p2_top, T.p2_border, { 255, 246, 238, 255 }, font_map.tiny_bold)
+            local faqs = {
+                {
+                    q = "Q1：搜不到房主，或点加入一直连不上？",
+                    a = "确认房主已经点「创建房间」留在战桌内；首次弹出 Windows 防火墙必须点「允许访问」。异地开黑请用樱花映射 TCP 17777 点「粘贴」直连。",
+                },
+                {
+                    q = "Q2：提示「版本不匹配」或「核心脚本哈希不一致」？",
+                    a = "双方必须用同一份FL8.2.0游戏包，且补丁同为最新版（在大厅右上点「检查更新」即可一键下载新版覆盖安装）。",
+                },
+                {
+                    q = "Q3：玩起来觉得点一下要等半拍，或者有点卡顿？",
+                    a = "异地/樱花节点有网络波动很正常！让房主把房间顶部「缓冲」切到【樱花200ms】或【抗抖300ms】，操作会丝滑很多。",
+                },
+                {
+                    q = "Q4：某关意外闪退，或顶部提示红字「同步异常」？",
+                    a = "别慌！打开解压好的补丁文件夹，双击「一键收集报错包.bat」，10 秒自动打包日志与 AI 提问词，发给作者或直接喂给 AI 即可秒修！",
+                },
+            }
+            for i, fq in ipairs(faqs) do
+                local fy = y + 40 + (i - 1) * 71
+                ui.text(fq.q, rx + 14, fy, T.p2_border, font_map.small_bold, rw - 28, "left")
+                ui.text(fq.a, rx + 14, fy + 19, T.ink_sub, font_map.tiny, rw - 28, "left")
+            end
+        end
+
+        -- Bottom compact Prev / Page / Next navigation bar cleanly seated INSIDE the parchment frame
+        local pby = py + ph - 62
+        ui.draw_pill(cx + math.floor(cw / 2) - 64, pby + 3, 128, 22,
+            string.format("第 %d / 4 页 · 按 ESC 返回", cur_tab),
+            { 246, 232, 198, 240 }, T.parchment_edge, T.ink_sub, font_map.tiny_bold)
+        if cur_tab > 1 then
+            add_btn("guide_prev", "上一页", cx, pby, 92, 28, "wood", { small = true })
+        end
+        if cur_tab < 4 then
+            add_btn("guide_next", "下一页", cx + cw - 92, pby, 92, 28, "battle", { small = true })
+        else
+            add_btn("modal_back", "看懂了，去开黑！", cx + cw - 134, pby, 134, 28, "battle", { small = true })
+        end
+
+    elseif self.view == "home" then
         -- === 联机酒馆 · 冒险驿站 ===
         local y = py + 42
         local is_lan = (self.net_tab == "lan")
@@ -1710,8 +1987,11 @@ function lobby:draw()
         local upd_w = updater.has_update and 112 or 76
         add_btn("check_update", upd_lbl, cx + cw - upd_w, y + 1, upd_w, 26,
             updater.has_update and "battle" or "parchment", { tiny = true })
-        ui.text(string.format("FL %s · 补丁 v%s · F10", tostring(KR_FL_VERSION), proto.MOD_VERSION),
-            cx + 356, y + 7, T.ink_muted, font_map.tiny, cw - 364 - upd_w, "right")
+        local guide_w = 78
+        add_btn("open_guide", "新手教程", cx + cw - upd_w - guide_w - 6, y + 1, guide_w, 26,
+            (not self.seen_guide) and "azure" or "parchment", { tiny = true, tab = 1 })
+        ui.text(string.format("FL %s · v%s · F10", tostring(KR_FL_VERSION), proto.MOD_VERSION),
+            cx + 354, y + 7, T.ink_muted, font_map.tiny, cw - 360 - upd_w - guide_w - 8, "right")
 
         y = y + 36
         G.setColor(T.parchment_line[1], T.parchment_line[2], T.parchment_line[3], 130)
@@ -1901,7 +2181,7 @@ function lobby:draw()
         local cols = 5
         local gap = 6
         local tile_w = math.floor((cw - (cols - 1) * gap) / cols)
-        local tile_h = (total_pages > 1) and 52 or 56
+        local tile_h = (total_pages > 1) and 50 or 56
         for idx_in_pack = start_i, end_i do
             local st = pack.stages[idx_in_pack]
             local slot = idx_in_pack - start_i
@@ -1915,7 +2195,7 @@ function lobby:draw()
         end
 
         if total_pages > 1 then
-            local pby = py + ph - 44
+            local pby = py + ph - 60
             ui.draw_pill(cx + math.floor(cw / 2) - 56, pby + 2, 112, 24,
                 string.format("第 %d / %d 页", cur_page, total_pages),
                 { 246, 232, 198, 240 }, T.parchment_edge, T.ink_text, font_map.small_bold)
@@ -2313,8 +2593,10 @@ function lobby:draw()
             hovered_tw_name and T.gold_bright or { 228, 202, 154, 215 }, font_map.tiny)
 
         if is_host then
+            add_btn("open_guide", "新手教程", cx + cw - 208, y + 5, 76, 23, "parchment", { tiny = true, tab = 2 })
             add_btn("open_towers", string.format("配置 %d 选 12", catalog.TOTAL_TOWERS or 59), cx + cw - 126, y + 5, 114, 23, "wood", { tiny = true })
         else
+            add_btn("open_guide", "新手教程", cx + cw - 196, y + 5, 76, 23, "parchment", { tiny = true, tab = 2 })
             ui.draw_pill(cx + cw - 114, y + 7, 102, 19, "房主配置卡组",
                 { 18, 10, 4, 165 }, { 164, 122, 64, 115 }, { 224, 198, 152, 210 }, font_map.tiny)
         end
