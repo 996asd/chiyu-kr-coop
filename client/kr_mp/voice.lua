@@ -5,18 +5,36 @@
 --   - 1st-order DC high-pass filter + smart VAD (noise gate + 320ms hangover) + Push-to-Talk (V) + Quick Mute (M)
 --   - Jitter-buffered waveOut playback + live animated 5-bar spectrum levels for 1P/2P livestream overlays
 --   - Graceful degradation on headless / mic-less machines (listen-only works even with 0 microphones!)
+local proto = require("kr_mp.proto")
+local ok_bit_main, bit_main = pcall(require, "bit")
+
 local voice = {
     boot = nil,
     transport = nil,
 
     supported = false,
+    backend = nil,         -- "winmm" | "love_audio"
     disabled_for_test = false,
     thread = nil,
     ch_cmd = nil,
     ch_out = nil,
 
+    -- Android / LÖVE 11+ native audio state (main-thread non-blocking, <0.1ms/frame)
+    _rec_dev = nil,
+    _qsrc = nil,
+    _rec_rate = 16000,
+    _rec_ch = 1,
+    _rec_pcm = {},         -- accumulated 16kHz signed int16 samples
+    _rec_hp_x = 0.0,
+    _rec_hp_y = 0.0,
+    _rec_step_idx = 0,
+    _rec_hang_until = 0,
+    _rec_retry_at = 0,
+    _rec_perm_warned = false,
+    _dec_buf = {},
+
     -- User settings (persisted in kr_mp_prefs.json)
-    mode = "ptt",          -- "ptt" (按V说话) | "vad" (自由麦) | "mute" (闭麦)
+    mode = "ptt",          -- "ptt" (按V说话 / 安卓按住讲) | "vad" (自由麦) | "mute" (闭麦)
     peer_muted = false,    -- mute incoming roommate audio
     peer_volume = 1.0,     -- 0.0 .. 1.6
     vad_threshold = 0.018, -- normalized RMS threshold for free-mic VAD
@@ -27,6 +45,7 @@ local voice = {
     peer_connected = false,
     online_server_ok = true,
     ptt_held = false,
+    touch_ptt_held = false,
     in_devs = 0,
     out_devs = 0,
     mic_open = false,
@@ -615,15 +634,257 @@ local function get_now()
     return (love and love.timer and love.timer.getTime) and love.timer.getTime() or os.clock()
 end
 
+-- Bit-identical IMA-ADPCM codec for cross-platform Android <-> Windows PC voice interoperability
+local LA_FRAME_SAMPLES = 640
+local LA_STEP_TABLE = {
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
+    19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+    50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+    130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+    337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
+    876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+    2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
+    5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
+    15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+}
+local LA_INDEX_TABLE = { -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8 }
+
+local function la_encode_frame(self, pcm_arr)
+    local sum_sq = 0.0
+    local prev_x, prev_y = self._rec_hp_x or 0.0, self._rec_hp_y or 0.0
+    local filt = {}
+    for i = 1, LA_FRAME_SAMPLES do
+        local x = pcm_arr[i] or 0
+        local y = x - prev_x + 0.992 * prev_y
+        prev_x = x
+        prev_y = y
+        if y > 32767 then y = 32767 elseif y < -32768 then y = -32768 end
+        local yi = math.floor(y + 0.5)
+        filt[i] = yi
+        local nf = yi / 32768.0
+        sum_sq = sum_sq + nf * nf
+    end
+    self._rec_hp_x, self._rec_hp_y = prev_x, prev_y
+    local rms = math.sqrt(sum_sq / LA_FRAME_SAMPLES)
+
+    local valpred = filt[1] or 0
+    local index = self._rec_step_idx or 0
+    if index < 0 then index = 0 elseif index > 88 then index = 88 end
+    local vp_u = valpred < 0 and (valpred + 65536) or valpred
+    local out = {
+        string.char(vp_u % 256),
+        string.char(math.floor(vp_u / 256) % 256),
+        string.char(index),
+        "\0",
+    }
+    local k = 4
+    local step = LA_STEP_TABLE[index + 1]
+    local low_nib = 0
+    local rshift = ok_bit_main and bit_main.rshift or function(v, n) return math.floor(v / (2 ^ n)) end
+    for i = 0, LA_FRAME_SAMPLES - 1 do
+        local sample = filt[i + 1]
+        local diff = sample - valpred
+        local sign = 0
+        if diff < 0 then
+            sign = 8
+            diff = -diff
+        end
+        local delta = 0
+        local vpdiff = rshift(step, 3)
+        if diff >= step then
+            delta = 4
+            diff = diff - step
+            vpdiff = vpdiff + step
+        end
+        local half = rshift(step, 1)
+        if diff >= half then
+            delta = delta + 2
+            diff = diff - half
+            vpdiff = vpdiff + half
+        end
+        local quarter = rshift(step, 2)
+        if diff >= quarter then
+            delta = delta + 1
+            vpdiff = vpdiff + quarter
+        end
+        if sign ~= 0 then
+            valpred = valpred - vpdiff
+        else
+            valpred = valpred + vpdiff
+        end
+        if valpred > 32767 then valpred = 32767 elseif valpred < -32768 then valpred = -32768 end
+
+        local code = delta + sign
+        index = index + LA_INDEX_TABLE[code + 1]
+        if index < 0 then index = 0 elseif index > 88 then index = 88 end
+        step = LA_STEP_TABLE[index + 1]
+
+        if (i % 2) == 0 then
+            low_nib = code
+        else
+            k = k + 1
+            out[k] = string.char(low_nib + code * 16)
+        end
+    end
+    self._rec_step_idx = index
+    return table.concat(out), rms
+end
+
+local function la_play_adpcm(self, bin)
+    if not self._qsrc or not love or not love.sound or not love.sound.newSoundData then
+        return
+    end
+    local ok_free, free_n = pcall(self._qsrc.getFreeBufferCount, self._qsrc)
+    if not ok_free or not free_n or free_n <= 0 then
+        return
+    end
+    local len = #bin
+    if len < 6 then return end
+    local b0, b1, b2 = string.byte(bin, 1, 3)
+    local vp_u = b0 + b1 * 256
+    local valpred = vp_u >= 32768 and (vp_u - 65536) or vp_u
+    local index = b2
+    if index > 88 then index = 88 end
+    local step = LA_STEP_TABLE[index + 1]
+    local n_samples = math.min(LA_FRAME_SAMPLES, (len - 4) * 2)
+    local g = self.peer_volume or 1.0
+    local rshift = ok_bit_main and bit_main.rshift or function(v, n) return math.floor(v / (2 ^ n)) end
+
+    local ok_sd, sd = pcall(love.sound.newSoundData, LA_FRAME_SAMPLES, 16000, 16, 1)
+    if not ok_sd or not sd then return end
+    for i = 0, n_samples - 1 do
+        local byte_val = string.byte(bin, 5 + math.floor(i / 2)) or 0
+        local code = ((i % 2) == 0) and (byte_val % 16) or math.floor(byte_val / 16)
+        local sign = (code >= 8) and 8 or 0
+        local delta = code % 8
+
+        local vpdiff = rshift(step, 3)
+        if delta >= 4 then vpdiff = vpdiff + step; delta = delta - 4 end
+        if delta >= 2 then vpdiff = vpdiff + rshift(step, 1); delta = delta - 2 end
+        if delta >= 1 then vpdiff = vpdiff + rshift(step, 2) end
+        if sign ~= 0 then
+            valpred = valpred - vpdiff
+        else
+            valpred = valpred + vpdiff
+        end
+        if valpred > 32767 then valpred = 32767 elseif valpred < -32768 then valpred = -32768 end
+
+        index = index + LA_INDEX_TABLE[code + 1]
+        if index < 0 then index = 0 elseif index > 88 then index = 88 end
+        step = LA_STEP_TABLE[index + 1]
+
+        local s = (valpred * g) / 32768.0
+        if s > 1.0 then s = 1.0 elseif s < -1.0 then s = -1.0 end
+        sd:setSample(i, s)
+    end
+    for i = n_samples, LA_FRAME_SAMPLES - 1 do
+        sd:setSample(i, 0)
+    end
+    pcall(self._qsrc.queue, self._qsrc, sd)
+    if self._qsrc.isPlaying and not self._qsrc:isPlaying() then
+        pcall(self._qsrc.play, self._qsrc)
+    end
+    if sd.release then pcall(sd.release, sd) end
+end
+
+local function la_close_mic(self)
+    if self._rec_dev then
+        pcall(self._rec_dev.stop, self._rec_dev)
+        self._rec_dev = nil
+    end
+    self._rec_pcm = {}
+    self.mic_open = false
+end
+
+local function la_close_spk(self)
+    if self._qsrc then
+        pcall(self._qsrc.stop, self._qsrc)
+        if self._qsrc.release then pcall(self._qsrc.release, self._qsrc) end
+        self._qsrc = nil
+    end
+    self.spk_open = false
+end
+
+local function la_open_spk(self)
+    if self._qsrc then return true end
+    if not love or not love.audio or not love.audio.newQueueableSource then return false end
+    local ok, qs = pcall(love.audio.newQueueableSource, 16000, 16, 1, 8)
+    if ok and qs then
+        self._qsrc = qs
+        self.spk_open = true
+        self.out_devs = 1
+        return true
+    end
+    self.last_err = "qsrc_failed:" .. tostring(qs)
+    return false
+end
+
+local function la_open_mic(self, now)
+    if self._rec_dev then
+        local ok_r, rec = pcall(self._rec_dev.isRecording, self._rec_dev)
+        if ok_r and rec then return true end
+        la_close_mic(self)
+    end
+    if now < (self._rec_retry_at or 0) then return false end
+    self._rec_retry_at = now + 2.5
+    if not love or not love.audio or not love.audio.getRecordingDevices then return false end
+    local ok_d, devs = pcall(love.audio.getRecordingDevices)
+    if not ok_d or type(devs) ~= "table" or #devs == 0 then
+        self.in_devs = 0
+        self.last_err = "no_recording_devices"
+        return false
+    end
+    self.in_devs = #devs
+    local dev = devs[1]
+    -- Try 16kHz native first; fall back to 48kHz / 44.1kHz (Android Oboe/OpenAL hardware native rates)
+    local try_rates = { { 3200, 16000 }, { 8192, 48000 }, { 8192, 44100 } }
+    local started = false
+    for _, cfg in ipairs(try_rates) do
+        local ok_s, res = pcall(dev.start, dev, cfg[1], cfg[2], 16, 1)
+        if ok_s and res then
+            started = true
+            break
+        end
+    end
+    if not started then
+        self.last_err = "mic_start_failed_or_permission_denied"
+        if not self._rec_perm_warned then
+            self._rec_perm_warned = true
+            self:log("Android RecordingDevice:start failed (check Android Microphone permission)")
+        end
+        return false
+    end
+    self._rec_dev = dev
+    self._rec_rate = (dev.getSampleRate and dev:getSampleRate()) or 16000
+    self._rec_ch = (dev.getChannelCount and dev:getChannelCount()) or 1
+    self._rec_pcm = {}
+    self._rec_hp_x = 0.0
+    self._rec_hp_y = 0.0
+    self._rec_step_idx = 0
+    self.mic_open = true
+    self.last_err = nil
+    self:log("LÖVE Audio mic opened: rate=%d ch=%d devs=%d", self._rec_rate, self._rec_ch, self.in_devs)
+    return true
+end
+
 function voice:log(fmt, ...)
     if self.boot and self.boot.log then
         self.boot:log("[VOICE] " .. fmt, ...)
     end
 end
 
+function voice:set_touch_ptt(down)
+    self.touch_ptt_held = (down == true)
+end
+
 function voice:init(boot, transport)
     self.boot = boot
     self.transport = transport
+
+    -- Default hands-free smart VAD on Android touchscreens (no physical V key!)
+    if proto.is_android() then
+        self.mode = "vad"
+    end
 
     -- Keep automated M1/M2/smoke tests headless & deterministic
     if os.getenv("KR_MP_AUTO_COOP") or os.getenv("KR_MP_AUTO_M2") or os.getenv("KR_MP_SMOKE_TEST") == "1" then
@@ -632,36 +893,49 @@ function voice:init(boot, transport)
         return
     end
 
-    if not (love and love.thread and love.thread.newThread and love.thread.getChannel) then
-        self.supported = false
-        return
-    end
-
+    -- Backend 1: Windows WinMM isolated thread (zero-latency PC desktop)
     local ok_ffi, ffi = pcall(require, "ffi")
-    if not ok_ffi or not ffi or ffi.os ~= "Windows" then
-        self.supported = false
+    if ok_ffi and ffi and ffi.os == "Windows"
+        and love and love.thread and love.thread.newThread and love.thread.getChannel then
+        self.ch_cmd = love.thread.getChannel("kr_mp_voice_cmd")
+        self.ch_out = love.thread.getChannel("kr_mp_voice_out")
+        self.ch_cmd:clear()
+        self.ch_out:clear()
+
+        local ok_th, th = pcall(love.thread.newThread, WORKER_CODE)
+        if ok_th and th then
+            self.thread = th
+            self.backend = "winmm"
+            self.supported = true
+            th:start("kr_mp_voice_cmd", "kr_mp_voice_out")
+            self:log("Voice chat worker thread started (WinMM 16kHz IMA-ADPCM, mode=%s)", tostring(self.mode))
+            return
+        else
+            self:log("Failed to spawn WinMM audio thread: %s", tostring(th))
+        end
+    end
+
+    -- Backend 2: Cross-platform LÖVE 11/12 native audio (Android Oboe/OpenAL RecordingDevice + QueueableSource)
+    if love and love.audio and love.audio.newQueueableSource and love.sound and love.sound.newSoundData then
+        self.backend = "love_audio"
+        self.supported = true
+        local ok_d, devs = pcall(love.audio.getRecordingDevices)
+        self.in_devs = (ok_d and type(devs) == "table") and #devs or 0
+        self.out_devs = 1
+        self:log("Voice chat initialized (LÖVE Audio 16kHz IMA-ADPCM, mic_devs=%d, mode=%s)",
+            self.in_devs, tostring(self.mode))
         return
     end
 
-    self.ch_cmd = love.thread.getChannel("kr_mp_voice_cmd")
-    self.ch_out = love.thread.getChannel("kr_mp_voice_out")
-    self.ch_cmd:clear()
-    self.ch_out:clear()
-
-    local ok_th, th = pcall(love.thread.newThread, WORKER_CODE)
-    if not ok_th or not th then
-        self:log("Failed to spawn audio thread: %s", tostring(th))
-        self.supported = false
-        return
-    end
-
-    self.thread = th
-    self.supported = true
-    th:start("kr_mp_voice_cmd", "kr_mp_voice_out")
-    self:log("Voice chat worker thread started (16kHz IMA-ADPCM, mode=%s)", tostring(self.mode))
+    self.supported = false
 end
 
 function voice:shutdown()
+    if self.backend == "love_audio" then
+        la_close_mic(self)
+        la_close_spk(self)
+        return
+    end
     if self.ch_cmd then
         self.ch_cmd:push({ kind = "quit" })
     end
@@ -728,24 +1002,31 @@ end
 function voice:get_mode_short()
     if not self.supported then return "麦:无" end
     if self.mode == "vad" then return "自由麦" end
-    if self.mode == "ptt" then return "按V麦" end
+    if self.mode == "ptt" then return proto.is_android() and "按住讲" or "按V麦" end
     return "已闭麦"
 end
 
 function voice:get_mode_lobby_label()
     if not self.supported then return "连麦:不可用" end
     if self.mode == "vad" then return "连麦:自由麦" end
-    if self.mode == "ptt" then return "连麦:按V说话" end
+    if self.mode == "ptt" then return proto.is_android() and "连麦:按住讲" or "连麦:按V说话" end
     return "连麦:已闭麦"
 end
 
 function voice:get_mode_toast()
+    local mob = proto.is_android()
     if self.mode == "vad" then
-        return "连麦已切至【自由麦】：说话自动收音（建议戴耳机防回声，按 M 一键闭麦）"
+        return mob
+            and "连麦已切至【自由麦】：说话自动收音（建议戴耳机防回声，点按钮可切模式或闭麦）"
+            or "连麦已切至【自由麦】：说话自动收音（建议戴耳机防回声，按 M 一键闭麦）"
     elseif self.mode == "ptt" then
-        return "连麦已切至【按键说话】：按住键盘 V 键讲话（松开即静，零环境底噪）"
+        return mob
+            and "连麦已切至【按住说话】：对局中按住顶部下方的「按住说话」绿色按钮讲话！"
+            or "连麦已切至【按键说话】：按住键盘 V 键讲话（松开即静，零环境底噪）"
     else
-        return "连麦已【闭麦】：你暂时不会发声，但仍可听见队友声音（按 M 恢复开麦）"
+        return mob
+            and "连麦已【闭麦】：你暂时不会发声，但仍可听见队友声音"
+            or "连麦已【闭麦】：你暂时不会发声，但仍可听见队友声音（按 M 恢复开麦）"
     end
 end
 
@@ -761,12 +1042,130 @@ function voice:on_voice_message(msg)
     self.peer_talk_until = now + 0.45
     self.rx_count = self.rx_count + 1
 
-    if self.peer_muted or not self.ch_cmd then
+    if self.peer_muted then
         return
     end
     local bin = b64_decode(msg.d)
-    if bin and #bin >= 6 then
+    if not bin or #bin < 6 then
+        return
+    end
+    if self.backend == "love_audio" then
+        if la_open_spk(self) then
+            la_play_adpcm(self, bin)
+        end
+    elseif self.ch_cmd then
         self.ch_cmd:push({ kind = "rx", data = bin })
+    end
+end
+
+function voice:_update_love_audio(now, peer_ok, srv_ok, want_mic, want_spk)
+    if want_spk then
+        la_open_spk(self)
+    else
+        la_close_spk(self)
+    end
+    if want_mic then
+        la_open_mic(self, now)
+    else
+        la_close_mic(self)
+    end
+
+    if not self._rec_dev then return end
+    local ok_cnt, avail = pcall(self._rec_dev.getSampleCount, self._rec_dev)
+    if not ok_cnt or not avail or avail <= 0 then return end
+    local ok_sd, sd = pcall(self._rec_dev.getData, self._rec_dev)
+    if not ok_sd or not sd then return end
+
+    local sc = sd:getSampleCount()
+    local sr = (sd.getSampleRate and sd:getSampleRate()) or self._rec_rate or 16000
+    local ch = (sd.getChannelCount and sd:getChannelCount()) or self._rec_ch or 1
+    local buf = self._rec_pcm
+    local nbuf = #buf
+
+    if sr == 16000 then
+        for i = 0, sc - 1 do
+            local s = (ch > 1) and sd:getSample(i, 1) or sd:getSample(i)
+            nbuf = nbuf + 1
+            buf[nbuf] = math.floor(s * 32767 + 0.5)
+        end
+    else
+        -- Clean linear resample from 48kHz / 44.1kHz down to canonical 16kHz
+        local ratio = sr / 16000.0
+        local out_n = math.floor(sc / ratio)
+        for j = 0, out_n - 1 do
+            local pos = j * ratio
+            local i0 = math.floor(pos)
+            local i1 = math.min(sc - 1, i0 + 1)
+            local frac = pos - i0
+            local s0 = (ch > 1) and sd:getSample(i0, 1) or sd:getSample(i0)
+            local s1 = (ch > 1) and sd:getSample(i1, 1) or sd:getSample(i1)
+            local s = s0 + (s1 - s0) * frac
+            nbuf = nbuf + 1
+            buf[nbuf] = math.floor(s * 32767 + 0.5)
+        end
+    end
+    if sd.release then pcall(sd.release, sd) end
+
+    -- Cap buffered samples so latency never grows unbounded
+    if nbuf > LA_FRAME_SAMPLES * 6 then
+        local keep = {}
+        local start_i = nbuf - LA_FRAME_SAMPLES * 2 + 1
+        for i = start_i, nbuf do keep[#keep + 1] = buf[i] end
+        self._rec_pcm = keep
+        buf = keep
+        nbuf = #buf
+    end
+
+    local sent_this_tick = 0
+    while #buf >= LA_FRAME_SAMPLES and sent_this_tick < 3 do
+        local frame = {}
+        for i = 1, LA_FRAME_SAMPLES do
+            frame[i] = buf[i]
+        end
+        -- Shift remaining samples
+        local rem = {}
+        for i = LA_FRAME_SAMPLES + 1, #buf do
+            rem[#rem + 1] = buf[i]
+        end
+        self._rec_pcm = rem
+        buf = rem
+
+        local adpcm, rms = la_encode_frame(self, frame)
+        local should_send = false
+        if self.mode == "ptt" then
+            should_send = self.ptt_held or self.self_test
+        elseif self.mode == "vad" then
+            if rms >= (self.vad_threshold or 0.018) then
+                self._rec_hang_until = now + 0.32
+            end
+            should_send = (now <= (self._rec_hang_until or 0))
+        end
+
+        local norm = math.min(1.0, (rms or 0) * 5.0)
+        if should_send then
+            self.local_level = math.max(self.local_level * 0.5, norm)
+            self.local_talking = true
+            self.local_talk_until = now + 0.35
+
+            if self.self_test and not self.peer_muted and la_open_spk(self) then
+                la_play_adpcm(self, adpcm)
+            end
+            if peer_ok and srv_ok and self.transport and self.transport:is_connected() then
+                local qlen = self.transport.get_send_queue_len and self.transport:get_send_queue_len() or 0
+                if qlen < 8 then
+                    local lvl_int = math.min(100, math.max(1, math.floor(norm * 100 + 0.5)))
+                    self.transport:send({
+                        t = "VOICE",
+                        d = b64_encode(adpcm),
+                        l = lvl_int,
+                    })
+                    self.tx_count = self.tx_count + 1
+                end
+            end
+            sent_this_tick = sent_this_tick + 1
+        else
+            self.local_level = self.local_level * 0.55 + norm * 0.45
+        end
     end
 end
 
@@ -783,7 +1182,7 @@ function voice:update(dt, lobby, coop)
         self.peer_level = math.max(0, self.peer_level - (dt or 0.016) * 2.8)
     end
 
-    if not self.supported or not self.ch_cmd or not self.ch_out then
+    if not self.supported then
         return
     end
 
@@ -795,16 +1194,25 @@ function voice:update(dt, lobby, coop)
     self.peer_connected = peer_ok
     self.online_server_ok = srv_ok
 
-    -- Hold-to-talk (V key) — ignored while typing inside a lobby text input box!
+    -- Hold-to-talk (PC V key OR Android touch PTT button) — ignored while typing inside a lobby text input box!
     local typing = (lobby ~= nil and lobby.open == true and lobby.focused_field ~= nil)
     local v_down = (not typing) and love and love.keyboard and love.keyboard.isDown and love.keyboard.isDown("v") or false
-    self.ptt_held = v_down
+    self.ptt_held = v_down or (self.touch_ptt_held == true)
 
     -- Only open hardware mic when inside a room (or self-testing) and not muted
     local want_mic = (in_room or self.self_test) and (self.mode ~= "mute")
     local want_spk = (in_room or self.self_test) and (not self.peer_muted)
     if not in_room and self.self_test then
         self.self_test = false
+    end
+
+    if self.backend == "love_audio" then
+        self:_update_love_audio(now, peer_ok, srv_ok, want_mic, want_spk)
+        return
+    end
+
+    if not self.ch_cmd or not self.ch_out then
+        return
     end
 
     local sig = string.format("%s|%s|%s|%s|%s|%.2f|%s",
@@ -872,6 +1280,38 @@ function voice:update(dt, lobby, coop)
             end
         end
     end
+end
+
+-- Inject a pre-encoded 40ms 16kHz IMA-ADPCM Base64 frame from an external companion (e.g. AI co-op TTS)
+-- Sends directly to the remote peer without opening the local physical microphone or looping back locally.
+function voice:send_external_adpcm(b64_data, lvl_int)
+    if type(b64_data) ~= "string" or #b64_data < 8 then
+        return false
+    end
+    local now = get_now()
+    local lvl_n = math.min(100, math.max(1, math.floor((tonumber(lvl_int) or 35) + 0.5)))
+    local norm = math.min(1.0, lvl_n / 100.0)
+    self.local_level = math.max(self.local_level * 0.5, norm)
+    self.local_talking = true
+    self.local_talk_until = now + 0.35
+
+    if not self.peer_connected or not self.online_server_ok then
+        return false
+    end
+    if not self.transport or not self.transport:is_connected() then
+        return false
+    end
+    local qlen = self.transport.get_send_queue_len and self.transport:get_send_queue_len() or 0
+    if qlen >= 10 then
+        return false
+    end
+    self.transport:send({
+        t = "VOICE",
+        d = b64_data,
+        l = lvl_n,
+    })
+    self.tx_count = self.tx_count + 1
+    return true
 end
 
 -- Returns (is_talking, level_0_to_1) for a given seat pid (1 or 2)

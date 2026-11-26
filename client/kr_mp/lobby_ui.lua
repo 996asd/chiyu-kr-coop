@@ -122,11 +122,11 @@ local function ensure_room_defaults(r)
 end
 
 local function get_base_dir_safe()
-    return (love and love.filesystem and love.filesystem.getSourceBaseDirectory and love.filesystem.getSourceBaseDirectory()) or "."
+    return proto.get_writable_dir()
 end
 
 local function get_prefs_path()
-    return get_base_dir_safe() .. "\\kr_mp_prefs.json"
+    return proto.path_join(get_base_dir_safe(), "kr_mp_prefs.json")
 end
 
 function lobby:load_prefs()
@@ -230,10 +230,9 @@ local function get_session_path()
     local log_file = os.getenv("KR_MP_LOG_FILE")
     if log_file then
         local log_dir = log_file:match("^(.*)[/\\][^/\\]+$")
-        if log_dir then return log_dir .. "\\last_session.json" end
+        if log_dir then return proto.path_join(log_dir, "last_session.json") end
     end
-    local base_dir = (love and love.filesystem and love.filesystem.getSourceBaseDirectory and love.filesystem.getSourceBaseDirectory()) or "."
-    return base_dir .. "\\kr_mp_last_session.json"
+    return proto.path_join(proto.get_writable_dir(), "kr_mp_last_session.json")
 end
 
 function lobby:load_saved_session()
@@ -331,13 +330,25 @@ function lobby:init(boot, transport, lockstep, coop, overlay)
     end
 end
 
+function lobby:set_focus(field)
+    self.focused_field = field
+    if proto.is_android() and love and love.keyboard and love.keyboard.setTextInput then
+        local want = (field ~= nil and self.open == true)
+        pcall(love.keyboard.setTextInput, want)
+    end
+end
+
 function lobby:toggle()
     if self.coop and self.coop:is_active() then
         self.open = false
+        self:set_focus(nil)
         return
     end
     self.open = not self.open
     self.sub_modal = nil
+    if not self.open then
+        self:set_focus(nil)
+    end
     if self.open and self.view == "home" then
         self:load_saved_session()
         if not updater.checked_once then
@@ -355,7 +366,7 @@ end
 
 function lobby:switch_tab(tab)
     if self.view ~= "home" or self.net_tab == tab then return end
-    self.focused_field = nil
+    self:set_focus(nil)
     self.sub_modal = nil
     self.pending_online_action = nil
     self.pending_lan_join = nil
@@ -694,6 +705,18 @@ function lobby:host_start_match()
     local seed = (os.time() % 900000) + 100000
     local slot_snap = self.coop:build_host_slot_snapshot(self.room.heroes, self.room.towers)
     local delay_turns = normalize_delay_turns(self.room.input_delay_turns)
+    local measured_rtt = (self.transport and self.transport:get_rtt_ms()) or 0
+    if not self.auto_role and not self.auto_m2_role then
+        if delay_turns < 6 and measured_rtt >= 110 then
+            delay_turns = 6
+            self.room.input_delay_turns = 6
+            self.overlay:show_toast(string.format("检测到较高延迟 (%dms)，已自动启用【抗抖300ms】缓冲！", measured_rtt), 2.8)
+        elseif delay_turns < 4 and measured_rtt >= 25 then
+            delay_turns = 4
+            self.room.input_delay_turns = 4
+            self.overlay:show_toast(string.format("检测到跨网延迟 (%dms)，已自动启用【樱花200ms】防卡顿缓冲！", measured_rtt), 2.8)
+        end
+    end
     local cfg = {
         level_idx = self.room.level_idx,
         level_mode = self.room.level_mode or 1,
@@ -1282,25 +1305,28 @@ end
 -- === Lobby Input & Button Handler ===
 
 function lobby:textinput(t)
-    if not self.open or not self.focused_field then return false end
+    if not self.open or not self.focused_field or type(t) ~= "string" then return false end
     local f = self.focused_field
-    if f == "ip" then
-        local c = (t == "：") and ":" or t
-        if c:match("^[%d%.:a-zA-Z%-]$") and #self.ip_input < 80 then
-            self.ip_input = self.ip_input .. c
-        end
-    elseif f == "server" then
-        local c = (t == "：") and ":" or t
-        if c:match("^[%d%.:a-zA-Z%-]$") and #self.server_input < 80 then
-            self.server_input = self.server_input .. c
-        end
-    elseif f == "code" then
-        if t:match("^[%da-zA-Z]$") and #self.code_input < 6 then
-            self.code_input = self.code_input .. t:upper()
-        end
-    elseif f == "pw" then
-        if t:match("^[%w%-%_@#]$") and #self.pw_input < 16 then
-            self.pw_input = self.pw_input .. t
+    -- Support multi-character Android soft-keyboard IME commits as well as fullwidth colons
+    local clean_t = t:gsub("：", ":")
+    for i = 1, #clean_t do
+        local c = clean_t:sub(i, i)
+        if f == "ip" then
+            if c:match("^[%d%.:a-zA-Z%-]$") and #self.ip_input < 80 then
+                self.ip_input = self.ip_input .. c
+            end
+        elseif f == "server" then
+            if c:match("^[%d%.:a-zA-Z%-]$") and #self.server_input < 80 then
+                self.server_input = self.server_input .. c
+            end
+        elseif f == "code" then
+            if c:match("^[%da-zA-Z]$") and #self.code_input < 6 then
+                self.code_input = self.code_input .. c:upper()
+            end
+        elseif f == "pw" then
+            if c:match("^[%w%-%_@#]$") and #self.pw_input < 16 then
+                self.pw_input = self.pw_input .. c
+            end
         end
     end
     return true
@@ -1312,11 +1338,14 @@ function lobby:keypressed(key)
         return true
     end
     if not self.open then return false end
-    if key == "escape" then
-        if self.sub_modal then
+    if key == "escape" or key == "acback" then
+        if self.focused_field then
+            self:set_focus(nil)
+        elseif self.sub_modal then
             self.sub_modal = nil
         else
             self.open = false
+            self:set_focus(nil)
         end
         return true
     end
@@ -1334,7 +1363,7 @@ function lobby:keypressed(key)
             end
             return true
         elseif key == "return" or key == "kpenter" then
-            self.focused_field = nil
+            self:set_focus(nil)
             if f == "ip" then
                 self.ip_input = proto.sanitize_addr(self.ip_input):sub(1, 80)
                 self:save_prefs()
@@ -1372,7 +1401,10 @@ end
 
 function lobby:handle_button(btn)
     local id = btn.id
-    self.focused_field = nil
+    local is_input_box = (id == "ip_box" or id == "server_box" or id == "code_box" or id == "pw_box")
+    if not is_input_box then
+        self:set_focus(nil)
+    end
 
     -- Native Ironhide tactile UI sound feedback (purely visual/audio, outside sim)
     if id == "close" or id == "leave_room" then
@@ -1394,7 +1426,13 @@ function lobby:handle_button(btn)
         self.sub_modal = nil
         if self.overlay then self.overlay:clear_toast() end
     elseif id == "check_update" then
-        if updater.has_update then
+        if updater.ota_applied then
+            updater:restart_game()
+        elseif updater.ota_updating then
+            self.overlay:show_toast("正在下载并校验热更新补丁，请稍候几秒...", 2.0)
+        elseif updater.ota_ready then
+            updater:start_ota_apply()
+        elseif updater.has_update then
             updater:open_download_page()
         else
             updater:start_check(true)
@@ -1428,7 +1466,7 @@ function lobby:handle_button(btn)
     elseif id == "join_local" then
         self:join_lan_room("127.0.0.1", proto.DEFAULT_TCP_PORT)
     elseif id == "ip_box" then
-        self.focused_field = "ip"
+        self:set_focus("ip")
     elseif id == "paste_ip" then
         self:paste_into_field("ip")
     elseif id == "join_ip" then
@@ -1439,7 +1477,7 @@ function lobby:handle_button(btn)
         self:join_lan_room(btn.room.ip, btn.room.port)
     -- Online Home
     elseif id == "server_box" then
-        self.focused_field = "server"
+        self:set_focus("server")
     elseif id == "paste_server" then
         self:paste_into_field("server")
     elseif id == "connect_server" then
@@ -1449,9 +1487,9 @@ function lobby:handle_button(btn)
     elseif id == "refresh_online" then
         self:refresh_online_rooms()
     elseif id == "code_box" then
-        self.focused_field = "code"
+        self:set_focus("code")
     elseif id == "pw_box" then
-        self.focused_field = "pw"
+        self:set_focus("pw")
     elseif id == "toggle_public" then
         self.room_public = not self.room_public
     elseif id == "create_online" then
@@ -1532,8 +1570,7 @@ function lobby:handle_button(btn)
         self:save_prefs()
         self.overlay:show_toast("已切换蜡封样式：" .. info.desc, 2.8)
     elseif id == "toggle_ready" and self.role == "client" then
-        self.local_ready = not self.local_ready
-        self.transport:send({ t = "SET_GUEST", ready = self.local_ready, hero_idx = self.room.heroes[2] })
+        self:toggle_ready()
     -- Sub-Modal Pickers
     elseif id == "stage_pack" and btn.pack_idx then
         self.stage_pack_idx = btn.pack_idx
@@ -1595,7 +1632,7 @@ function lobby:mousepressed(x, y, button)
         if self.overlay and self.overlay:dismiss_toast_at(x, y) then
             return true
         end
-        self.focused_field = nil
+        self:set_focus(nil)
     end
     return true
 end
@@ -1982,11 +2019,36 @@ function lobby:draw()
         add_btn("tab_lan", "局域网 / 樱花直连", cx, y, 162, 28, is_lan and "wood" or "parchment", { small = true, active = is_lan })
         add_btn("tab_online", "公网中继服 (追帧重连)", cx + 170, y, 178, 28, (not is_lan) and "wood" or "parchment", { small = true, active = not is_lan })
 
-        local upd_lbl = updater.has_update and ("下载新版 v" .. tostring(updater.latest_version))
-            or (updater.checking and "检查中..." or "检查更新")
-        local upd_w = updater.has_update and 112 or 76
-        add_btn("check_update", upd_lbl, cx + cw - upd_w, y + 1, upd_w, 26,
-            updater.has_update and "battle" or "parchment", { tiny = true })
+        local upd_lbl, upd_w, upd_style
+        if updater.ota_applied then
+            upd_lbl = "重启生效 √"
+            upd_w = 92
+            upd_style = "battle"
+        elseif updater.ota_updating then
+            upd_lbl = updater.ota_progress_text or "热更新中..."
+            upd_w = 98
+            upd_style = "azure"
+        elseif updater.ota_ready then
+            local nchg = updater.ota_changed_files and #updater.ota_changed_files or 0
+            upd_lbl = (updater.latest_version and updater.is_newer(updater.latest_version, proto.MOD_VERSION))
+                and ("热更新 v" .. tostring(updater.latest_version))
+                or string.format("一键热更(%d)", nchg)
+            upd_w = 108
+            upd_style = "battle"
+        elseif updater.has_update then
+            upd_lbl = "下载新版 v" .. tostring(updater.latest_version)
+            upd_w = 112
+            upd_style = "battle"
+        elseif updater.checking then
+            upd_lbl = "检查中..."
+            upd_w = 76
+            upd_style = "parchment"
+        else
+            upd_lbl = "检查更新"
+            upd_w = 76
+            upd_style = "parchment"
+        end
+        add_btn("check_update", upd_lbl, cx + cw - upd_w, y + 1, upd_w, 26, upd_style, { tiny = true })
         local guide_w = 78
         add_btn("open_guide", "新手教程", cx + cw - upd_w - guide_w - 6, y + 1, guide_w, 26,
             (not self.seen_guide) and "azure" or "parchment", { tiny = true, tab = 1 })
@@ -2622,15 +2684,42 @@ function lobby:draw()
         end
     end
 
-    -- Draw all buttons with hover state
+    -- Draw all buttons with hover state (skip sticky hover on Android touchscreens)
     self.buttons = btns
+    local allow_hover = not proto.is_android()
     for _, b in ipairs(btns) do
-        local hover = (mx >= b.x and mx <= b.x + b.w and my >= b.y and my <= b.y + b.h)
+        local hover = allow_hover and (mx >= b.x and mx <= b.x + b.w and my >= b.y and my <= b.y + b.h)
         ui.draw_button(b, hover, font_map)
     end
 
     ui.end_transform()
     G.pop()
+end
+
+-- Toggle (or explicitly set) Guest Ready state when inside a Co-op lobby room
+function lobby:toggle_ready(force_ready)
+    if self.view ~= "room" or self.role ~= "client" then
+        return false
+    end
+    if not self.transport or not self.transport:is_connected() then
+        return false
+    end
+    local next_state
+    if type(force_ready) == "boolean" then
+        next_state = force_ready
+    else
+        next_state = not self.local_ready
+    end
+    if self.local_ready == next_state then
+        return self.local_ready
+    end
+    self.local_ready = next_state
+    self.transport:send({
+        t = "SET_GUEST",
+        ready = self.local_ready,
+        hero_idx = self.room and self.room.heroes and self.room.heroes[2] or (catalog.DEFAULT_HERO_2 or 54),
+    })
+    return self.local_ready
 end
 
 return lobby

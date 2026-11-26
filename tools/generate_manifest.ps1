@@ -24,14 +24,24 @@ foreach ($f in $luaFiles) {
     $files["kr_mp/$($f.Name)"] = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToUpper()
 }
 
+$assets = [ordered]@{}
+$assetDir = Join-Path $ClientDir "kr_mp\assets"
+if (Test-Path $assetDir) {
+    $pngFiles = Get-ChildItem $assetDir -File | Sort-Object Name
+    foreach ($a in $pngFiles) {
+        $assets["kr_mp/assets/$($a.Name)"] = (Get-FileHash $a.FullName -Algorithm SHA256).Hash.ToUpper()
+    }
+}
+
 $manifest = [ordered]@{
     version = [string]$verObj.version
     protocol = [int]$verObj.protocol
     fl_version = [string]$verObj.fl_version
     generated_at = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     files = $files
+    assets = $assets
 }
 
 $json = ($manifest | ConvertTo-Json -Depth 4) -replace "`r`n", "`n"
 [System.IO.File]::WriteAllText($OutPath, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
-Write-Host "[KR-MP] Generated manifest.json (v$($manifest.version), $($files.Count) Lua files) -> $OutPath" -ForegroundColor Green
+Write-Host "[KR-MP] Generated manifest.json (v$($manifest.version), $($files.Count) Lua + $($assets.Count) assets) -> $OutPath" -ForegroundColor Green

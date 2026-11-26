@@ -3,7 +3,7 @@
 local bit = require("bit")
 
 local proto = {
-    MOD_VERSION = "2.1.1",
+    MOD_VERSION = "2.2.0",
     PROTOCOL_VER = 3,
     DEFAULT_TCP_PORT = 17777,
     LAN_DISCOVERY_PORT = 17778,
@@ -13,6 +13,39 @@ local proto = {
     INPUT_DELAY_TURNS = 2, -- 2 turns lookahead (100ms LAN; 4 turns = 200ms for SakuraFrp)
     _script_hash = nil,
 }
+
+function proto.is_android()
+    if IS_ANDROID == true then return true end
+    return (love and love.system and love.system.getOS and love.system.getOS() == "Android") == true
+end
+
+function proto.is_love11_plus()
+    if proto.is_android() then return true end
+    if love and love.getVersion then
+        local major = select(1, love.getVersion())
+        if tonumber(major) and tonumber(major) >= 11 then return true end
+    end
+    return false
+end
+
+function proto.get_writable_dir()
+    if proto.is_android() then
+        if love and love.filesystem and love.filesystem.getSaveDirectory then
+            return love.filesystem.getSaveDirectory()
+        end
+        return "."
+    end
+    if love and love.filesystem and love.filesystem.getSourceBaseDirectory then
+        return love.filesystem.getSourceBaseDirectory()
+    end
+    return "."
+end
+
+function proto.path_join(dir, name)
+    local sep = proto.is_android() and "/" or "\\"
+    dir = tostring(dir or "."):gsub("[/\\]+$", "")
+    return dir .. sep .. tostring(name or "")
+end
 
 -- Cleanly extract host[:port] from clipboard / SakuraFrp / OpenFrp copy-paste strings
 -- Handles whitespace, fullwidth Chinese colon "：", "tcp://", "http://", or surrounding Chinese text.
@@ -30,8 +63,8 @@ function proto.sanitize_addr(raw)
     return bare or ""
 end
 
+-- Core deterministic simulation & director scripts (100% identical between PC FL 8.2.0 and Android HD APK)
 local CORE_HASH_FILES = {
-    "main.lua",
     "all/simulation.lua",
     "lib/klove/simulation.lua",
     "all/systems.lua",

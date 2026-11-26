@@ -10,9 +10,11 @@ local overlay = {
     buttons = {},
     on_action = nil,
     _consumed_down = false,
+    _ptt_btn_down = false,
     _ui_scale = 1,
     _last_bar = nil,
     _last_toast_rect = nil,
+    _wait_banner_until = 0,
 }
 
 local PHASE_LABELS = {
@@ -68,6 +70,26 @@ function overlay:set_status(state)
     self.state = state or {}
 end
 
+function overlay:is_point_over_hud(x, y)
+    if not self.visible then return false end
+    if x >= 0 and x <= 1 and y >= 0 and y <= 1 and love and love.graphics then
+        x = x * (love.graphics.getWidth() or 1)
+        y = y * (love.graphics.getHeight() or 1)
+    end
+    local s = self._ui_scale or 1
+    local lx, ly = x / s, y / s
+    for _, b in ipairs(self.buttons) do
+        if lx >= b.x and lx <= b.x + b.w and ly >= b.y and ly <= b.y + b.h then
+            return true
+        end
+    end
+    local bar = self._last_bar
+    if bar and lx >= bar.x and lx <= bar.x + bar.w and ly >= bar.y and ly <= bar.y + bar.h then
+        return true
+    end
+    return false
+end
+
 function overlay:mousepressed(x, y, button)
     if not self.visible or button ~= 1 then
         return false
@@ -77,7 +99,12 @@ function overlay:mousepressed(x, y, button)
     for _, b in ipairs(self.buttons) do
         if lx >= b.x and lx <= b.x + b.w and ly >= b.y and ly <= b.y + b.h then
             self._consumed_down = true
-            if b.id == "mp_send_gold" then
+            if b.id == "mp_voice_ptt" then
+                self._ptt_btn_down = true
+                ui.play_sfx("click")
+                if self.on_action then self.on_action("mp_voice_ptt_down") end
+                return true
+            elseif b.id == "mp_send_gold" then
                 ui.play_sfx("coin")
             elseif b.id == "mp_leave" then
                 ui.play_sfx("close")
@@ -94,6 +121,12 @@ function overlay:mousepressed(x, y, button)
 end
 
 function overlay:mousereleased(x, y, button)
+    if self._ptt_btn_down and button == 1 then
+        self._ptt_btn_down = false
+        self._consumed_down = false
+        if self.on_action then self.on_action("mp_voice_ptt_up") end
+        return true
+    end
     if self._consumed_down and button == 1 then
         self._consumed_down = false
         return true
@@ -157,12 +190,20 @@ function overlay:draw()
     if s.mp_active then
         -- === 42px 铁皮手绘雕花木铁战地微章 HUD（高清等比自适应） ===
         local has_catchup_bar = (s.mp_phase == "CATCHING_UP" and catchup_target > 0)
-        local is_alert = (s.mp_phase == "DESYNC" or s.mp_phase == "DISCONNECTED" or s.mp_phase == "WAIT_RECONNECT" or s.mp_waiting)
+        -- Debounce brief 16~450ms network micro-jitter so the Battle HUD NEVER flashes/strobes!
+        local now_hud = (love.timer and love.timer.getTime()) or 0
+        if s.mp_waiting and (s.mp_wait_secs or 0) >= 0.50 then
+            self._wait_banner_until = now_hud + 0.35
+        elseif not s.mp_waiting and (self._wait_banner_until or 0) <= now_hud then
+            self._wait_banner_until = 0
+        end
+        local show_wait_alert = (s.mp_waiting and (s.mp_wait_secs or 0) >= 0.50) or (now_hud < (self._wait_banner_until or 0))
+        local is_alert = (s.mp_phase == "DESYNC" or s.mp_phase == "DISCONNECTED" or s.mp_phase == "WAIT_RECONNECT" or show_wait_alert)
         local is_indep = (s.mp_econ == "independent")
         local show_marks_btn = (s.mp_tower_mode == "owned")
         local show_voice_btn = (s.mp_voice_ok == true)
 
-        w = math.min(show_voice_btn and 542 or 488, vsw - 20)
+        w = math.min(show_voice_btn and 552 or 488, vsw - 20)
         x = math.max(10, math.floor((vsw - w) / 2))
         if vsw >= 880 and x < 200 then x = 200 end
         y = 7
@@ -257,10 +298,10 @@ function overlay:draw()
             local v_style = my_talk and "battle" or ((v_mode == "mute") and "crimson" or "wood")
             local v_fg = my_talk and { 255, 255, 240, 255 }
                 or ((v_mode == "vad") and T.ok_bright or ((v_mode == "mute") and { 255, 220, 216, 255 } or T.gold_bright))
-            add_btn("mp_voice_mode", s.mp_voice_label or "按V麦", cx, cy, 48, 24, v_style, {
+            add_btn("mp_voice_mode", s.mp_voice_label or "按V麦", cx, cy, 56, 24, v_style, {
                 tiny = true, fg = v_fg,
             })
-            cx = cx + 53
+            cx = cx + 61
         end
 
         add_btn("mp_leave", "退出", cx, cy, 38, 24, "crimson", { tiny = true })
@@ -297,13 +338,24 @@ function overlay:draw()
                 px_b, py_b + (ph_b - ui.font_h(font_map.tiny_bold)) * 0.5, { 255, 250, 230, 255 }, pw_b, "center", nil, font_map.tiny_bold)
         elseif is_alert then
             local phase_cn = PHASE_LABELS[s.mp_phase] or tostring(s.mp_phase)
-            local wt = s.mp_waiting and "正在等待队友指令..." or phase_cn
+            local wt = show_wait_alert and "网络波动，正在等待队友指令..." or phase_cn
             ui.print_shadow(string.format("%s · 帧 %d · 校验 #%s", wt, tick, hash_hex),
                 x + 16, y + 43, T.gold_bright, w - 32, "center", nil, font_map.tiny_bold)
         end
 
-        -- Hovering anywhere over the HUD bar gently reveals the Parchment Sync Telemetry Tooltip!
-        local hud_hover = (mx >= x and mx <= x + w and my >= y and my <= y + h)
+        -- Hovering anywhere over the HUD bar gently reveals the Parchment Sync Telemetry Tooltip (PC desktop only)
+        local is_mob = proto.is_android()
+        local hud_hover = (not is_mob) and (mx >= x and mx <= x + w and my >= y and my <= y + h)
+        local ptt_btn_offset_y = 0
+        if is_mob and s.mp_voice_ok and s.mp_voice_mode == "ptt" and not has_catchup_bar and not is_alert then
+            -- Dedicated thumb-friendly Hold-to-Talk button beneath HUD on Android
+            local ptt_w, ptt_h = 114, 28
+            local ptt_x = math.floor(x + (w - ptt_w) * 0.5)
+            local ptt_y = y + h + 6
+            add_btn("mp_voice_ptt", s.mp_voice_ptt and "正在讲话..." or "按住说话",
+                ptt_x, ptt_y, ptt_w, ptt_h, s.mp_voice_ptt and "battle" or "azure", { small = true, radius = 8 })
+            ptt_btn_offset_y = ptt_h + 6
+        end
         if hud_hover and not has_catchup_bar and not is_alert then
             local tip_y = y + h + 5
             ui.draw_parchment_card(x + 24, tip_y, w - 48, 24, { radius = 6 })
@@ -314,7 +366,7 @@ function overlay:draw()
                 x + 28, tip_y + (24 - ui.font_h(font_map.tiny)) * 0.5, T.ink_text, font_map.tiny, w - 56, "center")
         elseif s.mp_voice_ok and (s.mp_voice_p1_talk or s.mp_voice_p2_talk) then
             -- Livestream Dual-Seat Speaking Bubbles right beneath the Battle HUD (zero corner overlap!)
-            local bubble_y = y + h + 6
+            local bubble_y = y + h + 6 + ptt_btn_offset_y
             local bw, bh = 166, 34
             local gap = 12
             local show1 = (s.mp_voice_p1_talk == true)
@@ -397,14 +449,26 @@ function overlay:draw()
             add_btn("replay", "重放 (F7)", bx + 122, by, 86, 26, "azure", { small = true })
             add_btn("record", "重录 (F6)", bx + 216, by, 86, 26, "crimson", { small = true })
         else
-            add_btn("lobby", "联机大厅 (F10)", bx, by, 134, 26, "battle", { small = true })
-            add_btn("record", "录制 (F6)", bx + 142, by, 78, 26, "crimson", { small = true })
-            local nx = bx + 228
-            if s.has_replay then
-                add_btn("replay", "回放 (F7)", nx, by, 78, 26, "azure", { small = true })
-                nx = nx + 86
+            local is_mob = proto.is_android()
+            if is_mob then
+                add_btn("lobby", "联机大厅", bx, by, 134, 28, "battle", { small = true })
+                add_btn("record", "录制", bx + 142, by, 72, 28, "crimson", { small = true })
+                local nx = bx + 222
+                if s.has_replay then
+                    add_btn("replay", "回放", nx, by, 72, 28, "azure", { small = true })
+                    nx = nx + 80
+                end
+                add_btn("hide", "隐藏", nx, by, 72, 28, "wood", { small = true })
+            else
+                add_btn("lobby", "联机大厅 (F10)", bx, by, 134, 26, "battle", { small = true })
+                add_btn("record", "录制 (F6)", bx + 142, by, 78, 26, "crimson", { small = true })
+                local nx = bx + 228
+                if s.has_replay then
+                    add_btn("replay", "回放 (F7)", nx, by, 78, 26, "azure", { small = true })
+                    nx = nx + 86
+                end
+                add_btn("hide", "隐藏 (F9)", nx, by, 74, 26, "wood", { small = true })
             end
-            add_btn("hide", "隐藏 (F9)", nx, by, 74, 26, "wood", { small = true })
         end
 
         if has_replay_bar then
@@ -424,8 +488,9 @@ function overlay:draw()
 
     -- Render all clickable HUD buttons
     self.buttons = btns
+    local allow_hover = not proto.is_android()
     for _, btn in ipairs(btns) do
-        local hover = (mx >= btn.x and mx <= btn.x + btn.w and my >= btn.y and my <= btn.y + btn.h)
+        local hover = allow_hover and (mx >= btn.x and mx <= btn.x + btn.w and my >= btn.y and my <= btn.y + btn.h)
         ui.draw_button(btn, hover, font_map)
     end
 

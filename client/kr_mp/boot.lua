@@ -21,10 +21,7 @@ local boot = {
 }
 
 local function get_base_dir()
-    if love and love.filesystem and love.filesystem.getSourceBaseDirectory then
-        return love.filesystem.getSourceBaseDirectory()
-    end
-    return "."
+    return proto.get_writable_dir()
 end
 
 function boot:log(fmt, ...)
@@ -145,6 +142,46 @@ function boot:wrap_love_callbacks()
         end
     end
 
+    -- Android touchscreen safety: swallow raw touch gestures while Lobby is open or HUD consumed a touch press
+    local orig_touchpressed = love.touchpressed
+    love.touchpressed = function(id, x, y, dx, dy, pressure, ...)
+        if self.lobby and self.lobby.open then
+            return
+        end
+        if overlay:is_point_over_hud(x, y) then
+            return
+        end
+        if orig_touchpressed then
+            return orig_touchpressed(id, x, y, dx, dy, pressure, ...)
+        end
+    end
+
+    local orig_touchmoved = love.touchmoved
+    love.touchmoved = function(id, x, y, dx, dy, pressure, ...)
+        if self.lobby and self.lobby.open then
+            return
+        end
+        if overlay._consumed_down then
+            return
+        end
+        if orig_touchmoved then
+            return orig_touchmoved(id, x, y, dx, dy, pressure, ...)
+        end
+    end
+
+    local orig_touchreleased = love.touchreleased
+    love.touchreleased = function(id, x, y, dx, dy, pressure, ...)
+        if self.lobby and self.lobby.open then
+            return
+        end
+        if overlay._consumed_down then
+            return
+        end
+        if orig_touchreleased then
+            return orig_touchreleased(id, x, y, dx, dy, pressure, ...)
+        end
+    end
+
     local orig_quit = love.quit
     love.quit = function(...)
         self:log("Shutting down KR-MP...")
@@ -203,6 +240,13 @@ function boot:on_update(dt)
     local h2_idx = (self.coop and self.coop.cfg and self.coop.cfg.heroes and self.coop.cfg.heroes[2])
         or (self.lobby and self.lobby.room and self.lobby.room.heroes and self.lobby.room.heroes[2]) or 54
 
+    local ls_waiting = (self.lockstep and self.lockstep.waiting_for_peer) == true
+    local ls_wait_secs = 0
+    if ls_waiting and self.lockstep and (self.lockstep.wait_start_ts or 0) > 0 then
+        local now_t = love and love.timer and love.timer.getTime and love.timer.getTime() or 0
+        ls_wait_secs = math.max(0, now_t - self.lockstep.wait_start_ts)
+    end
+
     local st = {
         mp_active = mp_active,
         mp_online = self.transport and self.transport:is_online() or false,
@@ -217,7 +261,8 @@ function boot:on_update(dt)
         mp_phase = self.lockstep and self.lockstep.phase or "IDLE",
         mp_speed = self.lockstep and self.lockstep.game_speed or 1,
         mp_sync_ok = self.lockstep and self.lockstep.sync_ok_count or 0,
-        mp_waiting = self.lockstep and self.lockstep.waiting_for_peer or false,
+        mp_waiting = ls_waiting,
+        mp_wait_secs = ls_wait_secs,
         mp_catchup_target = self.lockstep and self.lockstep.catchup_target_tick or 0,
         mp_voice_ok = self.voice and self.voice.supported or false,
         mp_voice_mode = self.voice and self.voice.mode or "mute",
@@ -315,6 +360,10 @@ function boot:on_hud_action(action_id)
             if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
             overlay:show_toast(self.voice:get_mode_toast(), 2.4)
         end
+    elseif action_id == "mp_voice_ptt_down" and self.voice then
+        self.voice:set_touch_ptt(true)
+    elseif action_id == "mp_voice_ptt_up" and self.voice then
+        self.voice:set_touch_ptt(false)
     elseif action_id == "mp_leave" and self.lobby then
         self.lobby:leave_room()
     elseif action_id == "record" and self.replay then
@@ -336,9 +385,20 @@ function boot:init(source)
     self.source = source or "unknown"
     self.smoke_mode = (os.getenv("KR_MP_SMOKE_TEST") == "1")
 
+    -- Lock deterministic 60Hz sim tick on Android high-refresh phones (120Hz/144Hz)
+    if proto.is_android() then
+        if DRAW_FPS ~= 60 then
+            DRAW_FPS = 60
+            TICK_LENGTH = 1 / 60
+        end
+        if main and main.params and main.params.fps ~= 60 then
+            main.params.fps = 60
+        end
+    end
+
     local base = get_base_dir()
     local env_log = os.getenv("KR_MP_LOG_FILE")
-    local log_path = env_log or (base .. "\\kr_mp.log")
+    local log_path = env_log or proto.path_join(base, "kr_mp.log")
     -- Keep previous run's log as kr_mp_prev.log so crash stacks survive a restart before collecting bug report
     if not env_log then
         local prev_in = io.open(log_path, "rb")
@@ -346,7 +406,7 @@ function boot:init(source)
             local prev_data = prev_in:read("*a")
             prev_in:close()
             if prev_data and #prev_data > 0 then
-                local prev_out = io.open(base .. "\\kr_mp_prev.log", "wb")
+                local prev_out = io.open(proto.path_join(base, "kr_mp_prev.log"), "wb")
                 if prev_out then
                     prev_out:write(prev_data)
                     prev_out:close()
@@ -357,8 +417,14 @@ function boot:init(source)
     self.log_file = io.open(log_path, "w")
     self.script_hash = proto.compute_script_hash()
 
-    self:log("=== KR-MP v%s Booting (entry=%s, FL=%s, hash=%s, font=%s) ===",
-        proto.MOD_VERSION, self.source, tostring(KR_FL_VERSION), self.script_hash, fonts.get_path())
+    local os_name = (love and love.system and love.system.getOS and love.system.getOS()) or "unknown"
+    local lv_str = "?"
+    if love and love.getVersion then
+        local maj, min, rev = love.getVersion()
+        lv_str = string.format("%s.%s.%s", tostring(maj), tostring(min), tostring(rev))
+    end
+    self:log("=== KR-MP v%s Booting (entry=%s, os=%s, love=%s, FL=%s, hash=%s, font=%s) ===",
+        proto.MOD_VERSION, self.source, os_name, lv_str, tostring(KR_FL_VERSION), self.script_hash, fonts.get_path())
     self:log("Base dir: %s | Save dir: %s", base,
         (love.filesystem and love.filesystem.getSaveDirectory and love.filesystem.getSaveDirectory()) or "?")
 
@@ -414,7 +480,11 @@ function boot:init(source)
         self:log("ERROR loading kr_mp.hooks: %s", tostring(hooks_mod))
     end
 
-    overlay:show_toast("王国保卫战 FL 联机补丁已就绪！点击「联机大厅 (F10)」即可双人联机！", 5)
+    if proto.is_android() then
+        overlay:show_toast("王国保卫战 FL 联机补丁已就绪！点左上角「联机大厅」即可双人开黑！", 4.5)
+    else
+        overlay:show_toast("王国保卫战 FL 联机补丁已就绪！点击「联机大厅 (F10)」即可双人联机！", 5)
+    end
     self:log("KR-MP v%s initialization complete.", proto.MOD_VERSION)
     return self
 end

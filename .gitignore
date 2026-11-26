@@ -16,6 +16,11 @@ server/kr-mp-server-linux-amd64
 *.rar
 *.zip
 *.love
+*.apk
+*.idsig
+*.jks
+*.keystore
+.android_tools/
 
 # OS & editor files
 .DS_Store

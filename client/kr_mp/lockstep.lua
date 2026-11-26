@@ -148,11 +148,11 @@ function lockstep:begin_loading(local_pid, cfg)
 
     -- Open per-player hash log for post-match verification & community bug-report collection
     local log_file = os.getenv("KR_MP_LOG_FILE")
-    local base_dir = (love and love.filesystem and love.filesystem.getSourceBaseDirectory and love.filesystem.getSourceBaseDirectory()) or "."
+    local base_dir = proto.get_writable_dir()
     local log_dir = (log_file and log_file:match("^(.*)[/\\][^/\\]+$")) or base_dir
     local default_hpath = log_file
-        and string.format("%s\\mp_p%d_hashes.log", log_dir, self.local_pid)
-        or (base_dir .. "\\kr_mp_hashes.log")
+        and proto.path_join(log_dir, string.format("mp_p%d_hashes.log", self.local_pid))
+        or proto.path_join(base_dir, "kr_mp_hashes.log")
     local hpath = os.getenv("KR_MP_HASH_LOG_FILE") or default_hpath
     self.hash_log_file = io.open(hpath, "w")
     if self.hash_log_file then

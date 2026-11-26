@@ -76,31 +76,39 @@ local KR6_TOWER_NAMES = {
 
 local catalog = require("kr_mp.catalog")
 local fonts = require("kr_mp.fonts")
+local proto = require("kr_mp.proto")
 
 local _tf = { s = 1, ox = 0, oy = 0 }
 
--- Responsive scale for the 780x486 Ironhide War-Table Lobby (scales cleanly up to 1080p/2K/4K)
+-- Responsive scale for the 780x486 Ironhide War-Table Lobby (scales cleanly from phone HD to 1080p/2K/4K)
 function ui.compute_lobby_scale(sw, sh)
     sw = tonumber(sw) or 960
     sh = tonumber(sh) or 540
-    local s = math.min((sw * 0.86) / 780, (sh * 0.84) / 486)
+    local s = math.min((sw * 0.88) / 780, (sh * 0.86) / 486)
+    if not proto.is_android() then
+        s = math.min((sw * 0.86) / 780, (sh * 0.84) / 486)
+    end
     if s < 1.0 and sw >= 812 and sh >= 526 then
         s = 1.0
     end
     s = math.floor(s * 20 + 0.5) / 20
-    return math.max(0.75, math.min(3.2, s))
+    local min_s = proto.is_android() and 0.50 or 0.75
+    return math.max(min_s, math.min(3.2, s))
 end
 
 -- Responsive scale for the top Battle HUD & Title Toolbar (leaves generous clearance for KR native corners)
 function ui.compute_hud_scale(sw, sh)
     sw = tonumber(sw) or 960
     sh = tonumber(sh) or 540
-    local s = math.min(sw / 1180, sh / 660)
+    local s = proto.is_android()
+        and math.min(sw / 1060, sh / 570)
+        or math.min(sw / 1180, sh / 660)
     if s < 1.0 and sw >= 540 and sh >= 420 then
         s = 1.0
     end
     s = math.floor(s * 20 + 0.5) / 20
-    return math.max(0.8, math.min(2.6, s))
+    local min_s = proto.is_android() and 0.65 or 0.8
+    return math.max(min_s, math.min(2.6, s))
 end
 
 function ui.begin_transform(scale, ox, oy)
@@ -294,7 +302,7 @@ function ui.play_sfx(kind)
     end
 end
 
--- Load external 4x-supersampled PNG plate from <exe_dir>/kr_mp/assets/<name>
+-- Load external 4x-supersampled PNG plate from kr_mp/assets/<name> (supports both Android game.love & PC loose files)
 function ui.get_ext_image(fname, wrap_repeat)
     local cached = _ext_cache[fname]
     if cached ~= nil then
@@ -302,29 +310,34 @@ function ui.get_ext_image(fname, wrap_repeat)
     end
     local G = love and love.graphics
     local FS = love and love.filesystem
-    if not G or not FS or not FS.newFileData then
+    if not G then
         _ext_cache[fname] = false
         return nil
     end
-    local full = get_source_base_dir() .. "/kr_mp/assets/" .. fname
-    local f = io.open(full, "rb")
-    if not f then
-        _ext_cache[fname] = false
-        return nil
+    local img = nil
+    local rel = "kr_mp/assets/" .. fname
+    -- Prefer love.filesystem (works natively inside Android game.love AND mounted PC folders!)
+    if FS and ((FS.getInfo and FS.getInfo(rel)) or (FS.isFile and FS.isFile(rel))) then
+        local ok_im, im = pcall(G.newImage, rel)
+        if ok_im and im then img = im end
     end
-    local bytes = f:read("*a")
-    f:close()
-    if not bytes or #bytes == 0 then
-        _ext_cache[fname] = false
-        return nil
+    -- Fallback to raw io.open relative to source base directory (PC loose patch outside mounted root)
+    if not img and FS and FS.newFileData then
+        local full = get_source_base_dir() .. "/kr_mp/assets/" .. fname
+        local f = io.open(full, "rb")
+        if f then
+            local bytes = f:read("*a")
+            f:close()
+            if bytes and #bytes > 0 then
+                local ok_fd, fd = pcall(FS.newFileData, bytes, fname)
+                if ok_fd and fd then
+                    local ok_im, im = pcall(G.newImage, fd)
+                    if ok_im and im then img = im end
+                end
+            end
+        end
     end
-    local ok_fd, fd = pcall(FS.newFileData, bytes, fname)
-    if not ok_fd or not fd then
-        _ext_cache[fname] = false
-        return nil
-    end
-    local ok_im, img = pcall(G.newImage, fd)
-    if not ok_im or not img then
+    if not img then
         _ext_cache[fname] = false
         return nil
     end
@@ -564,7 +577,7 @@ function ui.get_stage_sprite(level_idx)
     end
 end
 
--- === Cached GPU Vertical Gradient Mesh (LÖVE 0.10.2 safe, zero banding) ===
+-- === Cached GPU Vertical Gradient Mesh (LÖVE 0.10 & LÖVE 11/12 Android safe, zero banding) ===
 local function get_vgrad_mesh(c1, c2)
     local key = string.format("%d_%d_%d_%d|%d_%d_%d_%d",
         c1[1], c1[2], c1[3], c1[4] or 255,
@@ -576,11 +589,14 @@ local function get_vgrad_mesh(c1, c2)
         _grad_cache[key] = false
         return nil
     end
+    local div = proto.is_love11_plus() and 255.0 or 1.0
+    local r1, g1, b1, a1 = c1[1] / div, c1[2] / div, c1[3] / div, (c1[4] or 255) / div
+    local r2, g2, b2, a2 = c2[1] / div, c2[2] / div, c2[3] / div, (c2[4] or 255) / div
     local ok, mesh = pcall(G.newMesh, {
-        { 0, 0, 0, 0, c1[1], c1[2], c1[3], c1[4] or 255 },
-        { 1, 0, 1, 0, c1[1], c1[2], c1[3], c1[4] or 255 },
-        { 1, 1, 1, 1, c2[1], c2[2], c2[3], c2[4] or 255 },
-        { 0, 1, 0, 1, c2[1], c2[2], c2[3], c2[4] or 255 },
+        { 0, 0, 0, 0, r1, g1, b1, a1 },
+        { 1, 0, 1, 0, r1, g1, b1, a1 },
+        { 1, 1, 1, 1, r2, g2, b2, a2 },
+        { 0, 1, 0, 1, r2, g2, b2, a2 },
     }, "fan", "static")
     if ok and mesh then
         _grad_cache[key] = mesh

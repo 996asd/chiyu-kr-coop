@@ -256,19 +256,33 @@ function coop:prepare_match(local_pid, cfg, reconnect_data)
     end
 end
 
--- Wait until director has finished any in-flight screen load (e.g. initial 'slots' atlas threads)
--- before queueing 'game', avoiding FL image_db's active-thread QUIT race.
+-- Wait until director has finished any in-flight screen load or previous 'game' unload
+-- before queueing 'game', avoiding both image_db thread races and FL's singleton game.store=nil crash!
 function coop:try_launch_pending()
     if not self._pending_launch_args or not main or not main.handler then return end
     local h = main.handler
-    if h.active_item ~= nil and h.queued_item == nil and h.next_item_name == nil then
-        local args = self._pending_launch_args
-        self._pending_launch_args = nil
-        self:log("Launching synced Co-op level=%d (director ready, active=%s)",
-            args.level_idx or 101, tostring(h.active_item.item_name))
-        h.next_item_name = "game"
-        h.next_item_args = args
+    if h.queue_unload_item ~= nil or h.queued_item ~= nil or h.next_item_name ~= nil then
+        return
     end
+    if h.active_item == nil or h.active_item.is_transition then
+        return
+    end
+    -- CRITICAL: FL's director shares a single 'game' table singleton. Queueing 'game' while active_item is
+    -- already 'game' causes async unload_item(old game) to wipe game.store=nil BEFORE queued game:init() runs!
+    -- Bounce cleanly through 'slots' first so the old match unloads completely before loading the new/reconnected match.
+    if h.active_item == game or h.active_item.item_name == "game" then
+        self:log("Active item is still 'game'; bouncing through 'slots' to unload cleanly before launching level=%d",
+            self._pending_launch_args.level_idx or 101)
+        h.next_item_name = "slots"
+        h.next_item_args = {}
+        return
+    end
+    local args = self._pending_launch_args
+    self._pending_launch_args = nil
+    self:log("Launching synced Co-op level=%d (director ready, active=%s)",
+        args.level_idx or 101, tostring(h.active_item.item_name))
+    h.next_item_name = "game"
+    h.next_item_args = args
 end
 
 function coop:leave_match()
@@ -591,12 +605,40 @@ end
 
 -- === World-Space Co-op Visual Overlays (Red/Blue Tower Rings, P1/P2 Hero Tags, Map Pings) ===
 
-local function world_to_screen(wx, wy)
+-- Exact camera-aware world -> screen transform matching all/game.lua:draw_game()
+-- Tracks Android 20:9 cover_zoom, pinch-to-zoom, camera pan, PC zoom, and world_offset shake!
+local function get_world_view_transform()
     if not game or not game.game_scale or not game.game_ref_origin then
-        return nil, nil
+        return nil
     end
-    local sx = wx * game.game_scale + game.game_ref_origin.x
-    local sy = (game.screen_h or 720) - (wy * game.game_scale + game.game_ref_origin.y)
+    local gs = game.game_scale
+    local rox, roy
+    if game.camera then
+        local c = game.camera
+        local vcx = (c.view_left or 0) + (c.view_w or game.screen_w or 0) * 0.5
+        local vcy = (c.view_top or 0) + (c.view_h or game.screen_h or 0) * 0.5
+        local z = c.zoom or 1
+        rox = -(c.x * z - vcx)
+        roy = -(c.y * z - vcy)
+        gs = gs * z
+    else
+        rox = game.game_ref_origin.x
+        roy = game.game_ref_origin.y
+    end
+    if game.store and game.store.world_offset then
+        rox = rox + (game.store.world_offset.x or 0)
+        roy = roy + (game.store.world_offset.y or 0)
+    end
+    return rox, roy, gs, (game.ref_h or REF_H or 768)
+end
+
+local function world_to_screen(wx, wy, rox, roy, gs, ref_h)
+    if not rox then
+        rox, roy, gs, ref_h = get_world_view_transform()
+        if not rox then return nil, nil end
+    end
+    local sx = rox + wx * gs
+    local sy = roy + (ref_h - wy) * gs
     return sx, sy
 end
 
@@ -608,9 +650,15 @@ function coop:draw_world_overlays()
         return
     end
 
+    local rox, roy, scale, ref_h = get_world_view_transform()
+    if not rox then return end
+
     local G = love.graphics
-    local scale = game.game_scale or 1
-    local bs = math.max(1.0, math.min(2.2, math.floor(scale * 10 + 0.5) / 10))
+    local sw_scr = G.getWidth and G.getWidth() or (game.screen_w or 1280)
+    local sh_scr = G.getHeight and G.getHeight() or (game.screen_h or 720)
+    local base_scale = game.game_scale or 1
+    -- Keep text pills cleanly readable while scaling moderately when zoomed in
+    local bs = math.max(1.0, math.min(2.4, math.floor((base_scale * (1 + ((scale / math.max(0.01, base_scale)) - 1) * 0.35)) * 10 + 0.5) / 10))
 
     G.push("all")
     G.origin()
@@ -627,8 +675,8 @@ function coop:draw_world_overlays()
         local mfh = mini_font and mini_font:getHeight() or math.floor(11 * bs)
         for _, e in pairs(game.store.entities) do
             if e and e.tower and e._mp_owner and e.pos and not e._kr_mp_local then
-                local sx, sy = world_to_screen(e.pos.x, e.pos.y)
-                if sx then
+                local sx, sy = world_to_screen(e.pos.x, e.pos.y, rox, roy, scale, ref_h)
+                if sx and sx >= -90 and sx <= sw_scr + 90 and sy >= -90 and sy <= sh_scr + 90 then
                     local is_p1 = (e._mp_owner == 1)
                     local cx = sx
                     local cy = sy - 7 * scale
@@ -694,8 +742,8 @@ function coop:draw_world_overlays()
         local hid = self.hero_ids[pid]
         local he = hid and game.store.entities[hid]
         if he and he.pos and he.health and not he.health.dead then
-            local sx, sy = world_to_screen(he.pos.x, he.pos.y)
-            if sx then
+            local sx, sy = world_to_screen(he.pos.x, he.pos.y, rox, roy, scale, ref_h)
+            if sx and sx >= -90 and sx <= sw_scr + 90 and sy >= -90 and sy <= sh_scr + 120 then
                 hpos[pid] = { sx = sx, sy = sy }
             end
         end
@@ -731,8 +779,8 @@ function coop:draw_world_overlays()
         if now >= p.end_ts then
             table.remove(self.pings, i)
         else
-            local sx, sy = world_to_screen(p.wx, p.wy)
-            if sx then
+            local sx, sy = world_to_screen(p.wx, p.wy, rox, roy, scale, ref_h)
+            if sx and sx >= -120 and sx <= sw_scr + 120 and sy >= -120 and sy <= sh_scr + 120 then
                 local age = now - p.start_ts
                 local cycle = (age * 1.8) % 1.0
                 local r = (12 + cycle * 44) * scale

@@ -95,14 +95,15 @@ local function serialize_lua(val, indent)
 end
 
 function replay:get_paths()
-    local base = (love and love.filesystem and love.filesystem.getSourceBaseDirectory and love.filesystem.getSourceBaseDirectory()) or "."
-    local rep_dir = os.getenv("KR_MP_REPLAY_DIR") or (base .. "\\replays")
+    local proto = require("kr_mp.proto")
+    local base = proto.get_writable_dir()
+    local rep_dir = os.getenv("KR_MP_REPLAY_DIR") or proto.path_join(base, "replays")
     local log_file = os.getenv("KR_MP_LOG_FILE")
-    local log_dir = log_file and log_file:match("^(.*)[/\\][^/\\]+$") or (base .. "\\logs")
+    local log_dir = log_file and log_file:match("^(.*)[/\\][^/\\]+$") or proto.path_join(base, "logs")
     return {
-        rep_file = rep_dir .. "\\last.rep",
-        rec_hash_log = log_dir .. "\\record_hashes.log",
-        rep_hash_log = log_dir .. "\\replay_hashes.log",
+        rep_file = proto.path_join(rep_dir, "last.rep"),
+        rec_hash_log = proto.path_join(log_dir, "record_hashes.log"),
+        rep_hash_log = proto.path_join(log_dir, "replay_hashes.log"),
     }
 end
 
