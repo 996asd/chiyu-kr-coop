@@ -311,8 +311,9 @@ function M.draw(ctx)
         end
     end
 
-    if sk and sk.log_warning then
-        ui.text(sk.log_warning, cx + 12, y + 51, { 166, 46, 36, 255 }, fm.tiny, cw - 176, "left")
+    local sk_warn = (sk and sk.get_active_warning) and sk:get_active_warning(lobby) or nil
+    if sk_warn then
+        ui.text(sk_warn, cx + 12, y + 51, { 166, 46, 36, 255 }, fm.tiny, cw - 176, "left")
     else
         ui.text("安全承诺：绝不读取官方启动器 config.json 中的任何密钥；直连樱花官方源并自动 MD5 校验。",
             cx + 12, y + 51, T.ink_muted, fm.tiny, cw - 176, "left")

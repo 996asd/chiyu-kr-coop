@@ -193,12 +193,13 @@ local function draw_home_sakura(ctx, y)
     ui.text(string.format("%s  ·  状态：%s%s", inst_s, proc_s, spd_s),
         cx + 22, st_y + 7, sk_alive and { 32, 108, 48, 255 } or T.ink_text, fm.small_bold, text_w, "left")
     local line2, line2_col
+    local sk_warn = (sk and sk.get_active_warning) and sk:get_active_warning(lobby) or nil
     if sk and sk.dl_busy then
         line2 = string.format("正在从樱花官方源下载启动器 v%s（%d%%），下完将自动校验并拉起安装...",
             tostring(sk.dl_ver or ""), sk:get_download_pct())
         line2_col = { 34, 108, 48, 255 }
-    elseif sk and sk.log_warning then
-        line2, line2_col = sk.log_warning, { 166, 46, 36, 255 }
+    elseif sk_warn then
+        line2, line2_col = sk_warn, { 166, 46, 36, 255 }
     elseif sk_disp then
         line2 = "已自动识别地址：" .. mask_if_private(lobby, sk_disp) .. (sk_p2p and "  [P2P优先]" or "")
         line2_col = { 34, 108, 48, 255 }

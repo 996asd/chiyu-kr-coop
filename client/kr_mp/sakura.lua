@@ -32,6 +32,8 @@ local sakura = {
     log_detected_tunnel = nil,    -- tunnel name from log
     log_speed_text = nil,         -- e.g. "10 Mibit/s"
     log_warning = nil,            -- recent diagnostic warning from SakuraFrp log
+    log_warning_kind = nil,       -- "local_refused" | "vip_denied" | "net_jitter"
+    log_warning_ts = 0,           -- unix timestamp of warning log line
     last_local_scan_ts = 0,
 
     -- Official SakuraLauncher.exe downloader state
@@ -252,16 +254,29 @@ local function scan_processes(self)
     k32.CloseHandle(snap)
 end
 
+local function parse_log_timestamp(line)
+    local y, mo, d, h, mi, s = line:match("(%d%d%d%d)[/%-](%d%d)[/%-](%d%d)%s+(%d%d):(%d%d):(%d%d)")
+    if not y then return 0 end
+    local ok, ts = pcall(os.time, {
+        year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+        hour = tonumber(h), min = tonumber(mi), sec = tonumber(s),
+    })
+    return (ok and tonumber(ts)) or 0
+end
+
 local function parse_sakura_log_tail(text)
     local tunnels = {}
-    local last_warn = nil
     local line_no = 0
     for line in text:gmatch("[^\r\n]+") do
         line_no = line_no + 1
         local tname = line:match("frpc%[([^|%]]+)|") or line:match("Tunnel/([^%s]+)")
         if tname then
             if not tunnels[tname] then
-                tunnels[tname] = { name = tname, alive = false, is_http = false, addr = nil, p2p = nil, speed = nil, last_seen = 0 }
+                tunnels[tname] = {
+                    name = tname, alive = false, is_http = false,
+                    addr = nil, p2p = nil, speed = nil, last_seen = 0,
+                    warn_msg = nil, warn_kind = nil, warn_ts = 0,
+                }
             end
             local t = tunnels[tname]
             t.last_seen = line_no
@@ -288,11 +303,17 @@ local function parse_sakura_log_tail(text)
                 if p2p and not p2p:match("^127%.") then t.p2p = p2p end
             end
             if line:find("连接映射目标", 1, true) and line:find("失败", 1, true) then
-                last_warn = "樱花日志提示：无法连接本地服务，请确认已点「创建房间」且本地端口为 17777"
+                t.warn_msg = "樱花日志提示：隧道无法连上本机游戏端口，请检查隧道本地端口是否设为 17777"
+                t.warn_kind = "local_refused"
+                t.warn_ts = parse_log_timestamp(line)
             elseif line:find("无权使用该节点", 1, true) then
-                last_warn = "樱花日志提示：当前节点 VIP 已到期或无权使用，请更换免费/多线节点"
+                t.warn_msg = "樱花日志提示：当前节点 VIP 已到期或无权使用，请更换免费/多线节点"
+                t.warn_kind = "vip_denied"
+                t.warn_ts = parse_log_timestamp(line)
             elseif line:find("网络波动导致数据连接断开", 1, true) then
-                last_warn = "樱花节点近期有波动（联机中已自动受 180 秒热续传保护）"
+                t.warn_msg = "樱花节点近期有波动（联机中已自动受 180 秒热续传保护）"
+                t.warn_kind = "net_jitter"
+                t.warn_ts = parse_log_timestamp(line)
             end
         end
     end
@@ -308,7 +329,11 @@ local function parse_sakura_log_tail(text)
             end
         end
     end
-    return best_non_http or best_any, last_warn
+    local picked = best_non_http or best_any
+    if picked and picked.warn_msg then
+        return picked, picked.warn_msg, picked.warn_kind, picked.warn_ts
+    end
+    return picked, nil, nil, 0
 end
 
 function sakura:scan_local(force)
@@ -350,6 +375,8 @@ function sakura:scan_local(force)
     self.log_detected_tunnel = nil
     self.log_speed_text = nil
     self.log_warning = nil
+    self.log_warning_kind = nil
+    self.log_warning_ts = 0
     if self.frpc_running then
         local pd = os.getenv("ProgramData") or "C:\\ProgramData"
         local log_dir = pd .. "\\SakuraFrpService\\Logs"
@@ -364,8 +391,10 @@ function sakura:scan_local(force)
                 f:seek("set", start_pos)
                 local chunk = f:read("*a") or ""
                 f:close()
-                local best, warn = parse_sakura_log_tail(chunk)
+                local best, warn, wkind, wts = parse_sakura_log_tail(chunk)
                 self.log_warning = warn
+                self.log_warning_kind = wkind
+                self.log_warning_ts = tonumber(wts) or 0
                 if best and best.addr then
                     self.log_detected_addr = best.addr
                     self.log_detected_p2p = best.p2p
@@ -376,6 +405,30 @@ function sakura:scan_local(force)
             end
         end
     end
+end
+
+-- Returns an actionable SakuraFrp log warning only when fresh and relevant to current room state.
+-- Specifically suppresses "local_refused" when user is not hosting yet (port 17777 is expected to be closed on Home screen)
+-- or when the log line is stale (> 60s old).
+function sakura:get_active_warning(lobby, now_unix)
+    if not self.log_warning or #self.log_warning == 0 then return nil end
+    local now_t = tonumber(now_unix) or os.time()
+    local age = (self.log_warning_ts and self.log_warning_ts > 0) and (now_t - self.log_warning_ts) or 0
+    if self.log_warning_kind == "local_refused" then
+        if not (lobby and lobby.role == "host") then
+            return nil
+        end
+        if age > 60 then
+            return nil
+        end
+        local port = (lobby.transport and lobby.transport.get_port and lobby.transport:get_port()) or proto.DEFAULT_TCP_PORT
+        return string.format("樱花日志提示：隧道无法连上本机端口，请确认隧道本地端口已设为 %d", port)
+    elseif self.log_warning_kind == "net_jitter" then
+        if age > 60 then return nil end
+    elseif self.log_warning_kind == "vip_denied" then
+        if age > 180 then return nil end
+    end
+    return self.log_warning
 end
 
 function sakura:open_url(url, toast_msg)
