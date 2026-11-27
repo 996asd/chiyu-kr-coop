@@ -71,69 +71,41 @@ local function init_win32(self)
     self._win32_ready = true
     local ok_ffi, ffi = pcall(require, "ffi")
     if not ok_ffi or not ffi or ffi.os ~= "Windows" then return false end
-    pcall(ffi.cdef, [[
-        typedef struct {
-            uint32_t dwSize;
-            uint32_t cntUsage;
-            uint32_t th32ProcessID;
-            uintptr_t th32DefaultHeapID;
-            uint32_t th32ModuleID;
-            uint32_t cntThreads;
-            uint32_t th32ParentProcessID;
-            int32_t pcPriClassBase;
-            uint32_t dwFlags;
+    -- Declare canonical shared Win32 struct & function prototypes individually so
+    -- sakura.lua and server_host.lua never conflict regardless of load order.
+    local cdefs = {
+        [[typedef struct {
+            uint32_t dwSize; uint32_t cntUsage; uint32_t th32ProcessID;
+            uintptr_t th32DefaultHeapID; uint32_t th32ModuleID; uint32_t cntThreads;
+            uint32_t th32ParentProcessID; int32_t pcPriClassBase; uint32_t dwFlags;
             char szExeFile[260];
-        } KR_SRV_PROCESSENTRY32;
-
-        typedef struct {
-            uint32_t cb;
-            const char* lpReserved;
-            const char* lpDesktop;
-            const char* lpTitle;
-            uint32_t dwX;
-            uint32_t dwY;
-            uint32_t dwXSize;
-            uint32_t dwYSize;
-            uint32_t dwXCountChars;
-            uint32_t dwYCountChars;
-            uint32_t dwFillAttribute;
-            uint32_t dwFlags;
-            uint16_t wShowWindow;
-            uint16_t cbReserved2;
-            uint8_t* lpReserved2;
-            void* hStdInput;
-            void* hStdOutput;
-            void* hStdError;
-        } KR_SRV_STARTUPINFOA;
-
-        typedef struct {
-            void* hProcess;
-            void* hThread;
-            uint32_t dwProcessId;
-            uint32_t dwThreadId;
-        } KR_SRV_PROCESS_INFORMATION;
-
-        void* CreateToolhelp32Snapshot(uint32_t dwFlags, uint32_t th32ProcessID);
-        int32_t Process32First(void* hSnapshot, KR_SRV_PROCESSENTRY32* lppe);
-        int32_t Process32Next(void* hSnapshot, KR_SRV_PROCESSENTRY32* lppe);
-        void* OpenProcess(uint32_t dwDesiredAccess, int32_t bInheritHandle, uint32_t dwProcessId);
-        int32_t CloseHandle(void* hObject);
-        int32_t CreateProcessA(
-            const char* lpApplicationName,
-            char* lpCommandLine,
-            void* lpProcessAttributes,
-            void* lpThreadAttributes,
-            int32_t bInheritHandles,
-            uint32_t dwCreationFlags,
-            void* lpEnvironment,
-            const char* lpCurrentDirectory,
-            KR_SRV_STARTUPINFOA* lpStartupInfo,
-            KR_SRV_PROCESS_INFORMATION* lpProcessInformation
-        );
-        int32_t GetExitCodeProcess(void* hProcess, uint32_t* lpExitCode);
-        int32_t TerminateProcess(void* hProcess, uint32_t uExitCode);
-        int32_t CreateDirectoryA(const char* lpPathName, void* lpSecurityAttributes);
-    ]])
+        } KR_PROCESSENTRY32;]],
+        [[typedef struct {
+            uint32_t cb; const char* lpReserved; const char* lpDesktop; const char* lpTitle;
+            uint32_t dwX; uint32_t dwY; uint32_t dwXSize; uint32_t dwYSize;
+            uint32_t dwXCountChars; uint32_t dwYCountChars; uint32_t dwFillAttribute;
+            uint32_t dwFlags; uint16_t wShowWindow; uint16_t cbReserved2; uint8_t* lpReserved2;
+            void* hStdInput; void* hStdOutput; void* hStdError;
+        } KR_STARTUPINFOA;]],
+        [[typedef struct {
+            void* hProcess; void* hThread; uint32_t dwProcessId; uint32_t dwThreadId;
+        } KR_PROCESS_INFORMATION;]],
+        "void* CreateToolhelp32Snapshot(uint32_t dwFlags, uint32_t th32ProcessID);",
+        "int32_t Process32First(void* hSnapshot, KR_PROCESSENTRY32* lppe);",
+        "int32_t Process32Next(void* hSnapshot, KR_PROCESSENTRY32* lppe);",
+        "void* OpenProcess(uint32_t dwDesiredAccess, int32_t bInheritHandle, uint32_t dwProcessId);",
+        "int32_t CloseHandle(void* hObject);",
+        [[int32_t CreateProcessA(
+            const char* lpApplicationName, char* lpCommandLine, void* lpProcessAttributes,
+            void* lpThreadAttributes, int32_t bInheritHandles, uint32_t dwCreationFlags,
+            void* lpEnvironment, const char* lpCurrentDirectory,
+            KR_STARTUPINFOA* lpStartupInfo, KR_PROCESS_INFORMATION* lpProcessInformation
+        );]],
+        "int32_t GetExitCodeProcess(void* hProcess, uint32_t* lpExitCode);",
+        "int32_t TerminateProcess(void* hProcess, uint32_t uExitCode);",
+        "int32_t CreateDirectoryA(const char* lpPathName, void* lpSecurityAttributes);",
+    }
+    for _, decl in ipairs(cdefs) do pcall(ffi.cdef, decl) end
     local ok_k, k32 = pcall(ffi.load, "kernel32")
     if ok_k and k32 then
         self._ffi = ffi
@@ -221,7 +193,7 @@ local function scan_server_processes(self)
     local ffi, k32 = self._ffi, self._k32
     local snap = k32.CreateToolhelp32Snapshot(0x00000002, 0)
     if snap == nil or tonumber(ffi.cast("intptr_t", snap)) == -1 then return pids end
-    local pe = ffi.new("KR_SRV_PROCESSENTRY32")
+    local pe = ffi.new("KR_PROCESSENTRY32")
     pe.dwSize = ffi.sizeof(pe)
     if k32.Process32First(snap, pe) ~= 0 then
         repeat
@@ -515,9 +487,9 @@ function server_host:start_local_server(lobby)
     local cmd = string.format('"%s" -addr :%d -http :%d -grace 300',
         self.binary_path, self.DEFAULT_PORT, self.DEFAULT_HTTP_PORT)
     local cmd_buf = ffi.new("char[?]", #cmd + 1, cmd)
-    local si = ffi.new("KR_SRV_STARTUPINFOA")
+    local si = ffi.new("KR_STARTUPINFOA")
     si.cb = ffi.sizeof(si)
-    local pi = ffi.new("KR_SRV_PROCESS_INFORMATION")
+    local pi = ffi.new("KR_PROCESS_INFORMATION")
     local workdir = self.binary_path:match("^(.*)[/\\][^/\\]+$")
 
     local ok = k32.CreateProcessA(nil, cmd_buf, nil, nil, 0, 0x08000000, nil, workdir, si, pi) -- CREATE_NO_WINDOW

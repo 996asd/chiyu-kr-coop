@@ -81,69 +81,39 @@ local function init_win32(self)
     self._win32_ready = true
     local ok_ffi, ffi = pcall(require, "ffi")
     if not ok_ffi or not ffi or ffi.os ~= "Windows" then return false end
-    pcall(ffi.cdef, [[
-        typedef struct {
-            uint32_t dwSize;
-            uint32_t cntUsage;
-            uint32_t th32ProcessID;
-            uintptr_t th32DefaultHeapID;
-            uint32_t th32ModuleID;
-            uint32_t cntThreads;
-            uint32_t th32ParentProcessID;
-            int32_t pcPriClassBase;
-            uint32_t dwFlags;
+    local cdefs = {
+        [[typedef struct {
+            uint32_t dwSize; uint32_t cntUsage; uint32_t th32ProcessID;
+            uintptr_t th32DefaultHeapID; uint32_t th32ModuleID; uint32_t cntThreads;
+            uint32_t th32ParentProcessID; int32_t pcPriClassBase; uint32_t dwFlags;
             char szExeFile[260];
-        } KR_PROCESSENTRY32;
-
-        typedef struct {
-            uint32_t cb;
-            const char* lpReserved;
-            const char* lpDesktop;
-            const char* lpTitle;
-            uint32_t dwX;
-            uint32_t dwY;
-            uint32_t dwXSize;
-            uint32_t dwYSize;
-            uint32_t dwXCountChars;
-            uint32_t dwYCountChars;
-            uint32_t dwFillAttribute;
-            uint32_t dwFlags;
-            uint16_t wShowWindow;
-            uint16_t cbReserved2;
-            uint8_t* lpReserved2;
-            void* hStdInput;
-            void* hStdOutput;
-            void* hStdError;
-        } KR_STARTUPINFOA;
-
-        typedef struct {
-            void* hProcess;
-            void* hThread;
-            uint32_t dwProcessId;
-            uint32_t dwThreadId;
-        } KR_PROCESS_INFORMATION;
-
-        void* CreateToolhelp32Snapshot(uint32_t dwFlags, uint32_t th32ProcessID);
-        int32_t Process32First(void* hSnapshot, KR_PROCESSENTRY32* lppe);
-        int32_t Process32Next(void* hSnapshot, KR_PROCESSENTRY32* lppe);
-        int32_t CloseHandle(void* hObject);
-        int32_t SetEnvironmentVariableA(const char* lpName, const char* lpValue);
-        int32_t CreateProcessA(
-            const char* lpApplicationName,
-            char* lpCommandLine,
-            void* lpProcessAttributes,
-            void* lpThreadAttributes,
-            int32_t bInheritHandles,
-            uint32_t dwCreationFlags,
-            void* lpEnvironment,
-            const char* lpCurrentDirectory,
-            KR_STARTUPINFOA* lpStartupInfo,
-            KR_PROCESS_INFORMATION* lpProcessInformation
-        );
-        int32_t GetExitCodeProcess(void* hProcess, uint32_t* lpExitCode);
-        int32_t TerminateProcess(void* hProcess, uint32_t uExitCode);
-        void* ShellExecuteA(void* hwnd, const char* lpOperation, const char* lpFile, const char* lpParameters, const char* lpDirectory, int32_t nShowCmd);
-    ]])
+        } KR_PROCESSENTRY32;]],
+        [[typedef struct {
+            uint32_t cb; const char* lpReserved; const char* lpDesktop; const char* lpTitle;
+            uint32_t dwX; uint32_t dwY; uint32_t dwXSize; uint32_t dwYSize;
+            uint32_t dwXCountChars; uint32_t dwYCountChars; uint32_t dwFillAttribute;
+            uint32_t dwFlags; uint16_t wShowWindow; uint16_t cbReserved2; uint8_t* lpReserved2;
+            void* hStdInput; void* hStdOutput; void* hStdError;
+        } KR_STARTUPINFOA;]],
+        [[typedef struct {
+            void* hProcess; void* hThread; uint32_t dwProcessId; uint32_t dwThreadId;
+        } KR_PROCESS_INFORMATION;]],
+        "void* CreateToolhelp32Snapshot(uint32_t dwFlags, uint32_t th32ProcessID);",
+        "int32_t Process32First(void* hSnapshot, KR_PROCESSENTRY32* lppe);",
+        "int32_t Process32Next(void* hSnapshot, KR_PROCESSENTRY32* lppe);",
+        "int32_t CloseHandle(void* hObject);",
+        "int32_t SetEnvironmentVariableA(const char* lpName, const char* lpValue);",
+        [[int32_t CreateProcessA(
+            const char* lpApplicationName, char* lpCommandLine, void* lpProcessAttributes,
+            void* lpThreadAttributes, int32_t bInheritHandles, uint32_t dwCreationFlags,
+            void* lpEnvironment, const char* lpCurrentDirectory,
+            KR_STARTUPINFOA* lpStartupInfo, KR_PROCESS_INFORMATION* lpProcessInformation
+        );]],
+        "int32_t GetExitCodeProcess(void* hProcess, uint32_t* lpExitCode);",
+        "int32_t TerminateProcess(void* hProcess, uint32_t uExitCode);",
+        "void* ShellExecuteA(void* hwnd, const char* lpOperation, const char* lpFile, const char* lpParameters, const char* lpDirectory, int32_t nShowCmd);",
+    }
+    for _, decl in ipairs(cdefs) do pcall(ffi.cdef, decl) end
     local ok_k, k32 = pcall(ffi.load, "kernel32")
     if ok_k and k32 then
         self._ffi = ffi
