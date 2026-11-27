@@ -1,16 +1,22 @@
 -- KR-MP SakuraFrp Official Deep-Integration Module (Zero Simulation Impact)
 -- Capabilities:
 --   1. Pure read-only detection of local SakuraLauncher / SakuraFrpService / frpc.exe & active TCP tunnel log (NEVER reads config.json secrets!)
---   2. Non-blocking 3-line concurrent TCP latency probe (Default / Telecom dx. / Mobile yd.)
---   3. Opt-in Official SakuraFrp OpenAPI v4 (https://api.natfrp.com/v4) for traffic, low-load node recommendation (with public-stream 多线 compliance), 1-click 17777 tunnel creation, and Port-Export P2P address lookup
---   4. Zero-popup managed frpc.exe launcher (passes user-supplied Token via child env NATFRP_TOKEN, never on CLI, auto-terminates on exit)
---   5. Streamer privacy address masking
+--   2. One-click official SakuraLauncher.exe downloader via api.natfrp.com/v4/system/clients with live progress & MD5 verification
+--   3. Non-blocking 3-line concurrent TCP latency probe (Default / Telecom dx. / Mobile yd.)
+--   4. Opt-in Official SakuraFrp OpenAPI v4 (https://api.natfrp.com/v4) for traffic, real-name status, low-load node recommendation
+--      (with public-stream 多线 compliance filter & pagination), 1-click 17777 tunnel creation, and Port-Export P2P address lookup
+--   5. Zero-popup managed frpc.exe launcher (passes user-supplied Token via child env NATFRP_TOKEN, never on CLI, auto-terminates on exit)
+--   6. Streamer privacy address masking
 local proto = require("kr_mp.proto")
 local lobby_prefs = require("kr_mp.lobby_prefs")
+local workers = require("kr_mp.sakura_workers")
 
 local sakura = {
     DOWNLOAD_URL = "https://www.natfrp.com/tunnel/download",
     PANEL_URL = "https://www.natfrp.com/tunnel/",
+    REGISTER_URL = "https://www.natfrp.com/user/",
+    REALNAME_URL = "https://www.natfrp.com/user/realname",
+    PROFILE_URL = "https://www.natfrp.com/user/profile",
 
     boot = nil,
     overlay = nil,
@@ -28,6 +34,17 @@ local sakura = {
     log_warning = nil,            -- recent diagnostic warning from SakuraFrp log
     last_local_scan_ts = 0,
 
+    -- Official SakuraLauncher.exe downloader state
+    dl_busy = false,
+    dl_seq = 0,
+    dl_stage = nil,               -- "meta" | "downloading" | "verifying" | "done" | "error"
+    dl_done_bytes = 0,
+    dl_total_bytes = 0,
+    dl_ver = nil,
+    dl_error = nil,
+    dl_path = nil,
+    _dl_channel = nil,
+
     -- 3-line concurrent TCP probe state
     probe_running = false,
     probe_seq = 0,
@@ -41,9 +58,11 @@ local sakura = {
     api_action = nil,
     api_seq = 0,
     api_error = nil,
-    user_info = nil,              -- { name, group_name, group_level, speed, remain_gib, used_today_mib, tunnels_max }
+    user_info = nil,              -- { name, group_name, group_level, speed, remain_gib, used_today_mib, tunnels_max, realname }
     tunnels = {},                 -- sorted list of TCP tunnels (17777 first)
-    recommended_nodes = {},       -- sorted list of low-load available nodes
+    _all_rec_nodes = {},          -- all online creatable nodes allowed for user's VIP level
+    recommended_nodes = {},       -- filtered & sorted nodes according to public_mode
+    node_page = 1,
     _api_channel = nil,
 
     -- Managed frpc.exe process (spawned explicitly by user inside KR-MP)
@@ -359,6 +378,21 @@ function sakura:scan_local(force)
     end
 end
 
+function sakura:open_url(url, toast_msg)
+    if type(url) ~= "string" or #url == 0 then return false end
+    if love and love.system and love.system.openURL then
+        pcall(love.system.openURL, url)
+    elseif init_win32(self) and self._shell32 then
+        self._shell32.ShellExecuteA(nil, "open", url, nil, nil, 1)
+    else
+        return false
+    end
+    if toast_msg and self.overlay then
+        self.overlay:show_toast(toast_msg, 3.5)
+    end
+    return true
+end
+
 function sakura:launch_official_launcher()
     if self.launcher_path and init_win32(self) and self._shell32 then
         self._shell32.ShellExecuteA(nil, "open", self.launcher_path, nil, nil, 1)
@@ -367,14 +401,51 @@ function sakura:launch_official_launcher()
         end
         return true
     end
-    if love and love.system and love.system.openURL then
-        pcall(love.system.openURL, self.DOWNLOAD_URL)
-        if self.overlay then
-            self.overlay:show_toast("未检测到樱花启动器，已在浏览器打开 SakuraFrp 官方下载页。", 3.5)
-        end
-        return true
+    return self:start_official_installer_download()
+end
+
+-- === Part 2: Official SakuraLauncher.exe 1-Click Downloader (Route 1A) ===
+
+function sakura:get_download_pct()
+    if self.dl_total_bytes and self.dl_total_bytes > 0 then
+        return math.max(0, math.min(100, math.floor((self.dl_done_bytes / self.dl_total_bytes) * 100 + 0.5)))
     end
-    return false
+    return 0
+end
+
+function sakura:start_official_installer_download()
+    if not is_windows() then
+        return self:open_url(self.DOWNLOAD_URL, "已打开 SakuraFrp 官方下载页，请按你的设备下载官方客户端。")
+    end
+    if self.dl_busy then
+        if self.overlay then
+            self.overlay:show_toast(string.format("正在后台下载官方樱花安装器（%d%%），请稍候...", self:get_download_pct()), 2.4)
+        end
+        return false
+    end
+    if not (love and love.thread and love.thread.newThread and love.thread.getChannel) then
+        return self:open_url(self.DOWNLOAD_URL, "已在浏览器打开 SakuraFrp 官方下载页。")
+    end
+    self._dl_channel = self._dl_channel or love.thread.getChannel("kr_mp_sakura_dl")
+    self.dl_seq = self.dl_seq + 1
+    self.dl_busy = true
+    self.dl_stage = "meta"
+    self.dl_done_bytes = 0
+    self.dl_total_bytes = 0
+    self.dl_error = nil
+    local ok, th = pcall(love.thread.newThread, workers.INSTALLER_WORKER_CODE)
+    if not ok or not th then
+        self.dl_busy = false
+        self.dl_stage = "error"
+        self.dl_error = "无法启动后台下载线程"
+        return self:open_url(self.DOWNLOAD_URL, "已在浏览器打开 SakuraFrp 官方下载页。")
+    end
+    local tmp = os.getenv("TEMP") or os.getenv("TMP") or "."
+    th:start("kr_mp_sakura_dl", self.dl_seq, tmp, package.path)
+    if self.overlay then
+        self.overlay:show_toast("正在从樱花官方源获取最新启动器安装包并校验完整性...", 3.0)
+    end
+    return true
 end
 
 -- Get best active connectable address for Host to share with 2P (returns display_addr, copy_addr, has_p2p)
@@ -405,106 +476,7 @@ function sakura:get_host_share_addr(host_port)
     return nil, nil, false
 end
 
--- === Part 2: Non-Blocking 3-Line Concurrent TCP Latency Probe ===
-
-local PROBE_WORKER_CODE = [===[
-local ch_name, seq, base, port = ...
-local ch = love.thread.getChannel(ch_name)
-local ok_s, socket = pcall(require, "socket")
-if not ok_s or not socket then
-    ch:push({ seq = seq, ok = false, err = "no_socket" })
-    return
-end
-
-local targets = {
-    { id = "default", host = base },
-    { id = "dx",      host = "dx." .. base },
-    { id = "yd",      host = "yd." .. base },
-}
-local results = {}
-local pending = {}
-
-for _, t in ipairs(targets) do
-    local ip, derr = socket.dns.toip(t.host)
-    if not ip then
-        results[t.id] = { ok = false, err = "dns" }
-    else
-        local s = socket.tcp()
-        if not s then
-            results[t.id] = { ok = false, err = "sock" }
-        else
-            s:settimeout(0)
-            local t0 = socket.gettime()
-            local ok, cerr = s:connect(ip, port)
-            if ok == 1 then
-                local ms = math.max(1, math.floor((socket.gettime() - t0) * 1000 + 0.5))
-                pcall(s.close, s)
-                results[t.id] = { ok = true, ms = ms, host = t.host }
-            elseif cerr == "timeout" or cerr == "Operation already in progress" or cerr == "already in progress" then
-                pending[#pending + 1] = { id = t.id, host = t.host, sock = s, t0 = t0, saw_peer = (s:getpeername() ~= nil) }
-            else
-                pcall(s.close, s)
-                results[t.id] = { ok = false, err = "refused" }
-            end
-        end
-    end
-end
-
-local deadline = socket.gettime() + 2.6
-while #pending > 0 and socket.gettime() < deadline do
-    local socks = {}
-    for i = 1, #pending do socks[i] = pending[i].sock end
-    local _, writable = socket.select(nil, socks, 0.05)
-    local wmap = {}
-    if writable then
-        for i = 1, #writable do wmap[writable[i]] = true end
-    end
-    local now = socket.gettime()
-    for i = #pending, 1, -1 do
-        local p = pending[i]
-        local peer = p.sock:getpeername()
-        if peer then p.saw_peer = true end
-        if wmap[p.sock] then
-            if peer then
-                local ms = math.max(1, math.floor((now - p.t0) * 1000 + 0.5))
-                results[p.id] = { ok = true, ms = ms, host = p.host }
-            else
-                results[p.id] = { ok = false, err = "refused" }
-            end
-            pcall(p.sock.close, p.sock)
-            table.remove(pending, i)
-        elseif not peer and (p.saw_peer or (now - p.t0) >= 0.12) then
-            results[p.id] = { ok = false, err = "refused" }
-            pcall(p.sock.close, p.sock)
-            table.remove(pending, i)
-        end
-    end
-end
-
-for _, p in ipairs(pending) do
-    results[p.id] = { ok = false, err = "timeout" }
-    pcall(p.sock.close, p.sock)
-end
-
-local best_id, best_ms, best_host = nil, 999999, nil
-for _, id in ipairs({ "default", "dx", "yd" }) do
-    local r = results[id]
-    if r and r.ok and r.ms < best_ms then
-        best_id, best_ms, best_host = id, r.ms, r.host
-    end
-end
-
-ch:push({
-    seq = seq,
-    ok = true,
-    base = base,
-    port = port,
-    results = results,
-    best = best_id,
-    best_ms = best_ms,
-    best_addr = best_host and (best_host .. ":" .. tostring(port)) or nil,
-})
-]===]
+-- === Part 3: Non-Blocking 3-Line Concurrent TCP Latency Probe ===
 
 function sakura:start_carrier_probe(raw_addr)
     local primary = proto.split_fallback_addr(raw_addr or "")
@@ -521,7 +493,7 @@ function sakura:start_carrier_probe(raw_addr)
     self._probe_channel = self._probe_channel or love.thread.getChannel("kr_mp_sakura_probe")
     self.probe_seq = self.probe_seq + 1
     self.probe_running = true
-    local ok, th = pcall(love.thread.newThread, PROBE_WORKER_CODE)
+    local ok, th = pcall(love.thread.newThread, workers.PROBE_WORKER_CODE)
     if not ok or not th then
         self.probe_running = false
         return false
@@ -550,160 +522,7 @@ function sakura:get_probe_label(addr, carrier_id, fallback_lbl)
     return short .. (r.err == "dns" and "无" or "×")
 end
 
--- === Part 3: Opt-In Official SakuraFrp OpenAPI v4 Worker (WinINet / LuaHTTPS) ===
-
-local API_WORKER_CODE = [===[
-local ch_name, seq, action, token, payload_json, pkg_path = ...
-if type(pkg_path) == "string" and #pkg_path > 0 then
-    package.path = pkg_path
-end
-local ch = love.thread.getChannel(ch_name)
-local ok_p, proto = pcall(require, "kr_mp.proto")
-if not ok_p or not proto then
-    ch:push({ seq = seq, action = action, ok = false, err = "无法加载协议模块" })
-    return
-end
-
-local API_HOSTS = { "api.natfrp.com", "natfrp-api.globalslb.net" }
-
-local function wininet_request(host, method, path, auth_token, body_str)
-    local ok_ffi, ffi = pcall(require, "ffi")
-    local ok_bit, bit = pcall(require, "bit")
-    if not ok_ffi or not ffi or ffi.os ~= "Windows" or not ok_bit then
-        return nil, 0, "no_wininet"
-    end
-    pcall(ffi.cdef, [=[
-        void* InternetOpenA(const char* lpszAgent, uint32_t dwAccessType, const char* lpszProxy, const char* lpszProxyBypass, uint32_t dwFlags);
-        void* InternetConnectA(void* hInternet, const char* lpszServerName, uint16_t nServerPort, const char* lpszUserName, const char* lpszPassword, uint32_t dwService, uint32_t dwFlags, uintptr_t dwContext);
-        void* HttpOpenRequestA(void* hConnect, const char* lpszVerb, const char* lpszObjectName, const char* lpszVersion, const char* lpszReferrer, void* lplpszAcceptTypes, uint32_t dwFlags, uintptr_t dwContext);
-        int32_t HttpSendRequestA(void* hRequest, const char* lpszHeaders, uint32_t dwHeadersLength, const void* lpOptional, uint32_t dwOptionalLength);
-        int32_t HttpQueryInfoA(void* hRequest, uint32_t dwInfoLevel, void* lpBuffer, uint32_t* lpdwBufferLength, uint32_t* lpdwIndex);
-        int32_t InternetReadFile(void* hFile, void* lpBuffer, uint32_t dwNumberOfBytesToRead, uint32_t* lpdwNumberOfBytesRead);
-        int32_t InternetCloseHandle(void* hInternet);
-        int32_t InternetSetOptionA(void* hInternet, uint32_t dwOption, void* lpBuffer, uint32_t dwBufferLength);
-    ]=])
-    local ok_lib, wi = pcall(ffi.load, "wininet")
-    if not ok_lib or not wi then return nil, 0, "wininet_load_fail" end
-
-    local hNet = wi.InternetOpenA("KR-MP-SakuraClient/2.3", 0, nil, nil, 0)
-    if hNet == nil then return nil, 0, "wininet_open_fail" end
-    local timeout = ffi.new("uint32_t[1]", 8000)
-    pcall(wi.InternetSetOptionA, hNet, 2, timeout, 4)
-    pcall(wi.InternetSetOptionA, hNet, 6, timeout, 4)
-
-    local hConn = wi.InternetConnectA(hNet, host, 443, nil, nil, 3, 0, 0)
-    if hConn == nil then
-        wi.InternetCloseHandle(hNet)
-        return nil, 0, "connect_fail"
-    end
-
-    local flags = bit.bor(0x00800000, 0x80000000, 0x04000000, 0x00000100)
-    local hReq = wi.HttpOpenRequestA(hConn, method, path, nil, nil, nil, flags, 0)
-    if hReq == nil then
-        wi.InternetCloseHandle(hConn)
-        wi.InternetCloseHandle(hNet)
-        return nil, 0, "openreq_fail"
-    end
-
-    local hdrs = "Authorization: Bearer " .. tostring(auth_token) .. "\r\nAccept: application/json\r\n"
-    if body_str and #body_str > 0 then
-        hdrs = hdrs .. "Content-Type: application/json\r\n"
-    end
-    local ok_send = wi.HttpSendRequestA(hReq, hdrs, #hdrs, body_str or nil, body_str and #body_str or 0)
-    if ok_send == 0 then
-        wi.InternetCloseHandle(hReq)
-        wi.InternetCloseHandle(hConn)
-        wi.InternetCloseHandle(hNet)
-        return nil, 0, "send_fail"
-    end
-
-    local status_code = ffi.new("uint32_t[1]", 0)
-    local status_len = ffi.new("uint32_t[1]", 4)
-    wi.HttpQueryInfoA(hReq, 0x20000013, status_code, status_len, nil)
-
-    local chunks, total = {}, 0
-    local buf = ffi.new("uint8_t[8192]")
-    local bread = ffi.new("uint32_t[1]")
-    while total < 1048576 do
-        bread[0] = 0
-        local r = wi.InternetReadFile(hReq, buf, 8192, bread)
-        local n = tonumber(bread[0]) or 0
-        if r == 0 or n <= 0 then break end
-        chunks[#chunks + 1] = ffi.string(buf, n)
-        total = total + n
-    end
-
-    wi.InternetCloseHandle(hReq)
-    wi.InternetCloseHandle(hConn)
-    wi.InternetCloseHandle(hNet)
-    return table.concat(chunks), tonumber(status_code[0]) or 0, nil
-end
-
-local function api_call(method, path, body_str)
-    local last_err = "network_error"
-    for _, host in ipairs(API_HOSTS) do
-        local body, code, err = wininet_request(host, method, path, token, body_str)
-        if not err and code > 0 then
-            return body, code, nil
-        end
-        -- Android / LÖVE 12 LuaHTTPS fallback
-        local ok_hs, https = pcall(require, "https")
-        if ok_hs and https and https.request then
-            local url = "https://" .. host .. path
-            local hdrs = { Authorization = "Bearer " .. tostring(token), Accept = "application/json" }
-            if body_str then hdrs["Content-Type"] = "application/json" end
-            local ok_r, hcode, hbody = pcall(https.request, url, { method = method, headers = hdrs, data = body_str })
-            if ok_r and tonumber(hcode) and tonumber(hcode) > 0 then
-                return hbody or "", tonumber(hcode), nil
-            end
-        end
-        last_err = tostring(err or "https_fail")
-    end
-    return nil, 0, last_err
-end
-
-local function decode_or_err(body, code)
-    local obj = (type(body) == "string" and #body > 0) and proto.decode(body) or nil
-    if code == 401 or code == 403 then
-        return nil, "访问密钥无效或无权限（HTTP " .. tostring(code) .. "）"
-    end
-    if code < 200 or code >= 300 then
-        local msg = (type(obj) == "table" and (obj.message or obj.error or obj.msg)) or ("HTTP " .. tostring(code))
-        return nil, tostring(msg)
-    end
-    if type(obj) ~= "table" then
-        return nil, "樱花 API 返回格式异常"
-    end
-    return obj, nil
-end
-
-if action == "refresh" then
-    local b1, c1, e1 = api_call("GET", "/v4/user/info")
-    if e1 then ch:push({ seq = seq, action = action, ok = false, err = "无法连接樱花 API：" .. e1 }); return end
-    local user, uerr = decode_or_err(b1, c1)
-    if not user then ch:push({ seq = seq, action = action, ok = false, err = uerr }); return end
-
-    local b2, c2 = api_call("GET", "/v4/nodes")
-    local nodes = decode_or_err(b2, c2) or {}
-
-    local b3, c3 = api_call("GET", "/v4/node/stats")
-    local stats = decode_or_err(b3, c3) or {}
-
-    local b4, c4 = api_call("GET", "/v4/tunnels")
-    local tunnels = decode_or_err(b4, c4) or {}
-
-    ch:push({
-        seq = seq, action = action, ok = true,
-        user = user, nodes = nodes, stats = stats, tunnels = tunnels,
-    })
-elseif action == "create" then
-    local b, c, e = api_call("POST", "/v4/tunnels", payload_json)
-    if e then ch:push({ seq = seq, action = action, ok = false, err = "创建隧道网络失败：" .. e }); return end
-    local created, cerr = decode_or_err(b, c)
-    if not created then ch:push({ seq = seq, action = action, ok = false, err = cerr }); return end
-    ch:push({ seq = seq, action = action, ok = true, created = created })
-end
-]===]
+-- === Part 4: Opt-In Official SakuraFrp OpenAPI v4 Client ===
 
 function sakura:set_token(raw_token)
     local clean = tostring(raw_token or ""):gsub("[%s\r\n]+", ""):sub(1, 96)
@@ -711,7 +530,9 @@ function sakura:set_token(raw_token)
     if #clean == 0 then
         self.user_info = nil
         self.tunnels = {}
+        self._all_rec_nodes = {}
         self.recommended_nodes = {}
+        self.node_page = 1
         self.api_error = nil
     end
     return clean
@@ -733,7 +554,7 @@ function sakura:refresh_api()
     self.api_busy = true
     self.api_action = "refresh"
     self.api_error = nil
-    local ok, th = pcall(love.thread.newThread, API_WORKER_CODE)
+    local ok, th = pcall(love.thread.newThread, workers.API_WORKER_CODE)
     if not ok or not th then
         self.api_busy = false
         self.api_error = "无法启动 API 线程"
@@ -746,6 +567,12 @@ end
 function sakura:create_krmp_tunnel(node_id, local_port)
     if type(self.token) ~= "string" or #self.token < 8 then
         if self.overlay then self.overlay:show_toast("请先填写樱花访问密钥！", 2.6) end
+        return false
+    end
+    if self.user_info and tonumber(self.user_info.realname) == 0 then
+        if self.overlay then
+            self.overlay:show_toast("当前樱花账号尚未完成实名认证，请先点上方「去官网实名」后再新建隧道！", 3.8)
+        end
         return false
     end
     if self.api_busy then return false end
@@ -764,7 +591,7 @@ function sakura:create_krmp_tunnel(node_id, local_port)
     self.api_busy = true
     self.api_action = "create"
     self.api_error = nil
-    local ok, th = pcall(love.thread.newThread, API_WORKER_CODE)
+    local ok, th = pcall(love.thread.newThread, workers.API_WORKER_CODE)
     if not ok or not th then
         self.api_busy = false
         return false
@@ -837,12 +664,6 @@ local function process_api_refresh(self, res)
         end
     end
 
-    table.sort(rec, function(a, b)
-        if a.is_mainland ~= b.is_mainland then return a.is_mainland end
-        if a.is_public_ok ~= b.is_public_ok then return a.is_public_ok end
-        if a.load ~= b.load then return a.load < b.load end
-        return a.id < b.id
-    end)
     self._all_rec_nodes = rec
     self:rebuild_filtered_nodes()
 
@@ -888,10 +709,18 @@ function sakura:rebuild_filtered_nodes()
             out[#out + 1] = nd
         end
     end
+    -- Sort purely by Mainland -> Load ascending -> ID so toggling public_mode immediately
+    -- surfaces true lowest-load non-multi-line nodes when OFF vs strictly compliant 多线 nodes when ON.
+    table.sort(out, function(a, b)
+        if a.is_mainland ~= b.is_mainland then return a.is_mainland end
+        if a.load ~= b.load then return a.load < b.load end
+        return a.id < b.id
+    end)
     self.recommended_nodes = out
+    self.node_page = 1
 end
 
--- === Part 4: Zero-Popup Managed frpc.exe Launcher (Env-Passed Token, Clean Stop) ===
+-- === Part 5: Zero-Popup Managed frpc.exe Launcher (Env-Passed Token, Clean Stop) ===
 
 function sakura:poll_managed_frpc()
     if not self.managed_proc or not self._k32 then return false end
@@ -925,7 +754,7 @@ function sakura:start_managed_frpc(tunnel)
         return false, "仅 PC Windows 支持内置启动 frpc.exe"
     end
     if not self.frpc_path then
-        return false, "未找到本机 frpc.exe，请先安装官方 SakuraFrp 启动器"
+        return false, "未找到本机 frpc.exe，请先点上方「一键装官方樱花」安装启动器"
     end
     if type(self.token) ~= "string" or #self.token < 8 then
         return false, "请先粘贴你的樱花访问密钥"
@@ -980,7 +809,38 @@ function sakura:init(boot, overlay)
 end
 
 function sakura:update(dt, lobby)
-    -- 1. Drain 3-line carrier probe result
+    -- 1. Drain official installer download progress/result
+    if self._dl_channel then
+        while true do
+            local res = self._dl_channel:pop()
+            if not res then break end
+            if res.seq == self.dl_seq then
+                self.dl_stage = res.stage
+                if res.ver then self.dl_ver = res.ver end
+                if res.done then self.dl_done_bytes = res.done end
+                if res.total then self.dl_total_bytes = res.total end
+                if res.stage == "error" then
+                    self.dl_busy = false
+                    self.dl_error = tostring(res.err or "下载失败")
+                    if self.overlay then self.overlay:show_toast("官方樱花下载失败：" .. self.dl_error, 4.2) end
+                elseif res.stage == "done" and res.ok and res.path then
+                    self.dl_busy = false
+                    self.dl_error = nil
+                    self.dl_path = res.path
+                    if init_win32(self) and self._shell32 then
+                        self._shell32.ShellExecuteA(nil, "open", res.path, nil, nil, 1)
+                    end
+                    if self.overlay then
+                        self.overlay:show_toast(string.format(
+                            "官方樱花 v%s 校验通过，已拉起安装向导！装完点「刷新状态」即可。",
+                            tostring(res.ver or "")), 5.0)
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2. Drain 3-line carrier probe result
     if self._probe_channel then
         while true do
             local res = self._probe_channel:pop()
@@ -1014,7 +874,7 @@ function sakura:update(dt, lobby)
         end
     end
 
-    -- 2. Drain OpenAPI v4 worker result
+    -- 3. Drain OpenAPI v4 worker result
     if self._api_channel then
         while true do
             local res = self._api_channel:pop()
@@ -1027,10 +887,17 @@ function sakura:update(dt, lobby)
                 elseif res.action == "refresh" then
                     self.api_error = nil
                     process_api_refresh(self, res)
+                    if lobby then lobby.sakura_show_wizard = false end
                     if self.overlay then
-                        self.overlay:show_toast(string.format(
-                            "樱花账号已同步：%s · 剩余 %.1f GiB · %d 条 TCP 隧道",
-                            self.user_info.name, self.user_info.remain_gib, #self.tunnels), 3.0)
+                        if self.user_info.realname == 0 then
+                            self.overlay:show_toast(string.format(
+                                "已登录 %s，但账号尚未完成实名认证，请先点「去官网实名」！",
+                                self.user_info.name), 4.5)
+                        else
+                            self.overlay:show_toast(string.format(
+                                "樱花账号已同步：%s · 剩余 %.1f GiB · %d 条 TCP 隧道",
+                                self.user_info.name, self.user_info.remain_gib, #self.tunnels), 3.0)
+                        end
                     end
                 elseif res.action == "create" then
                     self.api_error = nil
@@ -1046,7 +913,7 @@ function sakura:update(dt, lobby)
         end
     end
 
-    -- 3. Periodic lightweight local status check only while Lobby is open
+    -- 4. Periodic lightweight local status check only while Lobby is open
     if lobby and lobby.open then
         self:scan_local(false)
     end

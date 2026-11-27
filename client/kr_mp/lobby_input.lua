@@ -23,6 +23,7 @@ local TAB_SFX_IDS = {
     stage_pack = true, hero_pack = true, tower_pack = true,
     open_stages = true, open_hero1 = true, open_hero2 = true, open_towers = true,
     open_guide = true, guide_tab = true, open_sakura = true,
+    sakura_toggle_wizard = true, sakura_nodes_prev = true, sakura_nodes_next = true,
 }
 
 local function toggle_tower_in_deck(deck, tid)
@@ -182,6 +183,58 @@ function BTN_HANDLERS.sakura_rescan(lobby)
 end
 function BTN_HANDLERS.sakura_launch_app(lobby)
     if lobby.sakura then lobby.sakura:launch_official_launcher() end
+end
+function BTN_HANDLERS.sakura_download_official(lobby)
+    if lobby.sakura then lobby.sakura:start_official_installer_download() end
+end
+function BTN_HANDLERS.sakura_open_download_page(lobby)
+    if lobby.sakura then
+        lobby.sakura:open_url(lobby.sakura.DOWNLOAD_URL, "已在浏览器打开 SakuraFrp 官方下载页。")
+    end
+end
+function BTN_HANDLERS.sakura_open_register(lobby)
+    if lobby.sakura then
+        lobby.sakura:open_url(lobby.sakura.REGISTER_URL, "已在浏览器打开樱花注册/登录页，注册完请继续第 2 步实名。")
+    end
+end
+function BTN_HANDLERS.sakura_open_realname(lobby)
+    if lobby.sakura then
+        lobby.sakura:open_url(lobby.sakura.REALNAME_URL, "已在浏览器打开樱花实名认证页（支付宝实名，完成后点同步账号即可）。")
+    end
+end
+function BTN_HANDLERS.sakura_open_profile(lobby)
+    if lobby.sakura then
+        lobby.sakura:open_url(lobby.sakura.PROFILE_URL, "已在浏览器打开用户信息页：复制「访问密钥」后回到游戏点「粘贴并登录」！")
+    end
+end
+function BTN_HANDLERS.sakura_paste_and_sync(lobby)
+    lobby:paste_into_field("sakura_token")
+end
+function BTN_HANDLERS.sakura_toggle_wizard(lobby)
+    local sk = lobby.sakura
+    local currently_wizard = (lobby.sakura_show_wizard == true)
+        or (not (sk and sk.user_info) and lobby.sakura_wizard_dismissed ~= true)
+    if currently_wizard then
+        lobby.sakura_show_wizard = false
+        lobby.sakura_wizard_dismissed = true
+    else
+        lobby.sakura_show_wizard = true
+        lobby.sakura_wizard_dismissed = false
+    end
+end
+function BTN_HANDLERS.sakura_nodes_prev(lobby, btn)
+    if lobby.sakura then
+        local tp = math.max(1, tonumber(btn and btn.total_pages) or 1)
+        local cur = tonumber(lobby.sakura.node_page) or 1
+        lobby.sakura.node_page = (cur > 1) and (cur - 1) or tp
+    end
+end
+function BTN_HANDLERS.sakura_nodes_next(lobby, btn)
+    if lobby.sakura then
+        local tp = math.max(1, tonumber(btn and btn.total_pages) or 1)
+        local cur = tonumber(lobby.sakura.node_page) or 1
+        lobby.sakura.node_page = (cur < tp) and (cur + 1) or 1
+    end
 end
 function BTN_HANDLERS.sakura_copy_detected(lobby, btn)
     local target = btn and btn.copy_addr

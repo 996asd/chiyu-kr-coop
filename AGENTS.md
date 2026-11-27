@@ -61,8 +61,9 @@ kr-mp-mod/
 │       ├── lobby_input.lua     # 大厅键盘/鼠标输入与表驱动按钮分发（BTN_HANDLERS）
 │       ├── lobby_draw.lua      # 皇家战桌首页与备战房间主渲染器
 │       ├── lobby_draw_modals.lua # 新手教程 / 201 关 / 105 英雄 / 59 选 12 塔 / 语音调音弹窗渲染器
-│       ├── lobby_draw_sakura.lua # 樱花映射专属助手弹窗（免密钥感知/防窥打码/OpenAPI v4 建隧道/启停 frpc）
-│       ├── sakura.lua          # 樱花映射深度适配（只读状态与日志感知、三线测速、OpenAPI v4、无窗 frpc 托管）
+│       ├── lobby_draw_sakura.lua # 樱花映射专属助手弹窗（免密钥感知/官方下载进度/4步新手向导/翻页节点/防窥打码）
+│       ├── sakura.lua          # 樱花映射深度适配（只读状态与日志感知、官方安装器一键下载、三线测速、OpenAPI v4、无窗 frpc 托管）
+│       ├── sakura_workers.lua  # 樱花后台 love.thread 线程脚本（三线测速 / OpenAPI v4 / 官方安装器流式下载与 MD5 校验）
 │       ├── autotest.lua        # M1/M2 多进程自动化联机回归测试驱动（与正式 UI 完全解耦）
 │       ├── overlay.lua         # 顶部居中紧凑中文 HUD（金币/延迟/校验/倍速/暂停/转50金/语音调音/追帧进度条）
 │       ├── voice.lua           # 内置低延迟双向连麦语音（ADPCM/按V/自由麦/闭麦/混音增益/声波状态）
@@ -86,10 +87,13 @@ kr-mp-mod/
 │   ├── run_m1_dual.ps1         # 局域网双开自动联机回归测试
 │   ├── run_m2_test.ps1         # 公网三进程（含 960 帧强退追帧重连 + 混搭卡组 + 2x 倍速）回归测试
 │   ├── collect_bug_report.ps1  # 群友双击：一键打包报错日志、哈希与 AI 提问词
+│   ├── install_patch.ps1       # 离线补丁安装器（自动找目录 / SHA-256 校验 / 自动建桌面快捷方式 / 可选下载官方樱花）
+│   ├── onekey_install.ps1      # 在线/离线统一懒人安装器（支持 irm|iex 与 AI 智能体 -AutoFind -Silent 静默全自动安装）
 │   ├── export_my_fix.ps1       # 群友双击：比对 manifest.json 一键导出精简修复补丁包
 │   ├── apply_community_fix.ps1 # 维护者双击：预览、备份、应用并自动测试群友提交的修复包
 │   └── setup_repo_sync.ps1     # 维护者双击：配置 GitHub + Gitee 双远端并同步推送
 ├── version.json                # 线上最新版本号元数据（大厅检查更新读取此文件）
+├── AI_INSTALL.md               # 面向 AI 智能体的单地址全自动安装与创建桌面快捷方式标准协议
 ├── AI修复指南.md                # 面向群友的 AI 自助排错与投稿说明（随补丁包一起分发）
 ├── CONTRIBUTING.md             # 贡献规范（小白压缩包投稿 + GitHub/Gitee PR 双通道）
 └── README.md                   # 完整玩家使用与自建公网服说明书

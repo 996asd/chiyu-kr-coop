@@ -65,6 +65,8 @@ local lobby = {
     voice = nil,
     sakura = nil,
     privacy_mask = false,
+    sakura_show_wizard = false,
+    sakura_wizard_dismissed = false,
 
     open = false,
     net_tab = "sakura", -- "sakura" | "lan" | "online"

@@ -35,6 +35,7 @@ function Populate-BasePackage([string]$dest) {
     }
     Copy-Item (Join-Path $Root "client\kr_mp\manifest.json") (Join-Path $dest "patch\kr_mp\manifest.json") -Force
     Copy-Item (Join-Path $Root "tools\install_patch.ps1") (Join-Path $dest "tools\install_patch.ps1") -Force
+    Copy-Item (Join-Path $Root "tools\onekey_install.ps1") (Join-Path $dest "tools\onekey_install.ps1") -Force
     Copy-Item (Join-Path $Root "tools\uninstall_patch.ps1") (Join-Path $dest "tools\uninstall_patch.ps1") -Force
     Copy-Item (Join-Path $Root "tools\collect_bug_report.ps1") (Join-Path $dest "tools\collect_bug_report.ps1") -Force
     Copy-Item (Join-Path $Root "tools\export_my_fix.ps1") (Join-Path $dest "tools\export_my_fix.ps1") -Force
@@ -42,6 +43,9 @@ function Populate-BasePackage([string]$dest) {
         Copy-Item (Join-Path $Root "00_小白必看_1分钟联机教程.txt") (Join-Path $dest "00_小白必看_1分钟联机教程.txt") -Force
     }
     Copy-Item (Join-Path $Root "README.md") (Join-Path $dest "联机使用与自建服说明书.md") -Force
+    if (Test-Path (Join-Path $Root "AI_INSTALL.md")) {
+        Copy-Item (Join-Path $Root "AI_INSTALL.md") (Join-Path $dest "AI_INSTALL.md") -Force
+    }
     Copy-Item (Join-Path $Root "AI修复指南.md") (Join-Path $dest "AI修复指南.md") -Force
     Copy-Item (Join-Path $Root "AGENTS.md") (Join-Path $dest "AGENTS.md") -Force
     if (Test-Path (Join-Path $Root "LICENSE")) {

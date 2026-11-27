@@ -193,11 +193,18 @@ local function draw_home_sakura(ctx, y)
     ui.text(string.format("%s  ·  状态：%s%s", inst_s, proc_s, spd_s),
         cx + 22, st_y + 7, sk_alive and { 32, 108, 48, 255 } or T.ink_text, fm.small_bold, text_w, "left")
     local line2, line2_col
-    if sk and sk.log_warning then
+    if sk and sk.dl_busy then
+        line2 = string.format("正在从樱花官方源下载启动器 v%s（%d%%），下完将自动校验并拉起安装...",
+            tostring(sk.dl_ver or ""), sk:get_download_pct())
+        line2_col = { 34, 108, 48, 255 }
+    elseif sk and sk.log_warning then
         line2, line2_col = sk.log_warning, { 166, 46, 36, 255 }
     elseif sk_disp then
         line2 = "已自动识别地址：" .. mask_if_private(lobby, sk_disp) .. (sk_p2p and "  [P2P优先]" or "")
         line2_col = { 34, 108, 48, 255 }
+    elseif sk and not sk.installed then
+        line2 = "仅房主需要安装樱花（队友不用装）；点右「一键装樱花」或进「樱花助手」看 4 步向导。"
+        line2_col = T.ink_muted
     else
         line2 = "开启 TCP 17777 隧道后自动识别；或点右上「樱花助手」游戏内建/启隧道。"
         line2_col = T.ink_muted
@@ -211,8 +218,10 @@ local function draw_home_sakura(ctx, y)
         add_btn("sakura_copy_detected", "复制地址", cx + cw - 114, st_y + 11, 92, 26, "battle", { tiny = true, copy_addr = sk_copy })
     elseif sk and sk.installed then
         add_btn("sakura_launch_app", "启动樱花", cx + cw - 114, st_y + 11, 92, 26, "wood", { tiny = true })
+    elseif sk and sk.dl_busy then
+        add_btn("sakura_download_official", string.format("下载 %d%%", sk:get_download_pct()), cx + cw - 114, st_y + 11, 92, 26, "wood", { tiny = true })
     else
-        add_btn("sakura_launch_app", "下载樱花", cx + cw - 114, st_y + 11, 92, 26, "azure", { tiny = true })
+        add_btn("sakura_download_official", "一键装樱花", cx + cw - 114, st_y + 11, 92, 26, "battle", { tiny = true })
     end
 
     -- Row 2: Recent SakuraFrp Cards OR 3 Structured Parchment Step Cards (Zero Empty Black Space)
