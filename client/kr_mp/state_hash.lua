@@ -173,26 +173,43 @@ function state_hash.format_line(snap)
     )
 end
 
--- Compact deterministic combat-entity digest sent on DESYNC to pinpoint exact diverging entity/field in 1 second
+-- Compact deterministic entity digest sent on DESYNC to pinpoint exact diverging entity/field in 1 second
 function state_hash.build_diag_summary(store, max_items)
     if not store or not store.entities then return "" end
     local ids = {}
     local n = 0
+    local extra_ids = {}
+    local en = 0
     for id, e in pairs(store.entities) do
         if type(id) == "number" and e and not e._kr_mp_local and id < LOCAL_ID_BASE then
             if e.enemy or e.soldier or e.hero or e.tower or e.bullet or e.modifier then
                 n = n + 1
                 ids[n] = id
+            elseif not e.particle_system then
+                en = en + 1
+                extra_ids[en] = id
             end
         end
     end
     table.sort(ids)
+    table.sort(extra_ids)
     local lim = math.min(n, max_items or 18)
     local parts = {
-        string.format("ms=%d/%d",
+        string.format("ms=%d/%d nc=%d",
             tonumber(store.entities_with_main_script_on_update_count) or 0,
-            tonumber(store.entities_with_main_script_on_update_count1) or 0),
+            tonumber(store.entities_with_main_script_on_update_count1) or 0,
+            en),
     }
+    if en > 0 then
+        local nc_tail = {}
+        local nc_start = math.max(1, en - 5)
+        for i = nc_start, en do
+            local eid = extra_ids[i]
+            local ee = store.entities[eid]
+            nc_tail[#nc_tail + 1] = string.format("#%d:%s", eid, tostring(ee and ee.template_name or "?"))
+        end
+        parts[#parts + 1] = "NC[" .. table.concat(nc_tail, ",") .. "]"
+    end
     for i = 1, lim do
         local id = ids[i]
         local e = store.entities[id]

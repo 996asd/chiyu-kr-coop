@@ -393,7 +393,7 @@ end
 
 ch:push({ seq = seq, stage = "meta", done = 0, total = 0 })
 
-local ver = tostring(fallback_ver or "2.4.3")
+local ver = tostring(fallback_ver or "2.4.4")
 local expect_sha = ""
 local expect_size = 0
 for _, vurl in ipairs({

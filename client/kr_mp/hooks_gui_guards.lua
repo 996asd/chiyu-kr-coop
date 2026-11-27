@@ -44,6 +44,14 @@ local function install_sim_field_guards(hooks, game_gui)
                 return orig_pv_upd(self_pv, dt)
             end
             local e = game_gui.selected_entity
+            -- Auto-close stale TowerMenu/selection immediately when a tower/holder is upgraded, unblocked, sold, or removed
+            if e and type(e.id) == "number" and e.id < hooks.LOCAL_ID_BASE then
+                local st = game_gui.game and game_gui.game.store
+                if st and st.entities and st.entities[e.id] ~= e then
+                    game_gui:deselect_all()
+                    e = game_gui.selected_entity
+                end
+            end
             local saved_td = e and e.trigger_deselect
             if e and not saved_td and ignored_td_eid[game_gui] == e.id then
                 ignored_td_eid[game_gui] = nil
@@ -56,6 +64,32 @@ local function install_sim_field_guards(hooks, game_gui)
             if not ok_u then error(err_u) end
         end
     end)
+
+    -- Preserve entity.ui.hover_active & entity.ui.args across TowerMenuButton:on_enter/on_exit
+    -- Prevents local mouse hover on Arcane Wizard (empowerment), Crossbow Fort (eagle), and KR6 aura towers
+    -- from spawning simulation preview decals inside sim:do_tick on only one peer (causes immediate DESYNC!).
+    if TowerMenuButton then
+        for _, mname in ipairs({ "on_enter", "on_exit" }) do
+            hooks.wrap_once(TowerMenuButton, mname, "hover_iso", function(orig_fn)
+                return function(self_btn, ...)
+                    if not hooks:is_sync_active() then
+                        return orig_fn(self_btn, ...)
+                    end
+                    local ent = self_btn and self_btn.entity
+                    local ui = ent and ent.ui
+                    local saved_ha = ui and ui.hover_active
+                    local saved_args = ui and ui.args
+                    local ok_h, r1, r2 = pcall(orig_fn, self_btn, ...)
+                    if ui then
+                        ui.hover_active = saved_ha
+                        ui.args = saved_args
+                    end
+                    if not ok_h then error(r1) end
+                    return r1, r2
+                end
+            end)
+        end
+    end
 
     -- Preserve entity.user_selection.menu_shown across TowerMenu:show / hide
     if TowerMenu then
@@ -86,6 +120,10 @@ local function install_sim_field_guards(hooks, game_gui)
                 if e and e.user_selection then
                     e.user_selection.menu_shown = saved_ms
                 end
+                if e and e.ui then
+                    e.ui.hover_active = nil
+                    e.ui.args = nil
+                end
                 if not ok_m then error(r1) end
                 return r1
             end
@@ -99,7 +137,9 @@ local function install_sim_field_guards(hooks, game_gui)
                 return orig_desel_all(self_gui, ...)
             end
             local e = self_gui.selected_entity
-            local need_cancel = (e ~= nil and e.user_selection ~= nil and e.user_selection.in_progress == true)
+            local st = self_gui.game and self_gui.game.store
+            local still_live = e and type(e.id) == "number" and st and st.entities and st.entities[e.id] == e
+            local need_cancel = (still_live and e.user_selection ~= nil and e.user_selection.in_progress == true)
             local saved_inp = need_cancel and e.user_selection.in_progress or nil
             local saved_pos = need_cancel and e.user_selection.new_pos or nil
             local ok_d, r1 = pcall(orig_desel_all, self_gui, ...)

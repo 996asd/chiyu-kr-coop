@@ -19,6 +19,12 @@ local LOCAL_UI_TEMPLATES = {
     decal_path_hero_movement = true,
     path_marching_ants_controller = true,
     decal_path_marching_ant = true,
+    royal_archers_decal_preview_controller = true,
+    decal_tower_arcane_wizard_empowerment_preview = true,
+    decal_crossbow_eagle_preview = true,
+    decal_tower_wizard_empowerment_preview = true,
+    decal_archers_skill_b_preview = true,
+    decal_balloon_eagle_preview = true,
 }
 
 local VISUAL_SYSTEMS = {
@@ -63,6 +69,8 @@ function hooks.is_local_template(t)
     local name = (type(t) == "string") and t or (type(t) == "table" and t.template_name) or ""
     if LOCAL_UI_TEMPLATES[name] then return true end
     if name:sub(1, 20) == "decal_entity_marker_" then return true end
+    if name:sub(1, 6) == "decal_" and name:find("_preview", 1, true) then return true end
+    if name:find("decal_preview_controller", 1, true) then return true end
     if name:find("path_direction", 1, true) then return true end
     if name:find("clickable_hover", 1, true) then return true end
     if name:find("tower_ghost_hover", 1, true) then return true end

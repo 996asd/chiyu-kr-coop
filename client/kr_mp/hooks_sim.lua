@@ -102,6 +102,29 @@ end
 -- Universal G1-G4 draggable reinforcements: FL 8.2.0 only gives G5/G6 reinforcements `nav_grid`,
 -- `squad_id`, and `nav_rally.new` rally handling. Granting canonical `nav_grid` + deterministic
 -- `squad_id` on insert and handling `nav_rally.new` via SU makes ALL G1..G6 squads draggable.
+local function preserve_tower_swap_owner(st, e)
+    if not (st and e and e.tower and not e._kr_mp_local and not e._mp_owner) then return end
+    local dom = st._dominant_entity
+    if not dom or type(dom.template_name) ~= "string" then return end
+    local dname = dom.template_name
+    if dname == "controller_tower_swap" or dname == "controller_tower_swap_overseer" then
+        local t1, t2 = dom.tower_1, dom.tower_2
+        local hid = e.tower.holder_id
+        if t1 and t2 and t1.tower and t2.tower and hid ~= nil then
+            if hid == t2.tower.holder_id and t1._mp_owner and e.tower.type ~= "holder" then
+                e._mp_owner = t1._mp_owner
+            elseif hid == t1.tower.holder_id and t2._mp_owner and e.tower.type ~= "holder" then
+                e._mp_owner = t2._mp_owner
+            end
+        end
+    elseif dname == "royal_archers_tower_combination_controller" then
+        local t1 = dom.tower_1
+        if t1 and t1._mp_owner and e.tower.type ~= "holder" then
+            e._mp_owner = t1._mp_owner
+        end
+    end
+end
+
 local function ensure_draggable_reinforcement(store, e, E)
     if not (e and not e._kr_mp_local and e.reinforcement and e.soldier and e.nav_rally) then
         return
@@ -653,6 +676,9 @@ function M.install_simulation(hooks)
                 prng:enter_visual()
             else
                 ensure_draggable_reinforcement(st, e, E)
+                if hooks:is_mp_active() then
+                    preserve_tower_swap_owner(st, e)
+                end
                 hooks.sso_mutation_gen = (hooks.sso_mutation_gen or 0) + 1
             end
             local ok_i, err_i = pcall(orig_insert, self_sim, e)

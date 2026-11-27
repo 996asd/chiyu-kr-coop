@@ -101,10 +101,11 @@ local HANDLERS = {}
 function HANDLERS.TW_UPGRADE(ctx, cmd)
     local e = ctx.store.entities[cmd.id]
     if not (e and e.tower) then return end
+    if e.tower.upgrade_to or e.tower.sell or e.tower.destroy then return end
     if ctx.mp_on then
         if not ctx.coop:can_control_tower(ctx.pid, e, "upgrade") then return end
         local price = ctx.coop:get_upgrade_price(e, cmd.arg)
-        if not ctx.coop:can_afford(ctx.pid, price) then return end
+        if not ctx.coop:reserve_tick_gold(ctx.pid, price) then return end
         e.tower._mp_actor = ctx.pid
     end
     e.tower.upgrade_to = cmd.arg
@@ -114,6 +115,7 @@ end
 function HANDLERS.TW_SELL(ctx, cmd)
     local e = ctx.store.entities[cmd.id]
     if not (e and e.tower) then return end
+    if e.tower.sell or e.tower.destroy or e.tower.upgrade_to then return end
     if ctx.mp_on then
         if not ctx.coop:can_control_tower(ctx.pid, e, "sell") then return end
         e.tower._mp_actor = ctx.pid
@@ -125,12 +127,15 @@ function HANDLERS.TW_POWER(ctx, cmd)
     local e = ctx.store.entities[cmd.id]
     local power = e and e.powers and e.powers[cmd.arg]
     if not power then return end
+    if e.tower and (e.tower.sell or e.tower.destroy or e.tower.upgrade_to) then return end
     if ctx.mp_on and not ctx.coop:can_control_tower(ctx.pid, e, "power") then return end
     if power.level >= power.max_level then return end
 
     local next_lvl = power.level + 1
     local spent = commands.get_tower_power_cost(e, power, next_lvl)
-    local ok_gold = ctx.mp_on and ctx.coop:can_afford(ctx.pid, spent) or (ctx.store.player_gold >= spent)
+    local ok_gold = ctx.mp_on
+        and ctx.coop:can_afford(ctx.pid, spent + (ctx.coop._tick_reserved_gold and ((ctx.coop.econ_mode == "shared" and ((ctx.coop._tick_reserved_gold[1] or 0) + (ctx.coop._tick_reserved_gold[2] or 0))) or (ctx.coop._tick_reserved_gold[ctx.pid] or 0)) or 0))
+        or (ctx.store.player_gold >= spent)
     if not ok_gold then return end
 
     power.level = next_lvl
@@ -159,7 +164,12 @@ end
 function HANDLERS.TW_BUY_SOLDIER(ctx, cmd)
     local e = ctx.store.entities[cmd.id]
     if not (e and e.barrack) then return end
-    if ctx.mp_on and not ctx.coop:can_control_tower(ctx.pid, e, "buy_soldier") then return end
+    if ctx.mp_on then
+        if not ctx.coop:can_control_tower(ctx.pid, e, "buy_soldier") then return end
+        local nt = cmd.arg and E:get_template(cmd.arg)
+        local price = (nt and nt.unit and tonumber(nt.unit.price)) or 0
+        if price > 0 and not ctx.coop:reserve_tick_gold(ctx.pid, price) then return end
+    end
     e._mp_actor = ctx.pid
     e.barrack.unit_bought = cmd.arg
 end
@@ -182,6 +192,7 @@ function HANDLERS.TW_SWAP(ctx, cmd)
     local controller = E:create_entity("controller_tower_swap")
     controller.tower_1 = e1
     controller.tower_2 = e2
+    controller._mp_actor = ctx.pid
     ctx.game.simulation:insert_entity(controller)
 end
 
@@ -189,9 +200,21 @@ function HANDLERS.TW_USER_SEL(ctx, cmd)
     local e = ctx.store.entities[cmd.id]
     if not (e and e.user_selection) then return end
     if ctx.mp_on and not ctx.coop:can_control_tower(ctx.pid, e, "user_sel") then return end
-    e._mp_actor = ctx.pid
     local us = e.user_selection
     local phase = cmd.phase
+    if ctx.mp_on then
+        local cost = 0
+        if phase == "repair" and e.repair and not e.repair.active then
+            cost = tonumber(e.repair.cost) or 0
+        elseif phase == "custom" and e.tower_action and not e.tower_action.active then
+            cost = tonumber(e.tower_action.cost) or 0
+        elseif (phase == "buy_attack_instant" or phase == "buy_attack_start")
+            and e.attacks and e.attacks.list and cmd.arg and e.attacks.list[cmd.arg] then
+            cost = tonumber(e.attacks.list[cmd.arg].price) or 0
+        end
+        if cost > 0 and not ctx.coop:reserve_tick_gold(ctx.pid, cost) then return end
+    end
+    e._mp_actor = ctx.pid
     if phase == "free" then
         us.in_progress = true; us.arg = cmd.arg; us.new_pos = nil
     elseif phase == "repair" then
@@ -389,7 +412,16 @@ end
 
 function HANDLERS.CLICK_ENTITY(ctx, cmd)
     local e = ctx.store.entities[cmd.id]
-    if e and e.ui and e.ui.can_click then
+    if not (e and e.ui) then return end
+    if type(e.ui.click_proxies) == "table" then
+        for i = 1, #e.ui.click_proxies do
+            local cp = e.ui.click_proxies[i]
+            if cp and cp.ui and cp.ui.can_click then
+                cp.ui.clicked = true
+            end
+        end
+    end
+    if e.ui.can_click then
         e.ui.clicked = true
     end
 end

@@ -627,6 +627,10 @@ function coop:get_upgrade_price(e, upgrade_to)
     elseif e.tower_holder and (e.tower_holder.unblock_price or 0) > 0 then
         price = e.tower_holder.unblock_price
     end
+    if e.tower and e.tower.upgrade_price_multiplier then
+        price = math.ceil(price * e.tower.upgrade_price_multiplier)
+        price = math.floor(price / 10) * 10
+    end
     return price
 end
 
@@ -829,7 +833,24 @@ end
 
 function coop:on_tick_begin(store)
     if not self.active then return end
+    self._tick_reserved_gold = { [1] = 0, [2] = 0 }
     store.player_gold = self:get_canonical_gold()
+end
+
+function coop:reserve_tick_gold(pid, amount)
+    amount = math.floor((amount or 0) + 0.5)
+    if amount <= 0 then return true end
+    local res = self._tick_reserved_gold
+    if not res then
+        res = { [1] = 0, [2] = 0 }
+        self._tick_reserved_gold = res
+    end
+    local used = (self.econ_mode == "shared") and ((res[1] or 0) + (res[2] or 0)) or (res[pid] or 0)
+    if self:get_player_gold(pid) < (used + amount) then
+        return false
+    end
+    res[pid] = (res[pid] or 0) + amount
+    return true
 end
 
 function coop:before_tower_upgrade(store)
@@ -864,6 +885,7 @@ function coop:after_tower_upgrade(store)
             end
         end
     end
+    self._tick_reserved_gold = { [1] = 0, [2] = 0 }
     store.player_gold = self:get_canonical_gold()
 end
 

@@ -360,10 +360,12 @@ local function install_pick_and_tower_hooks(hooks, game_gui, deps)
                     return true
                 end
                 if e and e.ui and e.ui.can_click then
+                    local has_proxies = (type(e.ui.click_proxies) == "table" and #e.ui.click_proxies > 0)
                     local needs_click_sync = (not e.tower and not e.hero and not e.soldier and not e.enemy)
                         or (e.clicks_to_destroy ~= nil)
                         or (e.tap_decal ~= nil)
                         or (e.click_play ~= nil)
+                        or has_proxies
                     if needs_click_sync then
                         hooks:submit_command({ op = "CLICK_ENTITY", id = e.id })
                     end
@@ -424,7 +426,7 @@ local function install_pick_and_tower_hooks(hooks, game_gui, deps)
                     local avail = hooks:is_mp_active() and hooks.coop:get_local_display_gold() or store.player_gold
                     if avail >= cost then
                         hooks:submit_command({ op = "TW_POWER", id = entity.id, arg = item.action_arg })
-                        self_btn.parent:hide()
+                        game_gui:deselect_entity()
                     else
                         inhibit_sounds = true
                     end
