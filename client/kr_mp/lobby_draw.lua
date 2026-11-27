@@ -360,7 +360,8 @@ end
 
 local function draw_home_online(ctx, y)
     local lobby, T, cx, cw, py, ph, fm, add_btn = ctx.lobby, ctx.T, ctx.cx, ctx.cw, ctx.py, ctx.ph, ctx.font_map, ctx.add_btn
-    local is_connecting = lobby.transport:is_online() and lobby.transport:is_connecting()
+    local is_handshaking = (lobby.server_handshaking == true and not lobby.server_connected)
+    local is_connecting = (lobby.transport:is_online() and lobby.transport:is_connecting()) or is_handshaking
 
     if lobby.saved_session and lobby.saved_session.mode ~= "direct" then
         local s = lobby.saved_session
@@ -381,7 +382,7 @@ local function draw_home_online(ctx, y)
     })
     add_btn("paste_server", "粘贴", sx + sw_in + 6, y + 7, 48, 28, "wood", { small = true })
     local conn_lbl = lobby.server_connected and ("已连 " .. lobby.transport:get_rtt_ms() .. "ms")
-        or (is_connecting and "连接中..." or "连接")
+        or (is_handshaking and "握手中..." or (is_connecting and "连接中..." or "连接"))
     add_btn("connect_server", conn_lbl, sx + sw_in + 60, y + 7, 86, 28,
         lobby.server_connected and "battle" or (is_connecting and "wood" or "azure"), { small = true })
     add_btn("refresh_online", "刷新", sx + sw_in + 152, y + 7, 58, 28, "parchment", { small = true })
@@ -418,10 +419,10 @@ local function draw_home_online(ctx, y)
     ui.print_shadow(string.format("公开在线房间大厅 (%d 个房间)", #lobby.online_rooms), cx + 30, y + 10, T.gold_bright, nil, nil, nil, fm.small_bold)
 
     if is_connecting then
-        ui.text("正在后台探测公网服务器（不卡界面），也可直接修改上方服务器地址后点「连接」。",
+        ui.text("正在连接并校验公网中继服协议（不卡界面），也可直接修改上方地址后点「连接」。",
             cx + 22, y + math.floor(tray_h * 0.44), { 246, 224, 174, 225 }, fm.small, cw - 44, "center")
     elseif not lobby.server_connected then
-        ui.text("尚未连接公网服务器 · 点上方「连接」接入；或自开 kr-mp-server (TCP 17780) 享多房大厅与 5 分钟追帧重连。",
+        ui.text("尚未连接公网中继服 · 樱花 17777 直连请切回「樱花联机」页；本页需连接运行中的 kr-mp-server (TCP 17780)。",
             cx + 22, y + math.floor(tray_h * 0.44), { 232, 206, 158, 220 }, fm.small, cw - 44, "center")
     elseif #lobby.online_rooms == 0 then
         ui.text("已连接服务器！当前暂无公开房间，可点左上「创建公网房间」或「刷新」。",

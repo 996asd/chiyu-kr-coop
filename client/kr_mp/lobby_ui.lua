@@ -92,6 +92,9 @@ local lobby = {
 
     -- Online server & SakuraFrp direct reconnect state
     server_connected = false,
+    server_handshaking = false,
+    server_handshake_ts = 0,
+    server_connect_silent = false,
     server_ver = nil,
     server_voice_ok = true,
     online_rooms = {},
@@ -228,6 +231,8 @@ function lobby:switch_tab(tab)
         if prev == "online" then
             self.transport:close()
             self.server_connected = false
+            self.server_handshaking = false
+            self.server_connect_silent = false
             self.transport:switch_mode("lan")
         end
         self.transport:stop_lan_scan()
@@ -236,6 +241,8 @@ function lobby:switch_tab(tab)
         if prev == "online" then
             self.transport:close()
             self.server_connected = false
+            self.server_handshaking = false
+            self.server_connect_silent = false
             self.transport:switch_mode("lan")
         end
         self.transport:start_lan_scan()
@@ -438,7 +445,11 @@ end
 -- === Online Relay Server Actions (100% Non-Blocking) ===
 
 function lobby:on_online_connected()
-    self.server_connected = true
+    -- Wait for SERVER_HELLO before marking server_connected = true so SakuraFrp edge TCP accepts
+    -- (with no kr-mp-server running behind them) never flash a fake green "已连 0ms".
+    self.server_connected = false
+    self.server_handshaking = true
+    self.server_handshake_ts = (love and love.timer and love.timer.getTime()) or os.clock()
     self.transport:send({
         t = "HELLO",
         proto = proto.PROTOCOL_VER,
@@ -448,7 +459,9 @@ function lobby:on_online_connected()
         tick_len = TICK_LENGTH or (1 / 60),
         name = "Player",
     })
+end
 
+function lobby:flush_pending_online_action()
     local act = self.pending_online_action
     self.pending_online_action = nil
     if not act then return end
@@ -465,9 +478,13 @@ end
 
 function lobby:connect_online_server(addr, silent_fail)
     local target = (addr and addr ~= "") and addr or self.server_input
+    self.server_connected = false
+    self.server_handshaking = false
+    self.server_connect_silent = (silent_fail == true)
     local ok, status_or_err = self.transport:connect_online(target, proto.DEFAULT_ONLINE_PORT, silent_fail)
     if not ok then
         self.server_connected = false
+        self.server_handshaking = false
         self.pending_online_action = nil
         if not silent_fail then
             self.overlay:show_toast("连接公网服务器失败：" .. tostring(status_or_err), 4.5)
@@ -477,7 +494,6 @@ function lobby:connect_online_server(addr, silent_fail)
     if status_or_err == "connected" then
         self:on_online_connected()
     else
-        self.server_connected = false
         if not silent_fail then
             self.overlay:show_toast("正在连接公网服务器 " .. tostring(target) .. "...", 2.5)
         end
@@ -490,7 +506,8 @@ function lobby:ensure_online_connected(action)
         return true
     end
     if action then self.pending_online_action = action end
-    if self.transport:is_online() and self.transport:is_connecting() then
+    if self.transport:is_online() and (self.transport:is_connecting() or self.server_handshaking) then
+        self.server_connect_silent = false
         if self.transport.online_backend then
             self.transport.online_backend.connect_silent = false
         end
@@ -752,12 +769,15 @@ end
 
 function MSG_HANDLERS.SERVER_HELLO(self, msg)
     self.server_connected = true
+    self.server_handshaking = false
+    self.server_connect_silent = false
     self.server_ver = msg.server_ver
     self.server_voice_ok = (msg.voice_ok == true)
     self.online_rooms = msg.rooms or {}
     updater:note_server_version(msg.server_ver)
     self.boot:log("[LOBBY] Server hello OK (ver=%s, voice_ok=%s, rooms=%d)",
         tostring(msg.server_ver), tostring(self.server_voice_ok), #self.online_rooms)
+    self:flush_pending_online_action()
 end
 
 function MSG_HANDLERS.ROOM_LIST(self, msg)
@@ -998,6 +1018,19 @@ function lobby:update(dt)
     if self.lockstep and self.lockstep.update_timers then
         self.lockstep:update_timers(now)
     end
+    if self.server_handshaking and not self.server_connected and (now - (self.server_handshake_ts or 0)) >= 3.5 then
+        local was_silent = self.server_connect_silent
+        self.server_handshaking = false
+        self.server_connect_silent = false
+        self.pending_online_action = nil
+        if self.transport and self.transport:is_online() then
+            self.transport:close()
+        end
+        if not was_silent and self.overlay then
+            self.overlay:show_toast("目标地址无公网中继服响应！樱花 17777 直连请切回「樱花联机」页；自建公网服请先运行 启动公网中继服.bat (17780)。", 6.0)
+        end
+        autotest:on_server_connect_failed()
+    end
     if self.transport and self.transport.lan_backend then
         local in_match = (self.coop and self.coop:is_active()) == true
         local waiting_rc = (self.lockstep ~= nil and self.lockstep.phase == "WAIT_RECONNECT")
@@ -1071,17 +1104,29 @@ function lobby:update(dt)
             self:on_online_connected()
         elseif ev.type == "server_connect_failed" then
             self.server_connected = false
+            self.server_handshaking = false
+            self.server_connect_silent = false
             self.pending_online_action = nil
             if not ev.silent then
                 self.overlay:show_toast("连接公网服务器失败：" .. tostring(ev.reason), 4.5)
             end
             autotest:on_server_connect_failed()
         elseif ev.type == "server_disconnected" then
+            local was_connected = self.server_connected
+            local was_handshaking = self.server_handshaking
+            local was_silent = self.server_connect_silent
             self.server_connected = false
+            self.server_handshaking = false
+            self.server_connect_silent = false
             self.pending_online_action = nil
             if self.lockstep and self.lockstep:is_active() then
                 self.lockstep:on_peer_disconnected("与公网中继服断开连接", false)
-            else
+            elseif was_handshaking and not was_connected then
+                if not was_silent then
+                    self.overlay:show_toast("未检测到公网中继服 (kr-mp-server)！樱花 17777 直连请切回「樱花联机」页；自建公网服请先启动 启动公网中继服.bat (17780)。", 6.5)
+                end
+                autotest:on_server_connect_failed()
+            elseif was_connected then
                 self.overlay:show_toast("与公网服务器断开连接。", 4)
             end
         elseif ev.type == "msg" then
