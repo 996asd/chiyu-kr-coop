@@ -2,6 +2,7 @@
 local proto = require("kr_mp.proto")
 local fonts = require("kr_mp.fonts")
 local catalog = require("kr_mp.catalog")
+local loadout = require("kr_mp.coop_loadout")
 local updater = require("kr_mp.updater")
 local lobby_prefs = require("kr_mp.lobby_prefs")
 local ui = require("kr_mp.ui_assets")
@@ -21,7 +22,8 @@ local INPUT_BOX_IDS = {
 local TAB_SFX_IDS = {
     tab_sakura = true, tab_lan = true, tab_online = true,
     stage_pack = true, hero_pack = true, tower_pack = true,
-    open_stages = true, open_hero1 = true, open_hero2 = true, open_towers = true,
+    open_stages = true, open_hero1 = true, open_hero2 = true, open_towers = true, open_powers = true,
+    powers_reinf_target = true,
     open_guide = true, guide_tab = true, open_sakura = true, open_server_host = true,
     sakura_toggle_wizard = true, sakura_nodes_prev = true, sakura_nodes_next = true,
 }
@@ -512,23 +514,103 @@ function BTN_HANDLERS.open_stages(lobby)
     if lobby.overlay then lobby.overlay:clear_toast() end
     lobby.sub_modal = "stages"
 end
-
 function BTN_HANDLERS.open_hero1(lobby)
     if lobby.role ~= "host" then return end
     if lobby.overlay then lobby.overlay:clear_toast() end
     lobby.sub_modal = "hero1"
 end
-
 function BTN_HANDLERS.open_hero2(lobby)
     if lobby.overlay then lobby.overlay:clear_toast() end
     lobby.sub_modal = "hero2"
 end
-
 function BTN_HANDLERS.open_towers(lobby)
     if lobby.role ~= "host" then return end
     if lobby.overlay then lobby.overlay:clear_toast() end
     lobby.ensure_room_defaults(lobby.room)
     lobby.sub_modal = "towers"
+end
+local function send_guest_update(lobby)
+    lobby.ensure_room_defaults(lobby.room)
+    lobby.transport:send({
+        t = "SET_GUEST",
+        hero_idx = lobby.room.heroes and lobby.room.heroes[2] or (catalog.DEFAULT_HERO_2 or 54),
+        reinf = lobby.room.reinforcements and lobby.room.reinforcements[2] or loadout.DEFAULT_REINF,
+        ready = lobby.local_ready,
+    })
+end
+function BTN_HANDLERS.open_powers(lobby)
+    if lobby.overlay then lobby.overlay:clear_toast() end
+    lobby.ensure_room_defaults(lobby.room)
+    lobby.reinf_edit_pid = (lobby.role == "host") and 1 or 2
+    lobby.sub_modal = "powers"
+end
+
+function BTN_HANDLERS.pick_cataclysm(lobby, btn)
+    if lobby.role ~= "host" then
+        lobby.overlay:show_toast("1号槽天灾仅由 1P 房主选择与控制！", 2.2)
+        return
+    end
+    if not btn.cat_id then return end
+    lobby.ensure_room_defaults(lobby.room)
+    lobby.room.cataclysm = loadout.normalize_cataclysm(btn.cat_id)
+    lobby:save_prefs()
+    lobby:broadcast_room_state()
+    local info = loadout.get_cataclysm_info(lobby.room.cataclysm)
+    lobby.overlay:show_toast("1号槽天灾已设为：" .. (info and info.name or lobby.room.cataclysm), 2.0)
+end
+
+function BTN_HANDLERS.powers_reinf_target(lobby, btn)
+    if lobby.role == "host" then lobby.reinf_edit_pid = (tonumber(btn.pid) == 2) and 2 or 1 end
+end
+
+function BTN_HANDLERS.pick_reinf(lobby, btn)
+    if not btn.reinf_id then return end
+    lobby.ensure_room_defaults(lobby.room)
+    local norm = loadout.normalize_reinf(btn.reinf_id)
+    local info = loadout.get_reinf_info(norm)
+    if lobby.role == "host" then
+        local pid = (tonumber(btn.pid) == 2) and 2 or 1
+        lobby.room.reinforcements[pid] = norm
+        lobby:save_prefs()
+        lobby:broadcast_room_state()
+        lobby.overlay:show_toast(string.format("%dP 援军已设为：%s", pid, info and info.name or norm), 2.0)
+    elseif lobby.role == "client" then
+        lobby.room.reinforcements[2] = norm
+        send_guest_update(lobby)
+        lobby.overlay:show_toast("已选择你的 2P 援军：" .. (info and info.name or norm), 2.0)
+    end
+end
+
+function BTN_HANDLERS.set_max_tech(lobby, btn)
+    if lobby.role ~= "host" then
+        lobby.overlay:show_toast("科技加点模式仅由 1P 房主切换！", 2.2)
+        return
+    end
+    lobby.ensure_room_defaults(lobby.room)
+    lobby.room.max_tech = (btn.val == true)
+    lobby:save_prefs()
+    lobby:broadcast_room_state()
+    lobby.overlay:show_toast(
+        lobby.room.max_tech and "已开启【1~6代全满级科技】：仅本局内存生效，不改单机存档！"
+            or "已切为【跟随房主存档科技】：按房主本地 1 号存档科技出战。",
+        2.5
+    )
+end
+
+function BTN_HANDLERS.powers_default(lobby)
+    lobby.ensure_room_defaults(lobby.room)
+    if lobby.role == "host" then
+        lobby.room.cataclysm = loadout.DEFAULT_CATACLYSM
+        lobby.room.reinforcements = { loadout.DEFAULT_REINF, loadout.DEFAULT_REINF }
+        lobby.room.max_tech = true
+        lobby:save_prefs()
+        lobby:broadcast_room_state()
+        lobby.overlay:show_toast("已恢复默认天灾、援军与全满级科技！", 2.0)
+    elseif lobby.role == "client" then
+        lobby.room.reinforcements[2] = loadout.DEFAULT_REINF
+        send_guest_update(lobby)
+        lobby.overlay:show_toast("已将 2P 援军重置为默认援军！", 2.0)
+    end
 end
 
 function BTN_HANDLERS.diff_cycle(lobby)
@@ -733,7 +815,7 @@ function BTN_HANDLERS.pick_hero(lobby, btn)
             lobby:save_prefs()
             lobby:broadcast_room_state()
         elseif lobby.role == "client" then
-            lobby.transport:send({ t = "SET_GUEST", hero_idx = btn.hero_idx, ready = lobby.local_ready })
+            send_guest_update(lobby)
         end
     end
 end

@@ -2,6 +2,7 @@
 -- Delegates modal screens to lobby_draw_modals.lua; keeps every draw section small & readable.
 local proto = require("kr_mp.proto")
 local catalog = require("kr_mp.catalog")
+local loadout = require("kr_mp.coop_loadout")
 local updater = require("kr_mp.updater")
 local lobby_prefs = require("kr_mp.lobby_prefs")
 local ui = require("kr_mp.ui_assets")
@@ -57,6 +58,7 @@ local function resolve_banner_title(lobby)
     elseif lobby.sub_modal == "hero1" then return "英雄殿 · 选 1P 主将"
     elseif lobby.sub_modal == "hero2" then return "英雄殿 · 选 2P 队友"
     elseif lobby.sub_modal == "towers" then return "皇家军械库 · 59选12"
+    elseif lobby.sub_modal == "powers" then return "战前军械 · 天灾 / 援军 / 科技"
     elseif lobby.sub_modal == "voice" then return "语音调音 · 麦克风设置"
     end
     return "双人同盟 · 皇家战桌"
@@ -543,7 +545,9 @@ local function draw_room_hero_card(ctx, pid, x, y, w, h, is_host)
         is_p1 and { 10, 22, 38, 0 } or { 36, 8, 10, 0 },
         is_p1 and { 8, 18, 32, 232 } or { 32, 6, 8, 232 }, 4)
     ui.print_shadow(catalog.get_hero_label(hero_idx), hp_x + 8, hp_y + hp_h - 36, T.gold_bright, nil, nil, nil, fm.hero)
-    ui.print_shadow("英雄 #" .. tostring(hero_idx), hp_x + 8, hp_y + hp_h - 17, lgt_c, nil, nil, nil, fm.tiny)
+    local r_info = loadout.get_player_reinf_spec(lobby.room and lobby.room.reinforcements, pid)
+    local r_short = (r_info and r_info.short) or "默认援军"
+    ui.print_shadow("#" .. tostring(hero_idx) .. " · " .. r_short, hp_x + 8, hp_y + hp_h - 17, lgt_c, nil, nil, nil, fm.tiny)
 
     if lobby.voice and lobby.voice.supported then
         local v_talk, v_lvl = lobby.voice:get_seat_state(pid, lobby.local_pid)
@@ -662,20 +666,27 @@ local function draw_room_armory_tray(ctx, y, is_host)
     end
 
     ui.print_shadow(string.format("随军防御塔军械盘 (%d/12)", #deck), cx + 14, y + 8, T.gold_bright, nil, nil, nil, fm.small_bold)
-    ui.draw_pill(cx + 186, y + 7, 178, 19,
-        hovered_tw_name and ("当前检阅：" .. hovered_tw_name) or "悬停纹章检阅防御塔",
+    ui.draw_pill(cx + 176, y + 7, 148, 19,
+        hovered_tw_name and ("检阅：" .. hovered_tw_name) or "悬停图标查看防御塔",
         { 18, 10, 4, 175 }, { 196, 148, 72, 115 },
         hovered_tw_name and T.gold_bright or { 228, 202, 154, 215 }, fm.tiny)
 
+    local tech_tag = (lobby.room.max_tech ~= false) and "法术与满级科技" or "法术与科技"
     if is_host then
         if not lobby.transport:is_online() then
-            add_btn("open_sakura", "樱花助手", cx + cw - 284, y + 5, 70, 23, "azure", { tiny = true })
+            add_btn("open_powers", tech_tag, cx + cw - 376, y + 5, 108, 23, "azure", { tiny = true })
+            add_btn("open_sakura", "樱花助手", cx + cw - 262, y + 5, 68, 23, "parchment", { tiny = true })
+            add_btn("open_guide", "教程", cx + cw - 188, y + 5, 62, 23, "parchment", { tiny = true, tab = 2 })
+            add_btn("open_towers", string.format("配置%d选12", catalog.TOTAL_TOWERS or 59), cx + cw - 120, y + 5, 108, 23, "wood", { tiny = true })
+        else
+            add_btn("open_powers", tech_tag, cx + cw - 310, y + 5, 112, 23, "azure", { tiny = true })
+            add_btn("open_guide", "新手教程", cx + cw - 192, y + 5, 66, 23, "parchment", { tiny = true, tab = 2 })
+            add_btn("open_towers", string.format("配置%d选12", catalog.TOTAL_TOWERS or 59), cx + cw - 120, y + 5, 108, 23, "wood", { tiny = true })
         end
-        add_btn("open_guide", "新手教程", cx + cw - 208, y + 5, 76, 23, "parchment", { tiny = true, tab = 2 })
-        add_btn("open_towers", string.format("配置 %d 选 12", catalog.TOTAL_TOWERS or 59), cx + cw - 126, y + 5, 114, 23, "wood", { tiny = true })
     else
-        add_btn("open_guide", "新手教程", cx + cw - 196, y + 5, 76, 23, "parchment", { tiny = true, tab = 2 })
-        ui.draw_pill(cx + cw - 114, y + 7, 102, 19, "房主配置卡组",
+        add_btn("open_powers", "选2P援军 / 看科技", cx + cw - 318, y + 5, 132, 23, "azure", { tiny = true })
+        add_btn("open_guide", "新手教程", cx + cw - 180, y + 5, 68, 23, "parchment", { tiny = true, tab = 2 })
+        ui.draw_pill(cx + cw - 106, y + 7, 94, 19, "房主配防御塔",
             { 18, 10, 4, 165 }, { 164, 122, 64, 115 }, { 224, 198, 152, 210 }, fm.tiny)
     end
     return tray_h
@@ -871,6 +882,8 @@ function M.draw(lobby)
         modals.draw_heroes(ctx)
     elseif lobby.sub_modal == "towers" then
         modals.draw_towers(ctx)
+    elseif lobby.sub_modal == "powers" then
+        modals.draw_powers(ctx)
     elseif lobby.sub_modal == "voice" and lobby.voice then
         modals.draw_voice(ctx)
     else

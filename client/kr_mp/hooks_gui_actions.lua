@@ -7,7 +7,9 @@ local M = {}
 
 local function power_deny_toast(hooks, idx, owner, reason)
     if not hooks.overlay then return end
-    if reason == "hero_ult" then
+    if reason == "host_cataclysm" then
+        hooks.overlay:show_toast("天灾法术仅由 1P 房主操控！", 2.2)
+    elseif reason == "hero_ult" then
         hooks.overlay:show_toast(string.format("那是 %dP 队友的英雄大招！", owner or 0), 2.2)
     elseif reason == "cooldown" then
         local info = hooks.coop and hooks.coop:get_power_slot_info(idx)
@@ -593,6 +595,26 @@ local function install_wave_and_hotkey_hooks(hooks, game_gui)
                     for i = 1, #pow_checks do
                         local sc_name, slot_id, fallback_k = pow_checks[i][1], pow_checks[i][2], pow_checks[i][3]
                         if match_sc(sc_name) or ((not ok_ss or not ss_mod or not ss_mod.matches) and key == fallback_k) then
+                            -- In Co-op, Slot 3 always maps to local player's own hero ult (hidden slots a/s disabled)
+                            if slot_id == "a" or slot_id == "s" then
+                                return true
+                            end
+                            if slot_id == 3 then
+                                local ult_slot = hooks.coop.local_ult_slot
+                                if not ult_slot then
+                                    return true
+                                end
+                                local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, ult_slot)
+                                if not ok_p then
+                                    power_deny_toast(hooks, ult_slot, owner, reason)
+                                    return true
+                                end
+                                if ult_slot == "a" and self_gui.power_a and not self_gui.power_a.hidden and not self_gui.power_a:is_disabled() then
+                                    self_gui.power_a:toggle_selection()
+                                    return true
+                                end
+                                break
+                            end
                             local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, slot_id)
                             if not ok_p then
                                 power_deny_toast(hooks, slot_id, owner, reason)

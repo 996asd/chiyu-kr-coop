@@ -416,6 +416,87 @@ local function install_misc_determinism_hooks(hooks)
             return orig_save_slot(self_s, ...)
         end
     end)
+
+    -- Co-op per-player Slot 2 Reinforcements, dual-peer asset preloading & dual G5 branch templates
+    local loadout = require("kr_mp.coop_loadout")
+    local ok_ps, psel = pcall(require, "power_selection")
+    if ok_ps and type(psel) == "table" then
+        hooks.wrap_once(psel, "get", "coop_psel", function(orig_get)
+            return function(user_data, slot)
+                if hooks:is_mp_active() and slot == 2 then
+                    local actor = hooks.coop._active_power_actor or hooks.coop.local_pid or 1
+                    local spec = hooks.coop:get_player_reinf_spec(actor)
+                    if spec and spec.option_id and psel.options and psel.options[spec.option_id] then
+                        return psel.options[spec.option_id], spec.option_id
+                    end
+                end
+                return orig_get(user_data, slot)
+            end
+        end)
+        hooks.wrap_once(psel, "get_selected_dependencies", "coop_psel", function(orig_deps)
+            return function(user_data)
+                local base = orig_deps(user_data)
+                if hooks:is_mp_active() then
+                    return loadout.merge_power_dependencies(base, psel, hooks.coop)
+                end
+                return base
+            end
+        end)
+    end
+
+    local ok_gu, gen_up = pcall(require, "generation_upgrades")
+    if ok_gu and type(gen_up) == "table" then
+        hooks.wrap_once(gen_up, "g4_reinforcement_branch", "coop_reinf_br", function(orig_g4_br)
+            return function(user_data)
+                if hooks:is_mp_active() and hooks.coop._active_g4_branch then
+                    return hooks.coop._active_g4_branch
+                end
+                return orig_g4_br(user_data)
+            end
+        end)
+        hooks.wrap_once(gen_up, "g5_reinforcement_branch", "coop_reinf_br", function(orig_g5_br)
+            return function(user_data)
+                if hooks:is_mp_active() and hooks.coop._active_g5_branch then
+                    return hooks.coop._active_g5_branch
+                end
+                return orig_g5_br(user_data)
+            end
+        end)
+    end
+
+    local ok_up, UP = pcall(require, "upgrades")
+    if ok_up and type(UP) == "table" then
+        hooks.wrap_once(UP, "patch_templates", "coop_up", function(orig_patch)
+            return function(self_up, max_level)
+                local res = orig_patch(self_up, max_level)
+                if hooks:is_mp_active() and hooks.coop.max_tech then
+                    loadout.patch_both_g5_reinf_templates()
+                end
+                return res
+            end
+        end)
+        hooks.wrap_once(UP, "get_upgrade", "coop_up", function(orig_get_u)
+            return function(self_up, name)
+                if hooks:is_mp_active() and hooks.coop.max_tech and hooks.coop._active_g5_branch then
+                    local br = hooks.coop._active_g5_branch
+                    if br == "dark" then
+                        if name == "reinforcements_shadow_archer" or name == "reinforcements_power_trio_dark" then
+                            return (ok_gu and gen_up and gen_up.get and gen_up.get(name)) or orig_get_u(self_up, name)
+                        elseif name == "reinforcements_rebel_militia" or name == "reinforcements_power_trio" then
+                            return nil
+                        end
+                    elseif br == "royal" then
+                        if name == "reinforcements_rebel_militia" or name == "reinforcements_power_trio" then
+                            return (ok_gu and gen_up and gen_up.get and gen_up.get(name)) or orig_get_u(self_up, name)
+                        elseif name == "reinforcements_shadow_archer" or name == "reinforcements_power_trio_dark" then
+                            return nil
+                        end
+                    end
+                end
+                return orig_get_u(self_up, name)
+            end
+        end)
+    end
 end
 
 function M.install(hooks)

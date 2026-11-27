@@ -2,6 +2,7 @@
 -- Extracted from lobby_ui.lua to keep modules cohesive and <= 1,000 lines.
 local proto = require("kr_mp.proto")
 local catalog = require("kr_mp.catalog")
+local loadout = require("kr_mp.coop_loadout")
 local autotest = require("kr_mp.autotest")
 
 local M = {}
@@ -172,6 +173,18 @@ function M.load_prefs(lobby)
         end
         if #deck >= 1 then lobby.room.towers = deck end
     end
+    if type(obj.room_cataclysm) == "string" then
+        lobby.room.cataclysm = loadout.normalize_cataclysm(obj.room_cataclysm)
+    end
+    if type(obj.room_reinforcements) == "table" then
+        lobby.room.reinforcements = {
+            loadout.normalize_reinf(obj.room_reinforcements[1]),
+            loadout.normalize_reinf(obj.room_reinforcements[2]),
+        }
+    end
+    if obj.room_max_tech ~= nil then
+        lobby.room.max_tech = (obj.room_max_tech == true)
+    end
     lobby.ensure_room_defaults(lobby.room)
 
     if obj.show_tower_marks ~= nil and lobby.coop then
@@ -218,6 +231,12 @@ function M.save_prefs(lobby)
         room_tower_mode = r.tower_mode or "owned",
         room_heroes = r.heroes or { catalog.DEFAULT_HERO_1 or 53, catalog.DEFAULT_HERO_2 or 54 },
         room_towers = r.towers or catalog.DEFAULT_TOWERS,
+        room_cataclysm = loadout.normalize_cataclysm(r.cataclysm),
+        room_reinforcements = {
+            loadout.normalize_reinf(r.reinforcements and r.reinforcements[1]),
+            loadout.normalize_reinf(r.reinforcements and r.reinforcements[2]),
+        },
+        room_max_tech = (r.max_tech ~= false),
         show_tower_marks = (lobby.coop == nil) or (lobby.coop.show_tower_marks ~= false),
         voice_mode = lobby.voice and lobby.voice.mode or "ptt",
         voice_mic_gain = lobby.voice and lobby.voice.mic_gain or 1.0,

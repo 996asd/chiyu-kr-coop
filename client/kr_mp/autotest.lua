@@ -218,6 +218,12 @@ function autotest:step_auto_coop(lobby, dt)
                 local h1, h2 = env_heroes:match("^(%d+),(%d+)$")
                 if h1 and h2 then lobby.room.heroes = { tonumber(h1), tonumber(h2) } end
             end
+            local env_cat = os.getenv("KR_MP_TEST_CATACLYSM")
+            if env_cat and #env_cat > 0 then lobby.room.cataclysm = env_cat end
+            local env_r1 = os.getenv("KR_MP_TEST_REINF1")
+            local env_r2 = os.getenv("KR_MP_TEST_REINF2")
+            if env_r1 and #env_r1 > 0 then lobby.room.reinforcements[1] = env_r1 end
+            if env_r2 and #env_r2 > 0 then lobby.room.reinforcements[2] = env_r2 end
             if lobby:host_lan_room() then self.stage = "HOST_WAIT_GUEST" end
         else
             lobby.transport:start_lan_scan()

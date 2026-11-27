@@ -7,6 +7,7 @@
 local proto = require("kr_mp.proto")
 local fonts = require("kr_mp.fonts")
 local catalog = require("kr_mp.catalog")
+local loadout = require("kr_mp.coop_loadout")
 local updater = require("kr_mp.updater")
 local lobby_prefs = require("kr_mp.lobby_prefs")
 local lobby_input = require("kr_mp.lobby_input")
@@ -49,6 +50,7 @@ local function ensure_room_defaults(r)
     r.econ_mode = r.econ_mode or "independent"
     r.tower_mode = r.tower_mode or "owned"
     r.input_delay_turns = normalize_delay_turns(r.input_delay_turns)
+    loadout.normalize_room_loadout(r)
 end
 
 local lobby = {
@@ -79,6 +81,7 @@ local lobby = {
     stage_page = 1,
     hero_pack_idx = 1,
     tower_pack_idx = 1,
+    reinf_edit_pid = 1,
 
     -- Input fields & focus
     focused_field = nil, -- nil | "sakura_ip" | "lan_ip" | "server" | "code" | "pw" | "sakura_token"
@@ -131,6 +134,9 @@ local lobby = {
         input_delay_turns = proto.INPUT_DELAY_TURNS,
         heroes = { [1] = catalog.DEFAULT_HERO_1 or 53, [2] = catalog.DEFAULT_HERO_2 or 54 },
         towers = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 },
+        cataclysm = loadout.DEFAULT_CATACLYSM,
+        reinforcements = { [1] = loadout.DEFAULT_REINF, [2] = loadout.DEFAULT_REINF },
+        max_tech = true,
     },
 
     buttons = {},
@@ -705,7 +711,7 @@ function lobby:host_start_match()
 
     local seed = (os.time() % 900000) + 100000
     local match_id = string.format("%06d-%06d", os.time() % 1000000, math.random(100000, 999999))
-    local slot_snap = self.coop:build_host_slot_snapshot(self.room.heroes, self.room.towers)
+    local slot_snap = self.coop:build_host_slot_snapshot(self.room.heroes, self.room.towers, self.room)
     local delay_turns = normalize_delay_turns(self.room.input_delay_turns)
     local measured_rtt = (self.transport and self.transport:get_rtt_ms()) or 0
     if not autotest:is_active() then
@@ -733,6 +739,9 @@ function lobby:host_start_match()
         tower_mode = self.room.tower_mode,
         heroes = { self.room.heroes[1], self.room.heroes[2] },
         towers = copy_array(self.room.towers),
+        cataclysm = self.room.cataclysm,
+        reinforcements = { self.room.reinforcements[1], self.room.reinforcements[2] },
+        max_tech = (self.room.max_tech ~= false),
         slot_snapshot = slot_snap,
     }
 
@@ -758,6 +767,7 @@ function lobby:toggle_ready(force_ready)
         t = "SET_GUEST",
         ready = self.local_ready,
         hero_idx = self.room and self.room.heroes and self.room.heroes[2] or (catalog.DEFAULT_HERO_2 or 54),
+        reinf = self.room and self.room.reinforcements and self.room.reinforcements[2] or loadout.DEFAULT_REINF,
     })
     return self.local_ready
 end
@@ -976,9 +986,13 @@ end
 
 function MSG_HANDLERS.SET_GUEST(self, msg)
     if self.role ~= "host" or self.transport:is_online() then return end
+    ensure_room_defaults(self.room)
     if msg.ready ~= nil then self.peer_ready = msg.ready end
     if msg.hero_idx then
         self.room.heroes[2] = tonumber(msg.hero_idx) or self.room.heroes[2]
+    end
+    if type(msg.reinf) == "string" and #msg.reinf > 0 then
+        self.room.reinforcements[2] = loadout.normalize_reinf(msg.reinf)
     end
     self:broadcast_room_state()
 end

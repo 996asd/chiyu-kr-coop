@@ -6,6 +6,7 @@ local E = require("entity_db")
 local km = require("klua.macros")
 local fonts = require("kr_mp.fonts")
 local catalog = require("kr_mp.catalog")
+local loadout = require("kr_mp.coop_loadout")
 
 local coop = {
     boot = nil,
@@ -19,6 +20,13 @@ local coop = {
 
     econ_mode = "independent", -- "independent" | "shared"
     tower_mode = "owned",      -- "owned" | "open"
+    cataclysm = loadout.DEFAULT_CATACLYSM,
+    reinforcements = { [1] = loadout.DEFAULT_REINF, [2] = loadout.DEFAULT_REINF },
+    max_tech = true,
+    local_ult_slot = nil,
+    _active_power_actor = nil,
+    _active_g4_branch = nil,
+    _active_g5_branch = nil,
 
     gold = { [1] = 0, [2] = 0 },
     shared_gold = 0,
@@ -118,6 +126,12 @@ function coop:init(boot, lockstep, overlay)
                 end
             end
         end)
+        -- Scheme B: automatically scale KR2..5 non-ultimate hero skills at Hero Lv.4 (Lv.2) and Lv.7 (Lv.3)
+        signal.register("hero-level-increased", function(hero)
+            if self.active and hero and game and game.store then
+                loadout.upgrade_hero_skills_for_level(hero, game.store)
+            end
+        end)
     end
 end
 
@@ -138,7 +152,7 @@ function coop:get_slot_override()
     return nil
 end
 
-function coop:build_host_slot_snapshot(heroes, towers)
+function coop:build_host_slot_snapshot(heroes, towers, room_loadout)
     local storage = require("storage")
     if not storage:load_slot(1) then
         storage:create_slot(1)
@@ -151,7 +165,7 @@ function coop:build_host_slot_snapshot(heroes, towers)
     snap.seen = snap.seen or {}
     snap.bag = snap.bag or {}
     snap.upgrades = snap.upgrades or {
-        archers = 0, barracks = 0, mages = 0, engineers = 0, reinforcements = 0, rain = 0
+        archers = 0, barracks = 0, mages = 0, rocks = 0, thunder = 0, reinforcements = 0
     }
     snap.heroes = snap.heroes or { selected = "hero_vesper", status = {} }
     snap.heroes.status = snap.heroes.status or {}
@@ -200,6 +214,17 @@ function coop:build_host_slot_snapshot(heroes, towers)
     snap.xingyu = snap.xingyu or { balance = 0 }
     if snap.xingyu.balance == nil then snap.xingyu.balance = 0 end
 
+    local ld = type(room_loadout) == "table" and room_loadout or {}
+    local want_max_tech = (ld.max_tech ~= false)
+
+    -- Apply Slot 1 (Cataclysm) + Slot 2 (P1 Reinforcement) + Slot 3 (Hero Ultimate)
+    loadout.apply_power_slots_to_snapshot(snap, ld)
+
+    -- Apply 1..6 gen maxed tech upgrades to in-memory snapshot only (when enabled)
+    if want_max_tech then
+        loadout.apply_max_tech_to_snapshot(snap, ld)
+    end
+
     local ok_gu, gen_up = pcall(require, "generation_upgrades")
     if ok_gu and gen_up and gen_up.normalize then
         pcall(gen_up.normalize, snap)
@@ -221,33 +246,8 @@ function coop:build_host_slot_snapshot(heroes, towers)
         herolist = { [1] = h1, [2] = h2 },
         rallylist = { h1, h2, h1, h2 },
     }
-    -- Ensure both chosen heroes have valid status entries without injecting hr_cost-less skills on KR6/KR1 heroes
-    -- (prevents screen_map.lua:705 hr_cost nil crash when returning to world map after playing a KR6 hero like Bolin!)
-    local ok_md, map_data = pcall(require, "data.map_data")
-    if ok_md and map_data and map_data.hero_data then
-        for _, hidx in ipairs({ h1, h2 }) do
-            local hd = map_data.hero_data[hidx]
-            if hd and hd.name then
-                local is_g6 = (ok_h6 and h6 and h6.is_hero and h6.is_hero(hd.name)) == true
-                local existing = snap.heroes.status[hd.name]
-                if not existing then
-                    local default_skills = {}
-                    if not is_g6 then
-                        local tpl = E and E.entities and E.entities[hd.name]
-                        if tpl and tpl.hero and tpl.hero.skills and tpl.hero.skills.ultimate and tpl.hero.skills.ultimate.hr_cost then
-                            default_skills = { ultimate = 1 }
-                        end
-                    end
-                    snap.heroes.status[hd.name] = {
-                        xp = 0,
-                        skills = default_skills,
-                    }
-                elseif is_g6 then
-                    existing.skills = {}
-                end
-            end
-        end
-    end
+    -- Scheme B hero initialization: Lv.1 start + max Lv.3 Ultimate + Lv.1 normal skills (auto-tier at Lv.4 & Lv.7)
+    loadout.apply_hero_scheme_b_to_snapshot(snap, { h1, h2 })
     return snap
 end
 
@@ -258,6 +258,16 @@ function coop:prepare_match(local_pid, cfg, reconnect_data)
     self.slot_snapshot = deep_copy(cfg.slot_snapshot)
     self.econ_mode = cfg.econ_mode or "independent"
     self.tower_mode = cfg.tower_mode or "owned"
+    self.cataclysm = loadout.normalize_cataclysm(cfg.cataclysm)
+    self.reinforcements = {
+        [1] = loadout.normalize_reinf(cfg.reinforcements and cfg.reinforcements[1]),
+        [2] = loadout.normalize_reinf(cfg.reinforcements and cfg.reinforcements[2]),
+    }
+    self.max_tech = (cfg.max_tech ~= false)
+    self.local_ult_slot = nil
+    self._active_power_actor = nil
+    self._active_g4_branch = nil
+    self._active_g5_branch = nil
     self.gold = { [1] = 0, [2] = 0 }
     self.shared_gold = 0
     self.gold_split_parity = 0
@@ -311,6 +321,7 @@ function coop:prepare_match(local_pid, cfg, reconnect_data)
             GS.difficulty_enemy_speed_factor[3] = 1
             GS.difficulty_enemy_speed_factor[4] = 1.1
         end
+        loadout.apply_coop_xp_boost(GS)
     end
 
     if main and main.handler then
@@ -362,6 +373,14 @@ function coop:leave_match()
     self.cfg = nil
     self.slot_snapshot = nil
     self.pings = {}
+    self.local_ult_slot = nil
+    self._active_power_actor = nil
+    self._active_g4_branch = nil
+    self._active_g5_branch = nil
+    local ok_gs, GS = pcall(require, "game_settings")
+    if ok_gs and GS then
+        loadout.restore_coop_xp_boost(GS)
+    end
     if self.lockstep then
         self.lockstep:reset()
     end
@@ -439,6 +458,15 @@ function coop:on_after_sim_init(store)
 
     self:log("Co-op sim ready: init_gold=%d (P1=%d P2=%d) heroes=(P1:%s, P2:%s)",
         init_g, self.gold[1], self.gold[2], tostring(self.hero_ids[1]), tostring(self.hero_ids[2]))
+end
+
+function coop:on_game_gui_ready(game_gui)
+    if not self.active or not game_gui then return end
+    loadout.configure_local_power_bar(self, game_gui)
+end
+
+function coop:get_player_reinf_spec(pid)
+    return loadout.get_player_reinf_spec(self.reinforcements, pid or self.local_pid or 1)
 end
 
 function coop:on_game_ready()
@@ -728,20 +756,25 @@ function coop:can_use_power(pid, power_idx)
         end
         return true, pid, "reinforcement"
     elseif info.kind == "shared_spell" then
-        -- Shared battlefield spells (Thunderbolt / Rain of Fire / KR6 powers): both players can cast when off cooldown!
+        -- Slot 1 Cataclysm is exclusively controlled by 1P Host!
+        if power_idx == 1 and pid ~= 1 then
+            return false, 1, "host_cataclysm"
+        end
         local ready = self.shared_power_ready_tick[power_idx] or 0
         if cur_tick < ready then
             return false, nil, "cooldown"
         end
-        return true, nil, "shared_spell"
+        return true, 1, "shared_spell"
     end
     return true, nil, info.kind
 end
 
-function coop:on_power_fired(pid, power_idx, btn)
+function coop:on_power_fired(pid, power_idx, btn_or_cd)
     if not self.active then return end
     local info = self:get_power_slot_info(power_idx)
-    local cd_sec = (btn and tonumber(btn.cooldown_time)) or 15
+    local cd_sec = (type(btn_or_cd) == "number" and btn_or_cd)
+        or (type(btn_or_cd) == "table" and tonumber(btn_or_cd.cooldown_time))
+        or 15
     local cd_ticks = math.max(1, math.floor(cd_sec / (TICK_LENGTH or (1 / 60)) + 0.5))
     local cur_tick = (game and game.store and game.store.tick) or 0
     if info.kind == "reinforcement" then

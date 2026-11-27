@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -101,5 +102,44 @@ func TestCreateRoomCooldownPerIPCapAndSanitize(t *testing.T) {
 	hub.HandleMessage(c3, &IncomingMsg{Type: "CREATE_ROOM", Name: "Room3"})
 	if c3.roomCode != "" {
 		t.Fatalf("c3 should be blocked by maxRoomsPerIP=2, got room %s", c3.roomCode)
+	}
+}
+
+func TestSetGuestReinfPatch(t *testing.T) {
+	hub := NewHubWithLimits(50, 100, 10, 4, 60*time.Second)
+	mkClient := func(ip string) *Client {
+		c := &Client{remoteIP: ip, hub: hub, sendCh: make(chan []byte, 16), done: make(chan struct{})}
+		hub.TryRegisterClient(c)
+		return c
+	}
+	host := mkClient("127.0.0.1")
+	guest := mkClient("127.0.0.1")
+	hub.HandleMessage(host, &IncomingMsg{
+		Type: "CREATE_ROOM",
+		Name: "ReinfTest",
+		Room: json.RawMessage(`{"name":"ReinfTest","heroes":[53,54],"reinforcements":["reinforcement_g4_dark","default_reinforcement"],"cataclysm":"fireball_g6","max_tech":true}`),
+	})
+	if host.roomCode == "" {
+		t.Fatalf("host failed to create room")
+	}
+	hub.HandleMessage(guest, &IncomingMsg{Type: "JOIN_ROOM", Code: host.roomCode})
+	if guest.roomCode != host.roomCode {
+		t.Fatalf("guest failed to join room")
+	}
+	h2 := 65
+	hub.HandleMessage(guest, &IncomingMsg{Type: "SET_GUEST", HeroIdx: &h2, Reinf: "reinforcement_g5_royal"})
+
+	r := hub.rooms[host.roomCode]
+	var roomMap map[string]any
+	if err := json.Unmarshal(r.RoomJSON, &roomMap); err != nil {
+		t.Fatalf("unmarshal room JSON failed: %v", err)
+	}
+	reinfs, ok := roomMap["reinforcements"].([]any)
+	if !ok || len(reinfs) != 2 || reinfs[0] != "reinforcement_g4_dark" || reinfs[1] != "reinforcement_g5_royal" {
+		t.Fatalf("unexpected reinforcements after SET_GUEST: %#v", roomMap["reinforcements"])
+	}
+	heroes, ok := roomMap["heroes"].([]any)
+	if !ok || len(heroes) != 2 || int(heroes[1].(float64)) != 65 {
+		t.Fatalf("unexpected heroes after SET_GUEST: %#v", roomMap["heroes"])
 	}
 }

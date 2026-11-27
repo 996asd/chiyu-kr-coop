@@ -792,19 +792,36 @@ func (h *Hub) onSetGuestLocked(c *Client, msg *IncomingMsg) {
 	if msg.Ready != nil {
 		r.Seats[2].Ready = *msg.Ready
 	}
-	if msg.HeroIdx != nil {
-		// Patch heroes[1] (second element = P2 hero) in RoomJSON safely
+	if msg.HeroIdx != nil || msg.Reinf != "" {
+		// Patch heroes[1] (P2 hero) and/or reinforcements[1] (P2 reinforcement) in RoomJSON safely
 		var roomMap map[string]any
 		if err := json.Unmarshal(r.RoomJSON, &roomMap); err == nil {
-			if heroes, ok := roomMap["heroes"].([]any); ok && len(heroes) >= 2 {
-				heroes[1] = *msg.HeroIdx
-				roomMap["heroes"] = heroes
-			} else {
-				h1 := 48
-				if len(r.Meta.Heroes) >= 1 {
-					h1 = r.Meta.Heroes[0]
+			if msg.HeroIdx != nil {
+				if heroes, ok := roomMap["heroes"].([]any); ok && len(heroes) >= 2 {
+					heroes[1] = *msg.HeroIdx
+					roomMap["heroes"] = heroes
+				} else {
+					h1 := 48
+					if len(r.Meta.Heroes) >= 1 {
+						h1 = r.Meta.Heroes[0]
+					}
+					roomMap["heroes"] = []int{h1, *msg.HeroIdx}
 				}
-				roomMap["heroes"] = []int{h1, *msg.HeroIdx}
+			}
+			if msg.Reinf != "" {
+				reinfVal := sanitizeLabel(msg.Reinf, 40, "default_reinforcement")
+				if reinfs, ok := roomMap["reinforcements"].([]any); ok && len(reinfs) >= 2 {
+					reinfs[1] = reinfVal
+					roomMap["reinforcements"] = reinfs
+				} else {
+					r1 := "default_reinforcement"
+					if reinfs, ok := roomMap["reinforcements"].([]any); ok && len(reinfs) >= 1 {
+						if s, ok := reinfs[0].(string); ok && s != "" {
+							r1 = s
+						}
+					}
+					roomMap["reinforcements"] = []string{r1, reinfVal}
+				}
 			}
 			if b, err := json.Marshal(roomMap); err == nil {
 				r.RoomJSON = b

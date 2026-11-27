@@ -1,6 +1,7 @@
 -- KR-MP Lobby Sub-Modal Renderers (Guide / Stages / Heroes / Towers / Voice Mixer)
 local proto = require("kr_mp.proto")
 local catalog = require("kr_mp.catalog")
+local loadout = require("kr_mp.coop_loadout")
 local ui = require("kr_mp.ui_assets")
 
 local M = {}
@@ -516,6 +517,101 @@ function M.draw_voice(ctx)
         add_btn("voice_style_set", st_it.lbl, cx + 14 + (idx_s - 1) * (sw_s + 8), y + 46, sw_s, 32,
             act and "azure" or "parchment", { small = true, style_id = st_it.id })
     end
+end
+
+function M.draw_powers(ctx)
+    local lobby, T, cx, cw, py, fm, add_btn = ctx.lobby, ctx.T, ctx.cx, ctx.cw, ctx.py, ctx.font_map, ctx.add_btn
+    lobby.ensure_room_defaults(lobby.room)
+    local is_host = (lobby.role == "host")
+    local cat_id = loadout.normalize_cataclysm(lobby.room.cataclysm)
+    local r1_info = loadout.get_player_reinf_spec(lobby.room.reinforcements, 1)
+    local r2_info = loadout.get_player_reinf_spec(lobby.room.reinforcements, 2)
+    local max_tech = (lobby.room.max_tech ~= false)
+    local target_pid = is_host and ((lobby.reinf_edit_pid == 2) and 2 or 1) or 2
+    local cur_target_reinf = loadout.normalize_reinf(lobby.room.reinforcements and lobby.room.reinforcements[target_pid])
+
+    local y = py + 42
+    ui.text("1号槽天灾由 1P 房主专控；2号槽援军双方各自选、独立 CD；3号槽按各自英雄配套满级大招。",
+        cx, y + 5, T.ink_sub, fm.tiny, cw - 186, "left")
+    add_btn("powers_default", is_host and "恢复默认" or "重置2P援军", cx + cw - 178, y, 84, 26, "parchment", { tiny = true })
+    add_btn("modal_back", "完成返回", cx + cw - 88, y, 88, 26, "battle", { tiny = true })
+    y = y + 32
+
+    -- Card 1: Slot 1 Cataclysm (Host Only)
+    ui.draw_parchment_card(cx, y, cw, 84, { border = T.p1_border, border_w = 1.8, radius = 9 })
+    ui.draw_pill(cx + 12, y + 8, 178, 20, "1号槽 · 天灾法术 (仅房主控制)", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, fm.tiny_bold)
+    ui.text(is_host and "房主选择本局天灾，进入战斗后仅 1P 房主可释放（2P 可见冷却）。"
+        or "当前由 1P 房主配置天灾，进入战斗后仅 1P 房主可释放（只读预览）。",
+        cx + 198, y + 11, T.ink_muted, fm.tiny, cw - 210, "left")
+    local cat_opts = loadout.CATACLYSM_OPTIONS
+    local c_gap = 6
+    local c_w = math.floor((cw - 24 - (#cat_opts - 1) * c_gap) / #cat_opts)
+    for i, it in ipairs(cat_opts) do
+        local act = (cat_id == it.id)
+        local bx = cx + 12 + (i - 1) * (c_w + c_gap)
+        local style = act and "azure" or "parchment"
+        add_btn("pick_cataclysm", it.name .. "\n" .. it.desc, bx, y + 34, c_w, 40, style, {
+            tiny = true, cat_id = it.id, disabled = (not is_host) and (not act),
+        })
+    end
+    y = y + 92
+
+    -- Card 2: Slot 2 Per-Player Independent Reinforcements (9 options, 3x3 grid)
+    local is_p1_edit = (target_pid == 1)
+    ui.draw_parchment_card(cx, y, cw, 156, {
+        border = is_p1_edit and T.p1_border or T.p2_border, border_w = 1.8, radius = 9,
+    })
+    ui.draw_pill(cx + 12, y + 8, 168, 20, "2号槽 · 独立援军 (双人独立CD)",
+        { 38, 118, 56, 240 }, { 26, 82, 38, 255 }, { 246, 255, 242, 255 }, fm.tiny_bold)
+    if is_host then
+        add_btn("powers_reinf_target", "1P 援军: " .. r1_info.short, cx + 190, y + 6, 174, 24,
+            is_p1_edit and "azure" or "parchment", { tiny = true, pid = 1 })
+        add_btn("powers_reinf_target", "2P 援军: " .. r2_info.short, cx + 372, y + 6, 174, 24,
+            (not is_p1_edit) and "crimson" or "parchment", { tiny = true, pid = 2 })
+        ui.text("可点左侧切换", cx + 556, y + 11, T.ink_muted, fm.tiny, cw - 568, "right")
+    else
+        ui.draw_pill(cx + 190, y + 8, 164, 20, "1P 援军: " .. r1_info.short,
+            T.p1_top, T.p1_border, { 242, 250, 255, 255 }, fm.tiny_bold)
+        ui.draw_pill(cx + 362, y + 8, 208, 20, "你正在选 2P 援军: " .. r2_info.short,
+            T.p2_top, T.p2_border, { 255, 244, 244, 255 }, fm.tiny_bold)
+    end
+
+    local r_opts = loadout.REINF_OPTIONS
+    local r_cols, r_gx, r_gy = 3, 8, 6
+    local r_w = math.floor((cw - 24 - (r_cols - 1) * r_gx) / r_cols)
+    local r_h = 33
+    for i, it in ipairs(r_opts) do
+        local col = (i - 1) % r_cols
+        local row = math.floor((i - 1) / r_cols)
+        local act = (cur_target_reinf == it.id)
+        local st_r = act and (is_p1_edit and "azure" or "crimson") or "parchment"
+        add_btn("pick_reinf", it.name .. " · " .. it.desc,
+            cx + 12 + col * (r_w + r_gx), y + 36 + row * (r_h + r_gy), r_w, r_h, st_r, {
+                tiny = true, reinf_id = it.id, pid = target_pid,
+            })
+    end
+    y = y + 164
+
+    -- Card 3: Slot 3 Hero Ult + Scheme B Progression & 1..6 Gen Max Tech
+    ui.draw_parchment_card(cx, y, cw, 110, { border = { 138, 94, 40, 245 }, border_w = 1.8, radius = 9 })
+    ui.draw_pill(cx + 12, y + 9, 212, 20, "3号槽 · 英雄配套大招 & 快速成长",
+        T.wood_mid, T.ink_dark, T.gold_bright, fm.tiny_bold)
+    ui.text("• 双方按「3」直接施放各自英雄的满级大招，界面仅保留干净的 1/2/3 三槽。",
+        cx + 14, y + 36, T.ink_text, fm.tiny, 376, "left")
+    ui.text("• 英雄 1 级起步，局内 2× 快速升级；2~5 代小技能随等级 1→4→7 级自动升满！",
+        cx + 14, y + 66, T.ink_sub, fm.tiny, 376, "left")
+
+    local tx = cx + 402
+    local tw = cw - 414
+    ui.draw_pill(tx, y + 9, 198, 20, "1~6 代全科技加点 (联机快照)",
+        max_tech and { 38, 128, 62, 245 } or T.wood_mid, T.ink_dark, { 255, 252, 238, 255 }, fm.tiny_bold)
+    local tb_w = math.floor((tw - 8) / 2)
+    add_btn("set_max_tech", max_tech and "全满级科技 √" or "全满级科技", tx, y + 36, tb_w, 34,
+        max_tech and "battle" or "parchment", { small = true, val = true, disabled = (not is_host) and (not max_tech) })
+    add_btn("set_max_tech", (not max_tech) and "跟随房主存档 √" or "跟随房主存档", tx + tb_w + 8, y + 36, tb_w, 34,
+        (not max_tech) and "wood" or "parchment", { small = true, val = false, disabled = (not is_host) and max_tech })
+    ui.text("满级科技与成长仅在本局内存生效，绝不修改玩家本地单机存档。",
+        tx, y + 77, T.ink_muted, fm.tiny, tw, "left")
 end
 
 return M

@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	ServerVersion = "2.3.1"
+	ServerVersion = "2.4.0"
 	ProtocolVer   = 3
 )
 
@@ -34,8 +34,9 @@ type IncomingMsg struct {
 	Room     json.RawMessage `json:"room,omitempty"`
 
 	// Guest settings
-	Ready   *bool `json:"ready,omitempty"`
-	HeroIdx *int  `json:"hero_idx,omitempty"`
+	Ready   *bool  `json:"ready,omitempty"`
+	HeroIdx *int   `json:"hero_idx,omitempty"`
+	Reinf   string `json:"reinf,omitempty"`
 
 	// Match lifecycle & lockstep turns
 	Cfg   json.RawMessage `json:"cfg,omitempty"`

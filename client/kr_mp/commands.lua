@@ -297,23 +297,41 @@ function HANDLERS.POWER_FIRE(ctx, cmd)
 
     local slot_info = ctx.mp_on and ctx.coop:get_power_slot_info(cmd.idx) or nil
     local is_indep_reinf = (slot_info and slot_info.kind == "reinforcement") or (not slot_info and cmd.idx == 2)
+
+    -- Bind per-player reinforcement selection & branch deterministically for this actor
+    local prev_actor, prev_g4, prev_g5
+    if ctx.mp_on and is_indep_reinf then
+        prev_actor = ctx.coop._active_power_actor
+        prev_g4 = ctx.coop._active_g4_branch
+        prev_g5 = ctx.coop._active_g5_branch
+        ctx.coop._active_power_actor = ctx.pid
+        local spec = ctx.coop:get_player_reinf_spec(ctx.pid)
+        ctx.coop._active_g4_branch = (spec and spec.gen == 4 and spec.branch) or nil
+        ctx.coop._active_g5_branch = (spec and spec.gen == 5 and spec.branch) or nil
+    end
+
+    local fired_cd = nil
+    local ok_p, err_p
     if ctx.mp_on and ctx.pid ~= ctx.coop.local_pid then
         -- Remote player fired power: never interrupt local targeting or local independent reinforcement cooldown
         local orig_set_mode = gui.set_mode
         local saved_btn_mode = btn.mode
+        local saved_cd_time = btn.cooldown_time
         local saved_cd_start = btn.cooldown_view and btn.cooldown_view.start_ts
         local saved_cd_sy = btn.cooldown_view and btn.cooldown_view.scale and btn.cooldown_view.scale.y
         local saved_cd_hidden = btn.cooldown_view and btn.cooldown_view.hidden
         local saved_disabled = btn._disabled
         gui.set_mode = function() end
-        local ok_p, err_p = pcall(orig_fn, btn, cmd.wx, cmd.wy)
+        ok_p, err_p = pcall(orig_fn, btn, cmd.wx, cmd.wy)
         gui.set_mode = orig_set_mode
+        fired_cd = tonumber(btn.cooldown_time)
         if is_indep_reinf then
             local S_mod = require("sound_db")
             local orig_sq = S_mod and S_mod.queue
             if S_mod and orig_sq then S_mod.queue = function() end end
             if btn.set_mode then pcall(btn.set_mode, btn, saved_btn_mode) end
             if S_mod and orig_sq then S_mod.queue = orig_sq end
+            btn.cooldown_time = saved_cd_time
             if btn.cooldown_view then
                 btn.cooldown_view.start_ts = saved_cd_start
                 if saved_cd_hidden ~= nil then btn.cooldown_view.hidden = saved_cd_hidden end
@@ -321,12 +339,19 @@ function HANDLERS.POWER_FIRE(ctx, cmd)
             end
             if saved_disabled ~= nil then btn._disabled = saved_disabled end
         end
-        if not ok_p then error(err_p) end
     else
-        orig_fn(btn, cmd.wx, cmd.wy)
+        ok_p, err_p = pcall(orig_fn, btn, cmd.wx, cmd.wy)
+        fired_cd = tonumber(btn.cooldown_time)
     end
+
+    if ctx.mp_on and is_indep_reinf then
+        ctx.coop._active_power_actor = prev_actor
+        ctx.coop._active_g4_branch = prev_g4
+        ctx.coop._active_g5_branch = prev_g5
+    end
+    if not ok_p then error(err_p) end
     if ctx.mp_on then
-        ctx.coop:on_power_fired(ctx.pid, cmd.idx, btn)
+        ctx.coop:on_power_fired(ctx.pid, cmd.idx, fired_cd or btn)
     end
 end
 
