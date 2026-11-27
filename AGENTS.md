@@ -25,6 +25,12 @@
    - 中文字体直接复用 FL 8.2.0 内置的 `all-desktop/assets/fonts/HarmonyOS_Sans_SC.ttf`（经 `client/kr_mp/fonts.lua` 加载），不要塞入外部字体文件。注意不要使用鸿蒙简中字体缺失的生僻符号（例如勾选请用 `√`，不要用 `✓`）。
 4. **先验证再提交**：
    - 修改 `client/` 代码后必须同步到沙盒并跑通回归验证；修改 `server/` 代码后必须通过 `go vet ./...` 与 `go build`。
+5. **防“屎山”模块化与可维护性铁律**：
+   - **扁平模块结构**：所有客户端 Lua 模块统一扁平放在 `client/kr_mp/*.lua`（不要建子目录），确保 PC/安卓增量 OTA 热更新器与打包脚本 100% 兼容。
+   - **统一补丁注册**：新增引擎 Hook 必须通过 `hooks.wrap_once(tbl, key, tag, builder)` 或 `hooks.wrap_local_ui(tbl, method)` 注册，**禁止**往原版引擎对象上零散粘贴新的 `_kr_mp_*_wrapped` 标记。
+   - **体积与职责边界**：新文件及重构后模块尽量控制在 **≤ 1,000 行**、单个业务/渲染函数尽量 **≤ 150 行**；超过 6 个分支的指令/消息/按钮分发优先使用表驱动（`HANDLERS[key]`）。
+   - **测试与业务解耦**：多进程自动化回归测试逻辑统一放在 `client/kr_mp/autotest.lua`，禁止混入正式大厅状态机或 UI 渲染文件。
+   - **校验规则单点收口**：前后端（拦截层 `hooks_gui_actions.lua` 与执行层 `commands.lua`）共用的权限、价格或坐标量化逻辑只写一份共享函数，禁止双边手抄。
 
 ---
 
@@ -39,20 +45,30 @@ kr-mp-mod/
 │       ├── proto.lua           # 协议版本号、纯 Lua 安全 JSON 编解码、FL 核心脚本哈希（FNV-1a）
 │       ├── prng.lua            # 双流 Mulberry32 确定性 PRNG（sim 战斗流 vs vis 视觉流）
 │       ├── state_hash.lua      # 每 30 帧 32-bit FNV-1a 状态哈希（金币/血量/波次/PRNG/实体）
-│       ├── hooks.lua           # 核心引擎钩子（确定性 pairs/filter/协程、双 ID 空间、A*缓存绕过、跳过漫画、sim.update 锁步驱动）
-│       ├── commands.lua        # 12 类原版操作 + SEND_GOLD / MAP_PING / SYNC_PAUSE 的拦截、校验与重放
-│       ├── lockstep.lua        # 60Hz 帧同步状态机（LOAD_DONE 屏障、1x/2x 倍速、断线保局、高速追帧重连）
-│       ├── coop.lua            # 2P 合作层（双英雄归属、独立/共享经济账本、红蓝塔权、59选12卡组快照、世界标签与打点渲染）
+│       ├── hooks.lua           # Hook 总协调器与弱表注册器（hooks.wrap_once / hooks.wrap_local_ui / 本地实体隔离判定）
+│       ├── hooks_determinism.lua # 确定性 pairs/filter/协程、SSO 空间网格、双 ID 空间、A*缓存绕过、跳过漫画、存档快照
+│       ├── hooks_sim.lua       # sim.init/update/do_tick 锁步驱动、main_script 隔离排序、医疗包确定性、game 生命周期
+│       ├── hooks_gui_actions.lua # 战斗操作拦截（技能/英雄/援军拖拽/建塔升级/换塔/打点/出怪/快捷键）
+│       ├── hooks_gui_guards.lua  # UI 到仿真泄露隔离（trigger_deselect/menu_shown/PauseView/DragEntityView 保护）
+│       ├── commands.lua        # 表驱动指令队列与执行器（HANDLERS[op]，含单点价格/坐标量化）
+│       ├── lockstep.lua        # 60Hz 帧同步状态机（LOAD_DONE 屏障、1x/2x 倍速、断线保局、对称 DESYNC_DIAG、高速追帧重连）
+│       ├── coop.lua            # 2P 合作层（双英雄归属、独立/共享经济账本、红蓝塔权、动态技能槽归属、世界标签与打点渲染）
 │       ├── catalog.lua         # FL 8.2.0 完整中文目录（201 关 + 105 英雄 + 59 座防御塔）
 │       ├── fonts.lua           # 复用内置 HarmonyOS_Sans_SC.ttf 的字号缓存器
-│       ├── lobby_ui.lua        # 全中文双模式大厅（局域网 + 公网服务器 + 三大选择器 + 一键重连 + 自动化测试驱动）
-│       ├── overlay.lua         # 顶部居中紧凑中文 HUD（金币/延迟/校验/倍速/暂停/转50金/追帧进度条）
+│       ├── ui_assets.lua       # 皇家战桌铁皮羊皮纸/木纹/蜡封/缩略图/声波等复用 UI 组件库
+│       ├── lobby_ui.lua        # 联机大厅核心状态机、偏好与重连会话持久化、局域网/公网房间通信与消息分发
+│       ├── lobby_input.lua     # 大厅键盘/鼠标/剪贴板输入与表驱动按钮分发（BTN_HANDLERS）
+│       ├── lobby_draw.lua      # 皇家战桌首页与备战房间主渲染器
+│       ├── lobby_draw_modals.lua # 新手教程 / 201 关 / 105 英雄 / 59 选 12 塔 / 语音调音弹窗渲染器
+│       ├── autotest.lua        # M1/M2 多进程自动化联机回归测试驱动（与正式 UI 完全解耦）
+│       ├── overlay.lua         # 顶部居中紧凑中文 HUD（金币/延迟/校验/倍速/暂停/转50金/语音调音/追帧进度条）
+│       ├── voice.lua           # 内置低延迟双向连麦语音（ADPCM/按V/自由麦/闭麦/混音增益/声波状态）
 │       ├── transport.lua       # 局域网与公网统一传输层抽象
 │       ├── net_lan.lua         # 局域网 TCP + UDP 17778 广播自动发现
 │       ├── net_online.lua      # 公网 Go 中继服 TCP 客户端
-│       ├── updater.lua         # love.thread + WinINet 后台无黑框异步检查新版本（Gitee 主源 / GitHub 备源）
+│       ├── updater.lua         # love.thread + WinINet/LuaHTTPS 后台检查与 SHA-256 增量热更新（Gitee 主源 / GitHub 备源）
 │       ├── replay.lua          # M0 单机录制/回放确定性验证器（F6/F7/F8）
-│       └── manifest.json       # 自动生成的官方文件 SHA-256 清单（供报错诊断与修改导出比对）
+│       └── manifest.json       # 自动生成的官方文件 SHA-256 清单（供 OTA 热更、报错诊断与修改导出比对）
 ├── server/                     # 零依赖 Go 公网大厅与帧中继服务端
 │   ├── go.mod
 │   ├── protocol.go             # 协议结构（原样透传 Lua JSON，SetEscapeHTML(false)）
