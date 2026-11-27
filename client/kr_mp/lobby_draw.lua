@@ -87,48 +87,47 @@ local function draw_home_sakura(ctx, y)
     y, has_direct_rc = draw_direct_reconnect_banner(ctx, y)
 
     local card_w = math.floor((cw - 14) / 2)
-    local card_h = has_direct_rc and 146 or 158
+    local card_h = has_direct_rc and 144 or 154
+    local main_btn_h = has_direct_rc and 31 or 32
+    local main_btn_y = y + card_h - (has_direct_rc and 38 or 40)
     local sk_disp, sk_copy, sk_p2p = nil, nil, false
     if sk then sk_disp, sk_copy, sk_p2p = sk:get_host_share_addr(proto.DEFAULT_TCP_PORT) end
 
-    -- Left Contract: 1P Host (SakuraFrp Dedicated)
+    -- Left Contract: 1P Host (Clean, Symmetric, No Duplicate Buttons)
     ui.draw_parchment_card(cx, y, card_w, card_h, {
         top = { 236, 240, 232, 250 }, bot = { 228, 214, 178, 250 },
         border = T.p1_border, border_w = 2, thumbtack = true,
     })
-    ui.draw_pill(cx + 14, y + 10, 146, 20, "1P 房主 · 蓝方旗帜 (热续传)", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, fm.tiny_bold)
-    add_btn("open_sakura", sk_disp and "樱花助手√" or "樱花助手", cx + card_w - 92, y + 9, 78, 22,
-        sk_disp and "battle" or "azure", { tiny = true })
-    ui.text("设立樱花直连战桌", cx + 14, y + 34, T.ink_text, fm.hero)
+    ui.draw_pill(cx + 14, y + 10, 142, 20, "1P 房主 · 蓝方旗帜", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, fm.tiny_bold)
     if sk_disp then
-        local s_line = "已识别活跃隧道：" .. mask_if_private(lobby, sk_disp) .. (sk_p2p and " [含P2P]" or "")
-        ui.text(s_line, cx + 14, y + 55, { 34, 108, 48, 255 }, fm.tiny_bold, card_w - 28, "left")
+        ui.draw_pill(cx + card_w - 110, y + 10, 96, 20, "已识别隧道 √", { 38, 128, 62, 240 }, { 26, 86, 40, 255 }, { 248, 255, 244, 255 }, fm.tiny_bold)
     else
-        ui.text("先在樱花开启 TCP 17777 隧道，再点下方建房；内置 180 秒闪断无感热续传。",
-            cx + 14, y + 54, T.ink_sub, fm.tiny, card_w - 28, "left")
+        ui.draw_pill(cx + card_w - 102, y + 10, 88, 20, "180s 热续传", { 72, 54, 34, 215 }, { 148, 114, 62, 200 }, T.gold_bright, fm.tiny_bold)
     end
-    add_btn("host_lan", "创建樱花房间并备战", cx + 14, y + card_h - 66, card_w - 28, 33, "battle", { small = false })
+    ui.text("设立樱花直连战桌", cx + 14, y + 35, T.ink_text, fm.hero)
     if sk_disp then
-        add_btn("sakura_copy_detected", sk_p2p and "一键复制免费 P2P + 樱花地址" or "一键复制樱花地址发给队友",
-            cx + 14, y + card_h - 27, card_w - 28, 21, "wood", { tiny = true, copy_addr = sk_copy })
-    elseif sk and sk.installed then
-        add_btn("sakura_launch_app", "一键启动官方 SakuraFrp 启动器",
-            cx + 14, y + card_h - 27, card_w - 28, 21, "wood", { tiny = true })
+        local s_line = "已自动抓取隧道：" .. mask_if_private(lobby, sk_disp)
+        if #s_line > 34 then s_line = s_line:sub(1, 33) .. ".." end
+        ui.text(s_line, cx + 14, y + 59, { 34, 108, 48, 255 }, fm.small_bold, card_w - 28, "left")
+        ui.text(sk_p2p and "已启用免费 P2P 优先，2.6 秒不通自动回退樱花中继；点下方「复制地址」发给队友。"
+            or "在下方控制中心一键复制地址发给队友，点下方绿按钮即可开房备战。",
+            cx + 14, y + 80, T.ink_muted, fm.tiny, card_w - 28, "left")
     else
-        add_btn("sakura_launch_app", "前往下载官方 SakuraFrp 启动器",
-            cx + 14, y + card_h - 27, card_w - 28, 21, "parchment", { tiny = true })
+        ui.text("在下方启动樱花并开启 TCP 17777 隧道，再点下方建房；内置 180 秒闪断无感热续传与追帧重连。",
+            cx + 14, y + 58, T.ink_sub, fm.tiny, card_w - 28, "left")
     end
+    add_btn("host_lan", "创建樱花房间并备战", cx + 14, main_btn_y, card_w - 28, main_btn_h, "battle", { small = false })
 
-    -- Right Contract: 2P Guest (SakuraFrp Paste + 3-Line Speed Probe + Privacy Mask)
+    -- Right Contract: 2P Guest (Mirror-Aligned with Left Main CTA)
     local rx = cx + card_w + 14
     ui.draw_parchment_card(rx, y, card_w, card_h, {
         top = { 250, 238, 226, 250 }, bot = { 234, 212, 176, 250 },
         border = T.p2_border, border_w = 2, thumbtack = true,
     })
-    ui.draw_pill(rx + 14, y + 10, 146, 20, "2P 队友 · 樱花一键直连", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, fm.tiny_bold)
+    ui.draw_pill(rx + 14, y + 10, 148, 20, "2P 队友 · 樱花一键直连", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, fm.tiny_bold)
     add_btn("toggle_privacy", lobby.privacy_mask and "防窥:开" or "防窥:关", rx + card_w - 76, y + 9, 62, 22,
         lobby.privacy_mask and "azure" or "parchment", { tiny = true })
-    ui.text("粘贴樱花地址加入战桌", rx + 14, y + 34, T.ink_text, fm.hero)
+    ui.text("粘贴樱花地址加入战桌", rx + 14, y + 35, T.ink_text, fm.hero)
 
     local sk_raw_in = lobby.sakura_ip_input or ""
     local sk_empty = (#sk_raw_in == 0)
@@ -137,15 +136,15 @@ local function draw_home_sakura(ctx, y)
         or (sk_focused and sk_raw_in or mask_if_private(lobby, sk_raw_in))
     if not sk_empty and #sk_shown > 30 then sk_shown = "..." .. sk_shown:sub(-27) end
     local ip_w = card_w - 28 - 64
-    add_btn("sakura_ip_box", sk_shown .. (sk_focused and "|" or ""), rx + 14, y + 54, ip_w, 25, "input", {
+    add_btn("sakura_ip_box", sk_shown .. (sk_focused and "|" or ""), rx + 14, y + 55, ip_w, 24, "input", {
         small = true, placeholder = sk_empty and (not sk_focused), focused = sk_focused,
     })
-    add_btn("paste_sakura_ip", "粘贴", rx + 14 + ip_w + 6, y + 54, 58, 25, "wood", { small = true })
+    add_btn("paste_sakura_ip", "粘贴", rx + 14 + ip_w + 6, y + 55, 58, 24, "wood", { small = true })
 
     if lobby_prefs.supports_sakura_carrier(sk_raw_in) then
         local cur_c = lobby_prefs.get_sakura_carrier(sk_raw_in)
         local cw4 = math.floor((card_w - 28 - 15) / 4)
-        local cy4 = y + 83
+        local cy4 = y + 82
         local carriers = {
             { id = "default", lbl = "默认线" },
             { id = "dx",      lbl = "电信dx" },
@@ -161,67 +160,68 @@ local function draw_home_sakura(ctx, y)
         add_btn("sakura_probe", pb_lbl, rx + 14 + 3 * (cw4 + 5), cy4, (card_w - 28) - 3 * (cw4 + 5), 20,
             (sk and sk.probe_running) and "wood" or "battle", { tiny = true })
     elseif select(2, proto.split_fallback_addr(sk_raw_in)) ~= nil then
-        ui.text("已识别免费 P2P + 樱花中继双地址：优先直连，2.6 秒不通自动切中继！", rx + 14, y + 84, { 34, 108, 48, 255 }, fm.tiny, card_w - 28, "left")
+        ui.text("已识别 P2P + 樱花中继双地址：优先直连，不通自动切中继！", rx + 14, y + 84, { 34, 108, 48, 255 }, fm.tiny, card_w - 28, "left")
     elseif lobby_prefs.is_sakura_addr(sk_raw_in) then
-        ui.text("已识别樱花免费子域 (.nyat.app)，支持 180 秒闪断热续传与追帧重连！", rx + 14, y + 84, { 34, 108, 48, 255 }, fm.tiny, card_w - 28, "left")
+        ui.text("已识别樱花免费子域 (.nyat.app)，支持 180 秒热续传与追帧！", rx + 14, y + 84, { 34, 108, 48, 255 }, fm.tiny, card_w - 28, "left")
     else
-        ui.text("直接复制整行樱花日志点「粘贴」(Ctrl+V) 自动提取地址，支持三线测速选优！", rx + 14, y + 84, T.ink_muted, fm.tiny, card_w - 28, "left")
+        ui.text("整行樱花日志点「粘贴」自动提取，识别后可一键三线测速！", rx + 14, y + 84, T.ink_muted, fm.tiny, card_w - 28, "left")
     end
 
     local lan_connecting = (not lobby.transport:is_online()) and lobby.transport:is_connecting()
-    add_btn("join_sakura_ip", lan_connecting and "正在连接房主..." or "立即直连房主战桌", rx + 14, y + card_h - 38, card_w - 28, 32, "crimson", { small = false })
+    add_btn("join_sakura_ip", lan_connecting and "正在连接房主..." or "立即直连房主战桌", rx + 14, main_btn_y, card_w - 28, main_btn_h, "crimson", { small = false })
 
     y = y + card_h + 10
 
-    -- Bottom Dark-Oak SakuraFrp Dashboard (Live Local Status + Recent Sakura Addresses / 3-Step Flow)
+    -- Bottom Dark-Oak SakuraFrp Control Center (Single Source of Truth, Zero Redundancy, Zero Dead Space)
     local tray_h = (py + ph - 22) - y
     ui.draw_armory_tray(cx, y, cw, tray_h, 9)
     local sk_alive = (sk ~= nil and (sk.managed_proc ~= nil or sk.frpc_running == true))
     ui.draw_ping_dot(cx + 18, y + 17, sk_alive and 15 or 999, sk_alive)
-    ui.print_shadow("本机樱花态势 & 最近樱花战桌记录", cx + 30, y + 10, T.gold_bright, nil, nil, nil, fm.small_bold)
-    add_btn("sakura_rescan", "刷新检测", cx + cw - 178, y + 6, 68, 22, "parchment", { tiny = true })
-    add_btn("open_sakura", "高级助手(API)", cx + cw - 104, y + 6, 92, 22, "azure", { tiny = true })
+    ui.print_shadow("本机樱花控制中心", cx + 30, y + 10, T.gold_bright, nil, nil, nil, fm.small_bold)
+    add_btn("sakura_rescan", "刷新", cx + cw - 208, y + 6, 54, 22, "parchment", { tiny = true })
+    add_btn("open_sakura", "樱花助手 (建/启隧道)", cx + cw - 148, y + 6, 136, 22, "azure", { tiny = true })
 
-    -- Row 1: Compact Local SakuraFrp Status Card
-    local st_y, st_h = y + 33, 44
+    -- Row 1: Single-Line Safe Local Status Card (Guaranteed No Wrap Overflow)
+    local st_y, st_h = y + 34, 48
     ui.draw_parchment_card(cx + 12, st_y, cw - 24, st_h, { radius = 6 })
-    local inst_s = (sk and sk.installed) and "官方启动器:已安装" or "官方启动器:未安装"
-    local proc_s = (sk and sk.managed_proc) and "内置托管 frpc 运行中 √"
+    local inst_s = (sk and sk.installed) and "官方启动器：已安装" or "官方启动器：未安装"
+    local proc_s = (sk and sk.managed_proc) and "内置 frpc 运行中 √"
         or ((sk and sk.frpc_running) and "官方 frpc 运行中 √"
-            or ((sk and sk.service_running) and "后台服务待机 (暂未开隧道)" or "未运行"))
+            or ((sk and sk.service_running) and "后台服务待机" or "未运行"))
     local spd_s = (sk and sk.log_speed_text) and ("  ·  " .. sk.log_speed_text) or ""
+    local text_w = (sk and sk.managed_proc) and (cw - 196) or (cw - 144)
     ui.text(string.format("%s  ·  状态：%s%s", inst_s, proc_s, spd_s),
-        cx + 22, st_y + 5, sk_alive and { 32, 108, 48, 255 } or T.ink_text, fm.tiny_bold, cw - 204, "left")
+        cx + 22, st_y + 7, sk_alive and { 32, 108, 48, 255 } or T.ink_text, fm.small_bold, text_w, "left")
     local line2, line2_col
     if sk and sk.log_warning then
         line2, line2_col = sk.log_warning, { 166, 46, 36, 255 }
     elseif sk_disp then
-        line2 = "活跃公网地址：" .. mask_if_private(lobby, sk_disp) .. (sk_p2p and "  [已启用免费P2P优先]" or "  (点右侧即可复制给队友)")
+        line2 = "已自动识别地址：" .. mask_if_private(lobby, sk_disp) .. (sk_p2p and "  [P2P优先]" or "")
         line2_col = { 34, 108, 48, 255 }
     else
-        line2 = "免密钥自动感知官方隧道日志；点右上「高级助手(API)」还可在游戏内一键选低负载多线节点创建/启停 17777 隧道。"
+        line2 = "开启 TCP 17777 隧道后自动识别；或点右上「樱花助手」游戏内建/启隧道。"
         line2_col = T.ink_muted
     end
-    ui.text(line2, cx + 22, st_y + 23, line2_col, fm.tiny, cw - 204, "left")
+    ui.text(line2, cx + 22, st_y + 27, line2_col, fm.tiny, text_w, "left")
 
     if sk and sk.managed_proc then
-        add_btn("sakura_copy_detected", "复制地址", cx + cw - 166, st_y + 9, 72, 26, "battle", { tiny = true, copy_addr = sk_copy })
-        add_btn("sakura_stop_frpc", "停止隧道", cx + cw - 88, st_y + 9, 68, 26, "crimson", { tiny = true })
+        add_btn("sakura_copy_detected", "复制地址", cx + cw - 166, st_y + 11, 70, 26, "battle", { tiny = true, copy_addr = sk_copy })
+        add_btn("sakura_stop_frpc", "停止隧道", cx + cw - 90, st_y + 11, 68, 26, "crimson", { tiny = true })
     elseif sk_disp then
-        add_btn("sakura_copy_detected", "复制地址", cx + cw - 110, st_y + 9, 90, 26, "battle", { tiny = true, copy_addr = sk_copy })
+        add_btn("sakura_copy_detected", "复制地址", cx + cw - 114, st_y + 11, 92, 26, "battle", { tiny = true, copy_addr = sk_copy })
     elseif sk and sk.installed then
-        add_btn("sakura_launch_app", "启动樱花", cx + cw - 110, st_y + 9, 90, 26, "wood", { tiny = true })
+        add_btn("sakura_launch_app", "启动樱花", cx + cw - 114, st_y + 11, 92, 26, "wood", { tiny = true })
     else
-        add_btn("sakura_launch_app", "下载樱花", cx + cw - 110, st_y + 9, 90, 26, "azure", { tiny = true })
+        add_btn("sakura_launch_app", "下载樱花", cx + cw - 114, st_y + 11, 92, 26, "azure", { tiny = true })
     end
 
-    -- Row 2: Recent SakuraFrp Addresses (Quick Re-Join Cards) OR 3-Step Quick Guide
-    local r2_y = st_y + st_h + 8
+    -- Row 2: Recent SakuraFrp Cards OR 3 Structured Parchment Step Cards (Zero Empty Black Space)
+    local r2_y = st_y + st_h + 10
     local rec = lobby.recent_addrs or {}
     if #rec > 0 then
         ui.print_shadow("最近联机樱花地址（点击直接直连）：", cx + 14, r2_y, { 238, 214, 168, 235 }, nil, nil, nil, fm.tiny_bold)
         local chip_y = r2_y + 20
-        local chip_h = math.min(54, math.max(38, (y + tray_h - 10) - chip_y))
+        local chip_h = math.min(68, math.max(40, (y + tray_h - 12) - chip_y))
         local count = math.min(#rec, 3)
         local gap = 8
         local chip_w = math.floor((cw - 24 - (count - 1) * gap) / count)
@@ -230,17 +230,47 @@ local function draw_home_sakura(ctx, y)
             local rx_c = cx + 12 + (ri - 1) * (chip_w + gap)
             local shown = mask_if_private(lobby, addr)
             local disp = (#shown > 24) and ("..." .. shown:sub(-21)) or shown
-            local tag = lobby_prefs.is_sakura_addr(addr) and "樱花线路" or "直连地址"
+            local tag = lobby_prefs.is_sakura_addr(addr) and "樱花专线" or "直连地址"
             add_btn("use_recent_addr", tag .. "\n" .. disp, rx_c, chip_y, chip_w, chip_h, "wood", {
                 tiny = true, addr = addr,
             })
         end
     else
-        ui.print_shadow("异地樱花联机 3 步速览（零自建服务器）：", cx + 14, r2_y, { 246, 224, 174, 240 }, nil, nil, nil, fm.tiny_bold)
-        ui.text("1. 房主开樱花 TCP 17777 隧道 -> 点左上「创建樱花房间」；2. 点绿条复制地址发给队友；3. 队友点右上「粘贴」+「三线测速」秒进房！",
-            cx + 14, r2_y + 20, { 232, 208, 166, 228 }, fm.tiny, cw - 28, "left")
-        ui.text("官方避坑：樱花设置里关闭「强制TLS」和「自动HTTPS」可明显降延迟；直播间/大群公开招人务必选含「多线」节点（三线≠多线）。",
-            cx + 14, r2_y + 44, { 216, 190, 148, 210 }, fm.tiny, cw - 28, "left")
+        local step_h = math.min(106, math.max(70, (y + tray_h - 12) - r2_y))
+        local gap = 8
+        local sw3 = math.floor((cw - 24 - gap * 2) / 3)
+        local steps = {
+            {
+                badge = "1. 房主开隧道建房",
+                bg = T.p1_top, rim = T.p1_border,
+                body = has_direct_rc
+                    and "开 TCP 17777 隧道后建房，设置请关「强制TLS」。"
+                    or "在樱花开 TCP 17777 隧道后点上方建房；建议关「强制TLS」和「自动HTTPS」降延迟。",
+            },
+            {
+                badge = "2. 自动识别一键复制",
+                bg = { 38, 128, 62, 245 }, rim = { 26, 86, 40, 255 },
+                body = has_direct_rc
+                    and "自动抓活跃地址；直播开防窥并选「多线」节点。"
+                    or "本机自动抓取活跃隧道地址，点复制发给队友；直播/大群招人请开防窥并选「多线」节点。",
+            },
+            {
+                badge = "3. 队友粘贴三线测速",
+                bg = T.p2_top, rim = T.p2_border,
+                body = has_direct_rc
+                    and "点粘贴自动提取，三线测速选最快线，180s 热续传。"
+                    or "队友复制整行日志点「粘贴」自动提取，可三线测速挑最快线，闪断享 180 秒无感热续传。",
+            },
+        }
+        for si, st in ipairs(steps) do
+            local sx = cx + 12 + (si - 1) * (sw3 + gap)
+            ui.draw_parchment_card(sx, r2_y, sw3, step_h, {
+                top = { 246, 236, 208, 246 }, bot = { 232, 214, 174, 246 },
+                border = { 132, 94, 48, 220 }, border_w = 1.4, radius = 7,
+            })
+            ui.draw_pill(sx + 10, r2_y + 8, sw3 - 20, 20, st.badge, st.bg, st.rim, { 255, 252, 240, 255 }, fm.tiny_bold)
+            ui.text(st.body, sx + 10, r2_y + 34, T.ink_sub, fm.tiny, sw3 - 20, "left")
+        end
     end
 end
 
@@ -250,19 +280,21 @@ local function draw_home_lan(ctx, y)
     y, has_direct_rc = draw_direct_reconnect_banner(ctx, y)
 
     local card_w = math.floor((cw - 14) / 2)
-    local card_h = has_direct_rc and 146 or 158
+    local card_h = has_direct_rc and 144 or 154
+    local main_btn_h = has_direct_rc and 31 or 32
+    local main_btn_y = y + card_h - (has_direct_rc and 38 or 40)
 
-    -- Left Contract: 1P LAN Host (Pure Local Network, Zero Sakura Clutter)
+    -- Left Contract: 1P LAN Host (Symmetric CTA Alignment with Right Card)
     ui.draw_parchment_card(cx, y, card_w, card_h, {
         top = { 236, 240, 232, 250 }, bot = { 228, 214, 178, 250 },
         border = T.p1_border, border_w = 2, thumbtack = true,
     })
-    ui.draw_pill(cx + 14, y + 10, 154, 20, "1P 房主 · 蓝方旗帜 (局域网)", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, fm.tiny_bold)
-    ui.text("设立同 Wi-Fi / 局域网战桌", cx + 14, y + 34, T.ink_text, fm.hero)
-    ui.text("监听 TCP 17777 并自动广播至同 Wi-Fi / 宿舍局域网，队友在下方布告栏点击即可加入。",
-        cx + 14, y + 54, T.ink_sub, fm.tiny, card_w - 28, "left")
-    add_btn("host_lan", "创建局域网房间并备战", cx + 14, y + card_h - 66, card_w - 28, 33, "battle", { small = false })
-    add_btn("join_local", "本机双开快速加入 (127.0.0.1)", cx + 14, y + card_h - 27, card_w - 28, 21, "parchment", { tiny = true })
+    ui.draw_pill(cx + 14, y + 10, 150, 20, "1P 房主 · 蓝方旗帜 (局域网)", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, fm.tiny_bold)
+    add_btn("join_local", "本机双开 (127.0.0.1)", cx + card_w - 134, y + 9, 120, 22, "parchment", { tiny = true })
+    ui.text("设立同 Wi-Fi / 局域网战桌", cx + 14, y + 35, T.ink_text, fm.hero)
+    ui.text("监听 TCP 17777 并自动向同 Wi-Fi / 宿舍网广播房间，队友在下方布告栏点击「揭榜加入」即可开玩。",
+        cx + 14, y + 58, T.ink_sub, fm.tiny, card_w - 28, "left")
+    add_btn("host_lan", "创建局域网房间并备战", cx + 14, main_btn_y, card_w - 28, main_btn_h, "battle", { small = false })
 
     -- Right Contract: 2P LAN Manual IP Join
     local rx = cx + card_w + 14
@@ -271,21 +303,21 @@ local function draw_home_lan(ctx, y)
         border = T.p2_border, border_w = 2, thumbtack = true,
     })
     ui.draw_pill(rx + 14, y + 10, 146, 20, "2P 队友 · 局域网 IP 直连", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, fm.tiny_bold)
-    ui.text("手动输入局域网 IP 直连", rx + 14, y + 34, T.ink_text, fm.hero)
+    ui.text("手动输入局域网 IP 直连", rx + 14, y + 35, T.ink_text, fm.hero)
 
     local lan_in = lobby.lan_ip_input or "127.0.0.1"
     local lan_focused = (lobby.focused_field == "lan_ip")
     local ip_disp = (#lan_in > 30) and ("..." .. lan_in:sub(-27)) or lan_in
     local ip_w = card_w - 28 - 64
-    add_btn("lan_ip_box", ip_disp .. (lan_focused and "|" or ""), rx + 14, y + 54, ip_w, 25, "input", {
+    add_btn("lan_ip_box", ip_disp .. (lan_focused and "|" or ""), rx + 14, y + 55, ip_w, 24, "input", {
         small = true, focused = lan_focused,
     })
-    add_btn("paste_lan_ip", "粘贴", rx + 14 + ip_w + 6, y + 54, 58, 25, "wood", { small = true })
+    add_btn("paste_lan_ip", "粘贴", rx + 14 + ip_w + 6, y + 55, 58, 24, "wood", { small = true })
     ui.text("适合同宿舍手输内网 IP (如 192.168.1.5)、ZeroTier / Radmin 虚拟局域网或自定义端口。",
         rx + 14, y + 84, T.ink_muted, fm.tiny, card_w - 28, "left")
 
     local lan_connecting = (not lobby.transport:is_online()) and lobby.transport:is_connecting()
-    add_btn("join_lan_ip", lan_connecting and "正在连接主机..." or "连接该局域网主机", rx + 14, y + card_h - 38, card_w - 28, 32, "crimson", { small = false })
+    add_btn("join_lan_ip", lan_connecting and "正在连接主机..." or "连接该局域网主机", rx + 14, main_btn_y, card_w - 28, main_btn_h, "crimson", { small = false })
 
     y = y + card_h + 10
 
