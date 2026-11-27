@@ -224,7 +224,11 @@ if (-not $TargetDir) {
                 $TargetDir = $pick.Trim('"').Trim()
             }
         } else {
-            Write-Host "请在弹出的文件夹选择框中选择包含 $PreferredExe 的游戏目录..." -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "[提示] 未自动找到 FL $TargetFlVersion 游戏目录。" -ForegroundColor Yellow
+            Write-Host "  · 注意：本联机补丁仅适配同人改版 FL $TargetFlVersion（不支持 Steam 原版《王国保卫战》）！" -ForegroundColor Yellow
+            Write-Host "  · 如果你还没有 FL $TargetFlVersion 本体，请先按视频置顶评论或交流群文件获取并解压，再重新双击本程序。" -ForegroundColor Cyan
+            Write-Host "  · 如果已经解压在别处，请在弹出的文件夹选择框中选中包含 $PreferredExe 的目录..." -ForegroundColor Gray
             try {
                 Add-Type -AssemblyName System.Windows.Forms
                 $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -358,9 +362,17 @@ if ($ShortcutPath) {
 Write-Host "  目录启动器: $LauncherPath"
 Write-Host ""
 Write-Host "使用方法：双击桌面【王国保卫战联机版 (FL8.2.0)】，进游戏按 F10 即可联机！" -ForegroundColor Cyan
+Write-Host "安全提醒：本联机补丁永久免费开源！如在闲鱼/淘宝/网盘付费购买，请立刻申请退款！" -ForegroundColor Yellow
 Write-Host "KR_MP_INSTALL_OK"
 Write-Host "MOD_VERSION=$ModVer"
 Write-Host "TARGET_DIR=$TargetDir"
 Write-Host "SHORTCUT_PATH=$ShortcutPath"
 Write-Host "SAKURA_INSTALLED=$SakuraInstalled"
+if (-not $Silent) {
+    Write-Host ""
+    $launchNow = Read-Host "现在直接启动联机版游戏吗？(直接回车立即启动，输入 N 仅退出)"
+    if ($launchNow -eq "" -or $launchNow -match "^[Yy]$") {
+        Start-Process -FilePath $ExeItem.FullName -ArgumentList "-fps 60" -WorkingDirectory $TargetDir
+    }
+}
 exit 0

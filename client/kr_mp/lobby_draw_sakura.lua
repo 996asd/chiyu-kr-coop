@@ -111,7 +111,7 @@ local function draw_wizard_tray(ctx, y, tray_h, disp_addr)
     end
     local s2x, _, s2by = draw_step_card(2, 1, 2, "注册账号并完成实名",
         rn_badge, rn_kind,
-        "注册账号并用支付宝实名（官方通常收 1 元），实名后免费送多线节点与流量。")
+        "注册并用支付宝实名（1元归樱花官方，作者不收费），实名免费送多线与流量。")
     add_btn("sakura_open_register", "1. 去官网注册/登录", s2x + 10, s2by, bw2, 23, "azure", { tiny = true })
     add_btn("sakura_open_realname", "2. 去完成实名认证", s2x + 16 + bw2, s2by, bw2, 23,
         rn_kind == "warn" and "crimson" or "parchment", { tiny = true })

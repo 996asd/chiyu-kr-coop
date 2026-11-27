@@ -37,6 +37,7 @@ type TurnBucket struct {
 type Room struct {
 	Code       string
 	Name       string
+	HostIP     string
 	Password   string
 	Public     bool
 	Status     string // "lobby" | "loading" | "running" | "waiting_reconnect"
@@ -70,17 +71,41 @@ type Hub struct {
 	mu             sync.Mutex
 	rooms          map[string]*Room
 	clients        map[*Client]bool
+	ipConns        map[string]int
 	nextClientID   int64
 	maxRooms       int
+	maxConns       int
+	maxPerIP       int
+	maxRoomsPerIP  int
 	reconnectGrace time.Duration
 	startedAt      time.Time
 }
 
 func NewHub(maxRooms int, reconnectGrace time.Duration) *Hub {
+	return NewHubWithLimits(maxRooms, 500, 16, 4, reconnectGrace)
+}
+
+func NewHubWithLimits(maxRooms, maxConns, maxPerIP, maxRoomsPerIP int, reconnectGrace time.Duration) *Hub {
+	if maxRooms <= 0 {
+		maxRooms = 200
+	}
+	if maxConns <= 0 {
+		maxConns = 500
+	}
+	if maxPerIP <= 0 {
+		maxPerIP = 16
+	}
+	if maxRoomsPerIP <= 0 {
+		maxRoomsPerIP = 4
+	}
 	return &Hub{
 		rooms:          make(map[string]*Room),
 		clients:        make(map[*Client]bool),
+		ipConns:        make(map[string]int),
 		maxRooms:       maxRooms,
+		maxConns:       maxConns,
+		maxPerIP:       maxPerIP,
+		maxRoomsPerIP:  maxRoomsPerIP,
 		reconnectGrace: reconnectGrace,
 		startedAt:      time.Now(),
 	}
@@ -106,19 +131,62 @@ func randomToken() string {
 	return hex.EncodeToString(buf)
 }
 
-func (h *Hub) RegisterClient(c *Client) int64 {
+func sanitizeLabel(s string, maxRunes int, fallback string) string {
+	var b strings.Builder
+	count := 0
+	for _, r := range strings.TrimSpace(s) {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		if count >= maxRunes {
+			break
+		}
+		b.WriteRune(r)
+		count++
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return fallback
+	}
+	return out
+}
+
+func (h *Hub) TryRegisterClient(c *Client) (int64, string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if len(h.clients) >= h.maxConns {
+		return 0, "global connection limit reached"
+	}
+	if c.remoteIP != "" && !isLoopbackIP(c.remoteIP) {
+		if h.ipConns[c.remoteIP] >= h.maxPerIP {
+			return 0, "per-IP connection limit reached"
+		}
+		h.ipConns[c.remoteIP]++
+	}
 	h.nextClientID++
 	c.id = h.nextClientID
 	h.clients[c] = true
-	return c.id
+	return c.id, ""
+}
+
+func (h *Hub) RegisterClient(c *Client) int64 {
+	id, _ := h.TryRegisterClient(c)
+	return id
 }
 
 func (h *Hub) UnregisterClient(c *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.clients, c)
+	if h.clients[c] {
+		delete(h.clients, c)
+		if c.remoteIP != "" && !isLoopbackIP(c.remoteIP) {
+			if h.ipConns[c.remoteIP] > 1 {
+				h.ipConns[c.remoteIP]--
+			} else {
+				delete(h.ipConns, c.remoteIP)
+			}
+		}
+	}
 	if c.roomCode != "" {
 		h.handleDisconnectLocked(c, false)
 	}
@@ -390,9 +458,9 @@ func (h *Hub) onHelloLocked(c *Client, msg *IncomingMsg) {
 	c.scriptHash = msg.ScriptHash
 	c.tickLen = msg.TickLen
 	if msg.Name != "" {
-		c.name = msg.Name
+		c.name = sanitizeLabel(msg.Name, 24, fmt.Sprintf("Player-%d", c.id))
 	} else if msg.PlayerName != "" {
-		c.name = msg.PlayerName
+		c.name = sanitizeLabel(msg.PlayerName, 24, fmt.Sprintf("Player-%d", c.id))
 	} else if c.name == "" {
 		c.name = fmt.Sprintf("Player-%d", c.id)
 	}
@@ -434,12 +502,29 @@ func parseRoomMeta(raw json.RawMessage) RoomMeta {
 }
 
 func (h *Hub) onCreateRoomLocked(c *Client, msg *IncomingMsg) {
+	now := time.Now()
+	if !c.lastCreateRoom.IsZero() && now.Sub(c.lastCreateRoom) < 2*time.Second {
+		c.Send(map[string]any{"t": "ERROR", "msg": "创建房间过于频繁，请 2 秒后再试。"})
+		return
+	}
 	if c.roomCode != "" {
 		h.handleDisconnectLocked(c, true)
 	}
 	if len(h.rooms) >= h.maxRooms {
 		c.Send(map[string]any{"t": "ERROR", "msg": "Server room limit reached; try again shortly."})
 		return
+	}
+	if c.remoteIP != "" && !isLoopbackIP(c.remoteIP) {
+		ipRooms := 0
+		for _, r := range h.rooms {
+			if r.HostIP == c.remoteIP {
+				ipRooms++
+			}
+		}
+		if ipRooms >= h.maxRoomsPerIP {
+			c.Send(map[string]any{"t": "ERROR", "msg": "同一 IP 创建房间数量已达上限，请先关闭旧房间。"})
+			return
+		}
 	}
 
 	flVer := msg.FLVer
@@ -466,9 +551,7 @@ func (h *Hub) onCreateRoomLocked(c *Client, msg *IncomingMsg) {
 	if hostName == "" {
 		hostName = c.name
 	}
-	if hostName == "" {
-		hostName = "Player 1"
-	}
+	hostName = sanitizeLabel(hostName, 24, "Player 1")
 	c.name = hostName
 
 	public := true
@@ -477,13 +560,11 @@ func (h *Hub) onCreateRoomLocked(c *Client, msg *IncomingMsg) {
 	}
 
 	meta := parseRoomMeta(msg.Room)
-	roomName := strings.TrimSpace(msg.Name)
-	if roomName == "" {
-		roomName = meta.Name
+	rawRoomName := strings.TrimSpace(msg.Name)
+	if rawRoomName == "" {
+		rawRoomName = meta.Name
 	}
-	if roomName == "" {
-		roomName = "KR-MP Co-op"
-	}
+	roomName := sanitizeLabel(rawRoomName, 32, "KR-MP Co-op")
 
 	roomJSON := msg.Room
 	if len(roomJSON) == 0 {
@@ -492,11 +573,12 @@ func (h *Hub) onCreateRoomLocked(c *Client, msg *IncomingMsg) {
 
 	code := h.generateUniqueCodeLocked()
 	token := randomToken()
-	now := time.Now()
+	c.lastCreateRoom = now
 
 	r := &Room{
 		Code:       code,
 		Name:       roomName,
+		HostIP:     c.remoteIP,
 		Password:   msg.Password,
 		Public:     public,
 		Status:     "lobby",

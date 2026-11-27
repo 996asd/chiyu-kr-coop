@@ -13,6 +13,7 @@ local server_host = {
     DEFAULT_PORT = proto.DEFAULT_ONLINE_PORT or 17780,
     DEFAULT_HTTP_PORT = 17781,
     VPS_DEPLOY_CMD = "curl -fsSL https://gitee.com/chiyu-studio/chiyu-kr-coop/raw/main/tools/deploy_server.sh | sudo bash",
+    BUILTIN_WIN_SHA256 = "ACA30445281FE6935908F2C183B2558591D0BCB88FD6527A4043ADB2C6779FA0",
 
     boot = nil,
     overlay = nil,
@@ -104,6 +105,9 @@ local function init_win32(self)
         "int32_t GetExitCodeProcess(void* hProcess, uint32_t* lpExitCode);",
         "int32_t TerminateProcess(void* hProcess, uint32_t uExitCode);",
         "int32_t CreateDirectoryA(const char* lpPathName, void* lpSecurityAttributes);",
+        "int32_t MultiByteToWideChar(uint32_t CodePage, uint32_t dwFlags, const char* lpMultiByteStr, int32_t cbMultiByte, uint16_t* lpWideCharStr, int32_t cchWideChar);",
+        "uint32_t GetFileAttributesW(const uint16_t* lpFileName);",
+        "int32_t CopyFileW(const uint16_t* lpExistingFileName, const uint16_t* lpNewFileName, int32_t bFailIfExists);",
     }
     for _, decl in ipairs(cdefs) do pcall(ffi.cdef, decl) end
     local ok_k, k32 = pcall(ffi.load, "kernel32")
@@ -196,42 +200,83 @@ function server_host:detect_lan_ip()
     return server_host._pick_best_lan_ip(cands)
 end
 
+local function is_ascii_path(p)
+    return type(p) == "string" and #p > 0 and (p:find("[\128-\255]") == nil)
+end
+
+local function ascii_cache_dirs()
+    local out = {}
+    local pub = os.getenv("PUBLIC") or "C:\\Users\\Public"
+    local pd = os.getenv("ProgramData") or "C:\\ProgramData"
+    local drv = os.getenv("SystemDrive") or "C:"
+    for _, d in ipairs({ pub .. "\\KR_MP_Bin", pd .. "\\KR_MP_Bin", drv .. "\\KR_MP_Bin" }) do
+        if is_ascii_path(d) then out[#out + 1] = d end
+    end
+    return out
+end
+
+local function utf8_to_wide(self, s)
+    if not self._k32 or not self._ffi or type(s) ~= "string" then return nil end
+    local n = self._k32.MultiByteToWideChar(65001, 0, s, -1, nil, 0)
+    if n <= 0 then return nil end
+    local buf = self._ffi.new("uint16_t[?]", n)
+    if self._k32.MultiByteToWideChar(65001, 0, s, -1, buf, n) <= 0 then return nil end
+    return buf
+end
+
+function server_host:get_download_target_dir()
+    local cands = {}
+    local base, save = get_base_dir(), get_save_dir()
+    -- Pure-ASCII paths guarantee Win32 CreateProcessA & LuaJIT io.open never fail on Chinese folders/usernames
+    if is_ascii_path(base) then cands[#cands + 1] = base .. "\\kr_mp\\bin" end
+    if is_ascii_path(save) then cands[#cands + 1] = save .. "\\kr_mp_bin" end
+    for _, d in ipairs(ascii_cache_dirs()) do cands[#cands + 1] = d end
+    for _, dir in ipairs(cands) do
+        if init_win32(self) and self._k32 then
+            pcall(self._k32.CreateDirectoryA, dir, nil)
+        end
+        local probe = dir .. "\\.kr_write_test"
+        local f = io.open(probe, "wb")
+        if f then
+            f:close()
+            os.remove(probe)
+            return dir
+        end
+    end
+    return cands[#cands] or "C:\\Users\\Public\\KR_MP_Bin"
+end
+
 function server_host:find_binary()
-    local base = get_base_dir()
-    local save = get_save_dir()
-    local candidates = {
-        base .. "\\server\\kr-mp-server.exe",
-        base .. "\\kr_mp\\bin\\kr-mp-server.exe",
-        save .. "\\kr_mp_bin\\kr-mp-server.exe",
-    }
+    local base, save = get_base_dir(), get_save_dir()
+    local candidates = {}
+    if is_ascii_path(base) then
+        candidates[#candidates + 1] = base .. "\\server\\kr-mp-server.exe"
+        candidates[#candidates + 1] = base .. "\\kr_mp\\bin\\kr-mp-server.exe"
+    end
+    if is_ascii_path(save) then
+        candidates[#candidates + 1] = save .. "\\kr_mp_bin\\kr-mp-server.exe"
+    end
+    for _, d in ipairs(ascii_cache_dirs()) do
+        candidates[#candidates + 1] = d .. "\\kr-mp-server.exe"
+    end
     for _, p in ipairs(candidates) do
-        if file_exists(p) then
-            return p
+        if file_exists(p) then return p end
+    end
+    -- If game lives in a Chinese/non-ASCII folder with bundled server\kr-mp-server.exe, mirror once via CopyFileW
+    if (not is_ascii_path(base)) and init_win32(self) and self._k32 then
+        local src_w = utf8_to_wide(self, base .. "\\server\\kr-mp-server.exe")
+        if src_w and self._k32.GetFileAttributesW(src_w) ~= 0xFFFFFFFF then
+            local dst = self:get_download_target_dir() .. "\\kr-mp-server.exe"
+            local dst_w = utf8_to_wide(self, dst)
+            if dst_w and self._k32.CopyFileW(src_w, dst_w, 0) ~= 0 and file_exists(dst) then
+                return dst
+            end
         end
     end
     return nil
 end
 
-function server_host:get_download_target_dir()
-    local base = get_base_dir()
-    local bin_dir = base .. "\\kr_mp\\bin"
-    if init_win32(self) and self._k32 then
-        pcall(self._k32.CreateDirectoryA, bin_dir, nil)
-    end
-    -- Verify writable; fallback to save directory if game folder is read-only
-    local probe = bin_dir .. "\\.kr_write_test"
-    local f = io.open(probe, "wb")
-    if f then
-        f:close()
-        os.remove(probe)
-        return bin_dir
-    end
-    local save_bin = get_save_dir() .. "\\kr_mp_bin"
-    if init_win32(self) and self._k32 then
-        pcall(self._k32.CreateDirectoryA, save_bin, nil)
-    end
-    return save_bin
-end
+server_host._is_ascii_path = is_ascii_path
 
 local function scan_server_processes(self)
     local pids = {}
@@ -287,7 +332,7 @@ end
 -- === On-Demand Official kr-mp-server.exe Downloader (WinINet + SHA-256 Verify) ===
 
 local SERVER_DL_WORKER_CODE = [===[
-local ch_name, seq, dest_dir, pkg_path, fallback_ver = ...
+local ch_name, seq, dest_dir, pkg_path, fallback_ver, fallback_sha = ...
 if type(pkg_path) == "string" and #pkg_path > 0 then
     package.path = pkg_path
 end
@@ -348,7 +393,7 @@ end
 
 ch:push({ seq = seq, stage = "meta", done = 0, total = 0 })
 
-local ver = tostring(fallback_ver or "2.3.0")
+local ver = tostring(fallback_ver or "2.3.1")
 local expect_sha = ""
 local expect_size = 0
 for _, vurl in ipairs({
@@ -365,6 +410,14 @@ for _, vurl in ipairs({
             break
         end
     end
+end
+if #expect_sha ~= 64 and ver == tostring(fallback_ver or "") and type(fallback_sha) == "string" and #fallback_sha == 64 then
+    expect_sha = fallback_sha:upper()
+end
+if #expect_sha ~= 64 then
+    wi.InternetCloseHandle(hNet)
+    ch:push({ seq = seq, stage = "error", ok = false, err = "无法获取官方 SHA-256 校验值，已按安全策略中止下载" })
+    return
 end
 
 local out_dir = tostring(dest_dir or "."):gsub("[/\\]+$", "")
@@ -436,12 +489,14 @@ if not downloaded_data then
 end
 
 ch:push({ seq = seq, stage = "verifying", done = #downloaded_data, total = #downloaded_data, ver = ver })
-if #expect_sha == 64 and ok_u and updater and updater.sha256_hex then
-    local got_sha = updater.sha256_hex(downloaded_data)
-    if got_sha ~= expect_sha then
-        ch:push({ seq = seq, stage = "error", ok = false, err = "服务端程序 SHA-256 校验未通过，已拒绝保存" })
-        return
-    end
+if #expect_sha ~= 64 or not (ok_u and updater and updater.sha256_hex) then
+    ch:push({ seq = seq, stage = "error", ok = false, err = "缺少 SHA-256 校验组件或官方哈希，已按安全策略拒绝保存" })
+    return
+end
+local got_sha = updater.sha256_hex(downloaded_data)
+if got_sha ~= expect_sha then
+    ch:push({ seq = seq, stage = "error", ok = false, err = "服务端程序 SHA-256 校验未通过，已拒绝保存" })
+    return
 end
 
 local f, ferr = io.open(part_path, "wb")
@@ -501,7 +556,7 @@ function server_host:start_download(auto_start)
         return false
     end
     local dest_dir = self:get_download_target_dir()
-    th:start("kr_mp_srv_dl", self.dl_seq, dest_dir, package.path, proto.MOD_VERSION)
+    th:start("kr_mp_srv_dl", self.dl_seq, dest_dir, package.path, proto.MOD_VERSION, self.BUILTIN_WIN_SHA256)
     if self.overlay then
         self.overlay:show_toast("正在从官方源下载独立服务端 kr-mp-server.exe 并校验完整性...", 3.0)
     end
@@ -530,7 +585,7 @@ function server_host:start_local_server(lobby)
     end
 
     local ffi, k32 = self._ffi, self._k32
-    local cmd = string.format('"%s" -addr :%d -http :%d -grace 300',
+    local cmd = string.format('"%s" -addr :%d -http 127.0.0.1:%d -grace 300',
         self.binary_path, self.DEFAULT_PORT, self.DEFAULT_HTTP_PORT)
     local cmd_buf = ffi.new("char[?]", #cmd + 1, cmd)
     local si = ffi.new("KR_STARTUPINFOA")

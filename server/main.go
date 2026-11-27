@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"log"
@@ -15,29 +16,89 @@ import (
 	"time"
 )
 
+const (
+	maxFrameBytes = 4 * 1024 * 1024 // Hard 4 MB upper bound per JSON line (anti-OOM)
+	maxMsgsPerSec = 200             // Per-client message rate limit (ample for 60Hz turns + voice + ping)
+)
+
+var errFrameTooLarge = errors.New("frame exceeds maximum size")
+
+// readLineLimited reads a single '\n'-terminated frame while strictly bounding memory to limit bytes.
+// Unlike bufio.Reader.ReadBytes('\n'), an attacker sending gigabytes without '\n' is rejected immediately.
+func readLineLimited(r *bufio.Reader, limit int) ([]byte, error) {
+	var out []byte
+	for {
+		frag, err := r.ReadSlice('\n')
+		if len(out)+len(frag) > limit {
+			return nil, errFrameTooLarge
+		}
+		if err == nil {
+			if len(out) == 0 {
+				cp := make([]byte, len(frag))
+				copy(cp, frag)
+				return cp, nil
+			}
+			return append(out, frag...), nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			out = append(out, frag...)
+			continue
+		}
+		if len(frag) > 0 {
+			out = append(out, frag...)
+		}
+		return out, err
+	}
+}
+
+func extractRemoteIP(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
+}
+
+func isLoopbackIP(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	return ip != nil && ip.IsLoopback()
+}
+
 type Client struct {
-	id         int64
-	conn       net.Conn
-	hub        *Hub
-	sendCh     chan []byte
-	done       chan struct{}
-	closeOnce  sync.Once
-	helloDone  bool
-	name       string
-	modVer     string
-	flVer      string
-	scriptHash string
-	tickLen    float64
-	roomCode   string
-	pid        int
+	id             int64
+	remoteIP       string
+	conn           net.Conn
+	hub            *Hub
+	sendCh         chan []byte
+	done           chan struct{}
+	closeOnce      sync.Once
+	helloDone      bool
+	name           string
+	modVer         string
+	flVer          string
+	scriptHash     string
+	tickLen        float64
+	roomCode       string
+	pid            int
+	msgWindowStart time.Time
+	msgWindowCount int
+	lastCreateRoom time.Time
 }
 
 func NewClient(conn net.Conn, hub *Hub) *Client {
+	var rip string
+	if conn != nil {
+		rip = extractRemoteIP(conn.RemoteAddr())
+	}
 	return &Client{
-		conn:   conn,
-		hub:    hub,
-		sendCh: make(chan []byte, 256),
-		done:   make(chan struct{}),
+		remoteIP: rip,
+		conn:     conn,
+		hub:      hub,
+		sendCh:   make(chan []byte, 256),
+		done:     make(chan struct{}),
 	}
 }
 
@@ -108,20 +169,30 @@ func (c *Client) readLoop() {
 		c.Close()
 	}()
 
-	// Allow large START_MATCH / slot_snapshot / RECONNECT_STATE payloads up to 4 MB per line
+	// Allow large START_MATCH / slot_snapshot / RECONNECT_STATE payloads up to 4 MB per line (strictly bounded)
 	reader := bufio.NewReaderSize(c.conn, 64*1024)
 	for {
 		_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		line, err := reader.ReadBytes('\n')
+		line, err := readLineLimited(reader, maxFrameBytes)
 		if err != nil {
-			if err != io.EOF {
+			if errors.Is(err, errFrameTooLarge) {
+				log.Printf("[CLIENT %d] oversized frame (>%d bytes) from %s; disconnecting", c.id, maxFrameBytes, c.remoteIP)
+			} else if err != io.EOF {
 				log.Printf("[CLIENT %d] read closed: %v", c.id, err)
 			}
 			return
 		}
-		if len(line) > 4*1024*1024 {
-			log.Printf("[CLIENT %d] oversized frame (%d bytes)", c.id, len(line))
-			return
+
+		now := time.Now()
+		if c.msgWindowStart.IsZero() || now.Sub(c.msgWindowStart) >= time.Second {
+			c.msgWindowStart = now
+			c.msgWindowCount = 1
+		} else {
+			c.msgWindowCount++
+			if c.msgWindowCount > maxMsgsPerSec {
+				log.Printf("[CLIENT %d] rate limit exceeded (%d msgs/s) from %s; disconnecting", c.id, c.msgWindowCount, c.remoteIP)
+				return
+			}
 		}
 
 		var msg IncomingMsg
@@ -136,12 +207,15 @@ func (c *Client) readLoop() {
 
 func main() {
 	addr := flag.String("addr", ":17780", "TCP listen address for KR-MP clients")
-	httpAddr := flag.String("http", "", "Optional HTTP status endpoint (e.g. :17781)")
+	httpAddr := flag.String("http", "", "Optional HTTP status endpoint (e.g. 127.0.0.1:17781)")
 	graceSec := flag.Int("grace", 300, "Reconnect grace period in seconds for dropped matches")
 	maxRooms := flag.Int("max-rooms", 200, "Maximum concurrent rooms")
+	maxConns := flag.Int("max-conns", 500, "Maximum concurrent TCP client connections")
+	maxPerIP := flag.Int("max-per-ip", 16, "Maximum concurrent TCP connections per non-loopback IP")
+	maxRoomsPerIP := flag.Int("max-rooms-per-ip", 4, "Maximum concurrent rooms per non-loopback IP")
 	flag.Parse()
 
-	hub := NewHub(*maxRooms, time.Duration(*graceSec)*time.Second)
+	hub := NewHubWithLimits(*maxRooms, *maxConns, *maxPerIP, *maxRoomsPerIP, time.Duration(*graceSec)*time.Second)
 	stopJanitor := make(chan struct{})
 	go hub.RunJanitor(stopJanitor)
 
@@ -196,7 +270,12 @@ func main() {
 			_ = tc.SetKeepAlivePeriod(20 * time.Second)
 		}
 		client := NewClient(conn, hub)
-		id := hub.RegisterClient(client)
+		id, rejectReason := hub.TryRegisterClient(client)
+		if rejectReason != "" {
+			log.Printf("[LIMIT] Rejected connection from %s: %s", conn.RemoteAddr(), rejectReason)
+			_ = conn.Close()
+			continue
+		}
 		log.Printf("[CLIENT %d] Connected from %s", id, conn.RemoteAddr())
 		go client.writeLoop()
 		go client.readLoop()

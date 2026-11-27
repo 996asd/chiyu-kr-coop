@@ -320,7 +320,7 @@ if ($detVer -and $detVer -ne $TargetFlVersion) {
 
 $StageDir = $null
 $PatchSource = $null
-$ModVer = "2.3.0"
+$ModVer = "2.3.1"
 try {
     if ($SourceDir -and (Test-Path -LiteralPath (Join-Path $SourceDir "UH.lua"))) {
         $PatchSource = (Resolve-Path -LiteralPath $SourceDir).Path
@@ -421,11 +421,19 @@ start "" "$($ExeItem.Name)" -fps 60
     }
     Write-Host "  目录启动器: $LauncherPath"
     Write-Host "  启动方法  : 双击桌面【王国保卫战联机版 (FL8.2.0)】，进游戏按 F10 开黑！" -ForegroundColor Yellow
+    Write-Host "  防骗声明  : 本联机补丁永久免费开源！如付费购买请立刻退款！" -ForegroundColor Yellow
     Write-Host "KR_MP_INSTALL_OK"
     Write-Host "MOD_VERSION=$ModVer"
     Write-Host "TARGET_DIR=$TargetDir"
     Write-Host "SHORTCUT_PATH=$ShortcutPath"
     Write-Host "SAKURA_INSTALLED=$SakuraInstalled"
+    if (-not $Silent) {
+        Write-Host ""
+        $launchNow = Read-Host "现在直接启动联机版游戏吗？(直接回车立即启动，输入 N 仅退出)"
+        if ($launchNow -eq "" -or $launchNow -match "^[Yy]$") {
+            Start-Process -FilePath $ExeItem.FullName -ArgumentList "-fps 60" -WorkingDirectory $TargetDir
+        }
+    }
     exit 0
 } finally {
     if ($StageDir -and (Test-Path -LiteralPath $StageDir)) {

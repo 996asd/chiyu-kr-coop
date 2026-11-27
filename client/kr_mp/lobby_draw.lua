@@ -180,6 +180,7 @@ local function draw_home_sakura(ctx, y)
     local sk_alive = (sk ~= nil and (sk.managed_proc ~= nil or sk.frpc_running == true))
     ui.draw_ping_dot(cx + 18, y + 17, sk_alive and 15 or 999, sk_alive)
     ui.print_shadow("本机樱花控制中心", cx + 30, y + 10, T.gold_bright, nil, nil, nil, fm.small_bold)
+    add_btn("tab_lan", "同Wi-Fi免装樱花→", cx + 158, y + 6, 122, 22, "parchment", { tiny = true })
     add_btn("sakura_rescan", "刷新", cx + cw - 208, y + 6, 54, 22, "parchment", { tiny = true })
     add_btn("open_sakura", "樱花助手 (建/启隧道)", cx + cw - 148, y + 6, 136, 22, "azure", { tiny = true })
 
@@ -333,7 +334,7 @@ local function draw_home_lan(ctx, y)
         small = true, focused = lan_focused,
     })
     add_btn("paste_lan_ip", "粘贴", rx + 14 + ip_w + 6, y + 55, 58, 24, "wood", { small = true })
-    ui.text("适合同宿舍手输内网 IP (如 192.168.1.5)、ZeroTier / Radmin 虚拟局域网或自定义端口。",
+    ui.text("适合同宿舍手输内网 IP，或用 Radmin VPN / 蒲公英 / ZeroTier 异地免实名直连。",
         rx + 14, y + 84, T.ink_muted, fm.tiny, card_w - 28, "left")
 
     local lan_connecting = (not lobby.transport:is_online()) and lobby.transport:is_connecting()
@@ -862,6 +863,8 @@ function M.draw(lobby)
         server_modal.draw(ctx)
     elseif lobby.view == "home" then
         draw_home(ctx)
+        ui.text("赤羽的王国保卫战联机器 · 永久免费开源（仅适配 FL 8.2.0 · 如付费购买请立刻退款）",
+            ctx.cx, py + ph - 17, { 132, 102, 64, 215 }, font_map.tiny, ctx.cw, "center")
     elseif lobby.sub_modal == "stages" then
         modals.draw_stages(ctx)
     elseif lobby.sub_modal == "hero1" or lobby.sub_modal == "hero2" then

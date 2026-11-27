@@ -136,6 +136,21 @@ local function get_save_dir()
     return (os.getenv("TEMP") or "."):gsub("/", "\\"):gsub("\\+$", "")
 end
 
+local function is_ascii_path(p)
+    return type(p) == "string" and #p > 0 and (p:find("[\128-\255]") == nil)
+end
+
+local function ascii_cache_dirs()
+    local out = {}
+    local pub = os.getenv("PUBLIC") or "C:\\Users\\Public"
+    local pd = os.getenv("ProgramData") or "C:\\ProgramData"
+    local drv = os.getenv("SystemDrive") or "C:"
+    for _, d in ipairs({ pub .. "\\KR_MP_Bin", pd .. "\\KR_MP_Bin", drv .. "\\KR_MP_Bin" }) do
+        if is_ascii_path(d) then out[#out + 1] = d end
+    end
+    return out
+end
+
 local function detect_windows_frpc_arch()
     local pa = tostring(os.getenv("PROCESSOR_ARCHITECTURE") or ""):upper()
     local paw = tostring(os.getenv("PROCESSOR_ARCHITEW6432") or ""):upper()
@@ -210,35 +225,37 @@ local function scan_processes(self)
 end
 
 function sakura:find_standalone_frpc()
-    local base = get_base_dir()
-    local save = get_save_dir()
-    for _, p in ipairs({
-        base .. "\\kr_mp\\bin\\sakura_frpc.exe",
-        save .. "\\kr_mp_bin\\sakura_frpc.exe",
-    }) do
+    local cands = {}
+    local base, save = get_base_dir(), get_save_dir()
+    if is_ascii_path(base) then cands[#cands + 1] = base .. "\\kr_mp\\bin\\sakura_frpc.exe" end
+    if is_ascii_path(save) then cands[#cands + 1] = save .. "\\kr_mp_bin\\sakura_frpc.exe" end
+    for _, d in ipairs(ascii_cache_dirs()) do cands[#cands + 1] = d .. "\\sakura_frpc.exe" end
+    for _, p in ipairs(cands) do
         if file_exists(p) then return p end
     end
     return nil
 end
 
 function sakura:get_bin_dir()
-    local bin_dir = get_base_dir() .. "\\kr_mp\\bin"
-    if init_win32(self) and self._k32 then
-        pcall(self._k32.CreateDirectoryA, bin_dir, nil)
+    local cands = {}
+    local base, save = get_base_dir(), get_save_dir()
+    if is_ascii_path(base) then cands[#cands + 1] = base .. "\\kr_mp\\bin" end
+    if is_ascii_path(save) then cands[#cands + 1] = save .. "\\kr_mp_bin" end
+    for _, d in ipairs(ascii_cache_dirs()) do cands[#cands + 1] = d end
+    for _, dir in ipairs(cands) do
+        if init_win32(self) and self._k32 then pcall(self._k32.CreateDirectoryA, dir, nil) end
+        local probe = dir .. "\\.kr_write_test"
+        local f = io.open(probe, "wb")
+        if f then
+            f:close()
+            os.remove(probe)
+            return dir
+        end
     end
-    local probe = bin_dir .. "\\.kr_write_test"
-    local f = io.open(probe, "wb")
-    if f then
-        f:close()
-        os.remove(probe)
-        return bin_dir
-    end
-    local save_bin = get_save_dir() .. "\\kr_mp_bin"
-    if init_win32(self) and self._k32 then
-        pcall(self._k32.CreateDirectoryA, save_bin, nil)
-    end
-    return save_bin
+    return cands[#cands] or "C:\\Users\\Public\\KR_MP_Bin"
 end
+
+sakura._is_ascii_path = is_ascii_path
 
 local function read_file_tail(path, max_bytes)
     local f = io.open(path, "rb")
@@ -418,7 +435,9 @@ function sakura:start_official_installer_download()
         self.dl_busy, self.dl_stage, self.dl_error = false, "error", "无法启动后台下载线程"
         return self:open_url(self.DOWNLOAD_URL, "已在浏览器打开 SakuraFrp 官方下载页。")
     end
-    th:start("kr_mp_sakura_dl", self.dl_seq, os.getenv("TEMP") or os.getenv("TMP") or ".", package.path, "launcher", "")
+    local tmp = os.getenv("TEMP") or os.getenv("TMP") or ""
+    local dl_dir = is_ascii_path(tmp) and tmp or self:get_bin_dir()
+    th:start("kr_mp_sakura_dl", self.dl_seq, dl_dir, package.path, "launcher", "")
     if self.overlay then self.overlay:show_toast("正在从樱花官方源获取最新启动器安装包并校验完整性...", 3.0) end
     return true
 end
