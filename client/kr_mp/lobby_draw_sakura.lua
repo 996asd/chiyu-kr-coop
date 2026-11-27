@@ -17,7 +17,8 @@ local function format_display_addr(lobby, addr)
     return addr
 end
 
-local function draw_dl_progress_bar(x, y, w, h, pct, stage, ver, done_b, total_b, fm)
+local function draw_dl_progress_bar(x, y, w, h, pct, stage, ver, done_b, total_b, fm, item_name)
+    local name = item_name or "官方 SakuraLauncher"
     love.graphics.setColor(58, 42, 26, 225)
     love.graphics.rectangle("fill", x, y, w, h, 4, 4)
     local fill_w = math.max(0, math.min(w - 2, math.floor((w - 2) * (pct / 100))))
@@ -32,14 +33,14 @@ local function draw_dl_progress_bar(x, y, w, h, pct, stage, ver, done_b, total_b
     if stage == "meta" then
         lbl = "正在连接樱花官方源获取最新版本信息..."
     elseif stage == "verifying" then
-        lbl = string.format("正在校验官方安装器 v%s 完整性 (MD5)...", tostring(ver or ""))
+        lbl = string.format("正在校验 %s v%s 完整性 (MD5)...", name, tostring(ver or ""))
     else
         local dm = (done_b or 0) / 1048576
         local tm = (total_b or 0) / 1048576
         if tm > 0 then
-            lbl = string.format("正在下载官方 SakuraLauncher v%s：%.1f / %.1f MB (%d%%)", tostring(ver or ""), dm, tm, pct)
+            lbl = string.format("正在下载 %s v%s：%.1f / %.1f MB (%d%%)", name, tostring(ver or ""), dm, tm, pct)
         else
-            lbl = string.format("正在下载官方 SakuraLauncher v%s：%.1f MB...", tostring(ver or ""), dm)
+            lbl = string.format("正在下载 %s v%s：%.1f MB...", name, tostring(ver or ""), dm)
         end
     end
     ui.text(lbl, x + 6, y + 2, { 255, 250, 234, 255 }, fm.tiny_bold, w - 12, "center")
@@ -165,7 +166,7 @@ local function draw_tunnels_and_nodes(ctx, y, tray_h, pub_on)
                 border = t.is_krmp and T.p1_border or T.parchment_edge,
                 border_w = t.is_krmp and 1.6 or 1.0,
             })
-            local st_tag = is_mine and "[内置运行]" or (t.online and "[在线]" or "[离线]")
+            local st_tag = is_mine and (sk.managed_proc.confirmed and "[独立frpc]" or "[连接中]") or (t.online and "[在线]" or "[离线]")
             ui.text(string.format("%s %s (:%d)%s", st_tag, t.name, t.local_port, t.p2p_addr and " P2P" or ""),
                 cx + 14, ty + 4, online_now and { 32, 108, 48, 255 } or T.ink_text, fm.tiny_bold, lw - 144, "left")
             local sub
@@ -184,6 +185,9 @@ local function draw_tunnels_and_nodes(ctx, y, tray_h, pub_on)
                 add_btn("sakura_stop_frpc", "停止", cx + lw - 72, ty + 7, 56, 24, "crimson", { tiny = true })
             elseif t.online then
                 add_btn("sakura_use_online", "已开√", cx + lw - 72, ty + 7, 56, 24, "wood", { tiny = true, tunnel = t })
+            elseif sk and sk.frpc_dl_busy then
+                local fp = (sk.get_frpc_download_pct and sk:get_frpc_download_pct()) or 0
+                add_btn("sakura_start_frpc", string.format("下%d%%", fp), cx + lw - 72, ty + 7, 56, 24, "wood", { tiny = true, tunnel = t })
             else
                 add_btn("sakura_start_frpc", "启动", cx + lw - 72, ty + 7, 56, 24, "battle", { tiny = true, tunnel = t })
             end
@@ -269,23 +273,28 @@ function M.draw(ctx)
         disp_addr, copy_addr, has_p2p = sk:get_host_share_addr(host_port)
     end
     local inst_txt = (sk and sk.installed) and "已安装官方启动器" or "未安装官方启动器"
-    local run_txt = (sk and (sk.managed_proc or sk.frpc_running)) and "frpc 运行中 √"
-        or ((sk and sk.service_running) and "后台服务运行中（未开隧道）" or "未运行")
+    local run_txt = (sk and sk.managed_proc) and (sk.managed_proc.confirmed and "独立 frpc 运行中 √" or "独立 frpc 连接中...")
+        or ((sk and sk.frpc_running) and "frpc 运行中 √"
+            or ((sk and sk.service_running) and "后台服务运行中（未开隧道）" or "未运行"))
     ui.text(string.format("免密钥本机自动感知：%s  ·  状态：%s", inst_txt, run_txt),
         cx + 12, y + 7, T.ink_text, fm.small_bold, cw - 172, "left")
 
     if sk and sk.dl_busy then
-        draw_dl_progress_bar(cx + 12, y + 27, cw - 176, 18, sk:get_download_pct(), sk.dl_stage, sk.dl_ver, sk.dl_done_bytes, sk.dl_total_bytes, fm)
+        draw_dl_progress_bar(cx + 12, y + 27, cw - 176, 18, sk:get_download_pct(), sk.dl_stage, sk.dl_ver, sk.dl_done_bytes, sk.dl_total_bytes, fm, "官方 SakuraLauncher")
         add_btn("sakura_open_download_page", "官网手动下载", cx + cw - 152, y + 22, 140, 28, "parchment", { tiny = true })
+    elseif sk and sk.frpc_dl_busy then
+        local fp = (sk.get_frpc_download_pct and sk:get_frpc_download_pct()) or 0
+        draw_dl_progress_bar(cx + 12, y + 27, cw - 176, 18, fp, sk.frpc_dl_stage, sk.frpc_dl_ver, sk.frpc_dl_done_bytes, sk.frpc_dl_total_bytes, fm, "官方独立版 frpc")
+        add_btn("sakura_launch_app", "改用官方樱花开", cx + cw - 152, y + 22, 140, 28, "wood", { tiny = true, tunnel_name = sk.managed_last_tunnel_name })
     elseif disp_addr then
         local p2p_tag = has_p2p and "  [含免费P2P优先]" or ""
         local spd_tag = (sk and sk.log_speed_text) and ("  ·  " .. sk.log_speed_text) or ""
         ui.text(string.format("已识别活跃地址：%s%s%s", format_display_addr(lobby, disp_addr), p2p_tag, spd_tag),
             cx + 12, y + 28, { 34, 108, 48, 255 }, fm.small_bold, cw - 172, "left")
-        if sk and sk.managed_proc then
+        if sk and (sk.managed_proc or sk.standalone_frpc_running) then
             add_btn("sakura_copy_detected", has_p2p and "复制P2P+中继" or "一键复制发给队友",
                 cx + cw - 152, y + 8, 140, 26, "battle", { tiny = true, copy_addr = copy_addr })
-            add_btn("sakura_stop_frpc", "停止内置隧道", cx + cw - 152, y + 39, 140, 25, "crimson", { tiny = true })
+            add_btn("sakura_stop_frpc", "停止独立隧道", cx + cw - 152, y + 39, 140, 25, "crimson", { tiny = true })
         else
             add_btn("sakura_copy_detected", has_p2p and "复制P2P+中继地址" or "一键复制发给队友",
                 cx + cw - 152, y + 22, 140, 28, "battle", { tiny = true, copy_addr = copy_addr })
@@ -301,8 +310,8 @@ function M.draw(ctx)
         add_btn("sakura_download_official", "重新拉起安装包", cx + cw - 152, y + 39, 140, 25, "parchment", { tiny = true })
     else
         ui.text((sk and sk.installed)
-            and "提示：在官方樱花启动器打开 TCP 17777 隧道后会自动抓取地址；或在下方登录密钥游戏内一键建/启隧道。"
-            or "提示：仅房主（1P）需要安装樱花映射，队友（2P）不用装！点右侧可直连官方源自动下载并校验安装。",
+            and "提示：点隧道「启动」直启官方独立版 frpc（首次自动下载校验）；也可点右侧打开官方樱花软件。"
+            or "提示：仅房主（1P）需要樱花映射，队友不用装！点右侧装官方启动器，或登录密钥自动下独立版 frpc。",
             cx + 12, y + 28, T.ink_sub, fm.tiny, cw - 172, "left")
         if sk and sk.installed then
             add_btn("sakura_launch_app", "启动官方樱花", cx + cw - 152, y + 22, 140, 28, "wood", { tiny = true })
@@ -311,8 +320,12 @@ function M.draw(ctx)
         end
     end
 
+    local sk_managed_err = sk and (sk.managed_last_error or sk.frpc_dl_error) or nil
     local sk_warn = (sk and sk.get_active_warning) and sk:get_active_warning(lobby) or nil
-    if sk_warn then
+    if sk_managed_err then
+        ui.text("独立版 frpc：" .. tostring(sk_managed_err) .. "（也可点顶部「打开官方樱花」手动开启）",
+            cx + 12, y + 51, { 166, 46, 36, 255 }, fm.tiny, cw - 176, "left")
+    elseif sk_warn then
         ui.text(sk_warn, cx + 12, y + 51, { 166, 46, 36, 255 }, fm.tiny, cw - 176, "left")
     else
         ui.text("安全承诺：绝不读取官方启动器 config.json 中的任何密钥；直连樱花官方源并自动 MD5 校验。",

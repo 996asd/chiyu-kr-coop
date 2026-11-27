@@ -23,9 +23,12 @@ local sakura = {
 
     -- Read-only local official software & log detection
     installed = false,
-    launcher_path = nil,
-    frpc_path = nil,
+    launcher_path = nil,          -- official SakuraLauncher.exe (Option B fallback GUI)
+    frpc_path = nil,              -- official launcher-bundled frpc.exe (read-only detection ONLY, never spawned!)
+    standalone_frpc_path = nil,   -- official standalone frpc_windows_*.exe downloaded to kr_mp/bin/sakura_frpc.exe (Option A)
     service_running = false,
+    official_frpc_running = false,
+    standalone_frpc_running = false,
     frpc_running = false,
     log_detected_addr = nil,      -- e.g. "frp-ski.com:54321"
     log_detected_p2p = nil,       -- e.g. "1.2.3.4:56789" if Port Export detected in log
@@ -36,7 +39,7 @@ local sakura = {
     log_warning_ts = 0,           -- unix timestamp of warning log line
     last_local_scan_ts = 0,
 
-    -- Official SakuraLauncher.exe downloader state
+    -- Official SakuraLauncher.exe downloader state (Option B installer)
     dl_busy = false,
     dl_seq = 0,
     dl_stage = nil,               -- "meta" | "downloading" | "verifying" | "done" | "error"
@@ -46,6 +49,17 @@ local sakura = {
     dl_error = nil,
     dl_path = nil,
     _dl_channel = nil,
+
+    -- Official standalone frpc downloader state (Option A CLI binary)
+    frpc_dl_busy = false,
+    frpc_dl_seq = 0,
+    frpc_dl_stage = nil,
+    frpc_dl_done_bytes = 0,
+    frpc_dl_total_bytes = 0,
+    frpc_dl_ver = nil,
+    frpc_dl_error = nil,
+    _frpc_dl_channel = nil,
+    _pending_start = nil,         -- { tunnel = ..., opts = ... } auto-launched after standalone frpc download completes
 
     -- 3-line concurrent TCP probe state
     probe_running = false,
@@ -67,8 +81,11 @@ local sakura = {
     node_page = 1,
     _api_channel = nil,
 
-    -- Managed frpc.exe process (spawned explicitly by user inside KR-MP)
-    managed_proc = nil,           -- { hProcess, pid, tunnel_id, tunnel_name, addr, p2p_addr }
+    -- Managed standalone sakura_frpc.exe process (spawned explicitly by user inside KR-MP)
+    managed_proc = nil,           -- { hProcess, pid, tunnel_id, tunnel_name, local_port, addr, p2p_addr, started_at, log_path, confirmed, keep_on_exit }
+    managed_last_error = nil,     -- concise error if managed standalone frpc exited unexpectedly
+    managed_last_tunnel_name = nil,
+    _last_managed_poll_ts = 0,
     _win32_ready = false,
     _k32 = nil,
     _shell32 = nil,
@@ -82,48 +99,49 @@ local function init_win32(self)
     local ok_ffi, ffi = pcall(require, "ffi")
     if not ok_ffi or not ffi or ffi.os ~= "Windows" then return false end
     local cdefs = {
-        [[typedef struct {
-            uint32_t dwSize; uint32_t cntUsage; uint32_t th32ProcessID;
-            uintptr_t th32DefaultHeapID; uint32_t th32ModuleID; uint32_t cntThreads;
-            uint32_t th32ParentProcessID; int32_t pcPriClassBase; uint32_t dwFlags;
-            char szExeFile[260];
-        } KR_PROCESSENTRY32;]],
-        [[typedef struct {
-            uint32_t cb; const char* lpReserved; const char* lpDesktop; const char* lpTitle;
-            uint32_t dwX; uint32_t dwY; uint32_t dwXSize; uint32_t dwYSize;
-            uint32_t dwXCountChars; uint32_t dwYCountChars; uint32_t dwFillAttribute;
-            uint32_t dwFlags; uint16_t wShowWindow; uint16_t cbReserved2; uint8_t* lpReserved2;
-            void* hStdInput; void* hStdOutput; void* hStdError;
-        } KR_STARTUPINFOA;]],
-        [[typedef struct {
-            void* hProcess; void* hThread; uint32_t dwProcessId; uint32_t dwThreadId;
-        } KR_PROCESS_INFORMATION;]],
+        "typedef struct { uint32_t dwSize; uint32_t cntUsage; uint32_t th32ProcessID; uintptr_t th32DefaultHeapID; uint32_t th32ModuleID; uint32_t cntThreads; uint32_t th32ParentProcessID; int32_t pcPriClassBase; uint32_t dwFlags; char szExeFile[260]; } KR_PROCESSENTRY32;",
+        "typedef struct { uint32_t cb; const char* lpReserved; const char* lpDesktop; const char* lpTitle; uint32_t dwX; uint32_t dwY; uint32_t dwXSize; uint32_t dwYSize; uint32_t dwXCountChars; uint32_t dwYCountChars; uint32_t dwFillAttribute; uint32_t dwFlags; uint16_t wShowWindow; uint16_t cbReserved2; uint8_t* lpReserved2; void* hStdInput; void* hStdOutput; void* hStdError; } KR_STARTUPINFOA;",
+        "typedef struct { void* hProcess; void* hThread; uint32_t dwProcessId; uint32_t dwThreadId; } KR_PROCESS_INFORMATION;",
+        "typedef struct { uint32_t nLength; void* lpSecurityDescriptor; int32_t bInheritHandle; } KR_SECURITY_ATTRIBUTES;",
         "void* CreateToolhelp32Snapshot(uint32_t dwFlags, uint32_t th32ProcessID);",
         "int32_t Process32First(void* hSnapshot, KR_PROCESSENTRY32* lppe);",
         "int32_t Process32Next(void* hSnapshot, KR_PROCESSENTRY32* lppe);",
+        "void* OpenProcess(uint32_t dwDesiredAccess, int32_t bInheritHandle, uint32_t dwProcessId);",
         "int32_t CloseHandle(void* hObject);",
+        "uint32_t GetCurrentProcessId(void);",
+        "int32_t CreateDirectoryA(const char* lpPathName, void* lpSecurityAttributes);",
+        "void* CreateFileA(const char* lpFileName, uint32_t dwDesiredAccess, uint32_t dwShareMode, KR_SECURITY_ATTRIBUTES* lpSecurityAttributes, uint32_t dwCreationDisposition, uint32_t dwFlagsAndAttributes, void* hTemplateFile);",
         "int32_t SetEnvironmentVariableA(const char* lpName, const char* lpValue);",
-        [[int32_t CreateProcessA(
-            const char* lpApplicationName, char* lpCommandLine, void* lpProcessAttributes,
-            void* lpThreadAttributes, int32_t bInheritHandles, uint32_t dwCreationFlags,
-            void* lpEnvironment, const char* lpCurrentDirectory,
-            KR_STARTUPINFOA* lpStartupInfo, KR_PROCESS_INFORMATION* lpProcessInformation
-        );]],
+        "int32_t CreateProcessA(const char* lpApplicationName, char* lpCommandLine, void* lpProcessAttributes, void* lpThreadAttributes, int32_t bInheritHandles, uint32_t dwCreationFlags, void* lpEnvironment, const char* lpCurrentDirectory, KR_STARTUPINFOA* lpStartupInfo, KR_PROCESS_INFORMATION* lpProcessInformation);",
         "int32_t GetExitCodeProcess(void* hProcess, uint32_t* lpExitCode);",
         "int32_t TerminateProcess(void* hProcess, uint32_t uExitCode);",
         "void* ShellExecuteA(void* hwnd, const char* lpOperation, const char* lpFile, const char* lpParameters, const char* lpDirectory, int32_t nShowCmd);",
     }
     for _, decl in ipairs(cdefs) do pcall(ffi.cdef, decl) end
     local ok_k, k32 = pcall(ffi.load, "kernel32")
-    if ok_k and k32 then
-        self._ffi = ffi
-        self._k32 = k32
-    end
+    if ok_k and k32 then self._ffi, self._k32 = ffi, k32 end
     local ok_s, sh32 = pcall(ffi.load, "shell32")
-    if ok_s and sh32 then
-        self._shell32 = sh32
-    end
+    if ok_s and sh32 then self._shell32 = sh32 end
     return self._k32 ~= nil
+end
+
+local function get_base_dir()
+    local ok, base = pcall(function() return love.filesystem.getSourceBaseDirectory() end)
+    return (ok and type(base) == "string" and #base > 0) and base:gsub("/", "\\"):gsub("\\+$", "") or "."
+end
+
+local function get_save_dir()
+    local ok, sd = pcall(function() return love.filesystem.getSaveDirectory() end)
+    if ok and type(sd) == "string" and #sd > 0 then return sd:gsub("/", "\\"):gsub("\\+$", "") end
+    return (os.getenv("TEMP") or "."):gsub("/", "\\"):gsub("\\+$", "")
+end
+
+local function detect_windows_frpc_arch()
+    local pa = tostring(os.getenv("PROCESSOR_ARCHITECTURE") or ""):upper()
+    local paw = tostring(os.getenv("PROCESSOR_ARCHITEW6432") or ""):upper()
+    if pa == "AMD64" or paw == "AMD64" then return "windows_amd64" end
+    if pa == "ARM64" or paw == "ARM64" then return "windows_arm64" end
+    return "windows_386"
 end
 
 local function file_exists(path)
@@ -152,63 +170,25 @@ end
 -- === Privacy Masking & Export Address Utilities ===
 
 function sakura.mask_addr(addr)
-    if type(addr) ~= "string" or #addr == 0 then return "" end
-    local p1, p2 = proto.split_fallback_addr(addr)
-    local function mask_one(s)
-        local host, port = s:match("^([^:]+):(%d+)$")
-        if not host then host = s end
-        local mh
-        if host:match("^%d+%.%d+%.%d+%.%d+$") then
-            local a, d = host:match("^(%d+)%.%d+%.%d+%.(%d+)$")
-            mh = a and (a .. ".*.*." .. d) or "***.***"
-        else
-            local head, tail = host:match("^([^%.]+).*%.([^%.]+%.[^%.]+)$")
-            if head and tail then
-                mh = head:sub(1, 3) .. "***." .. tail
-            else
-                local h2, t2 = host:match("^([^%.]+)%.([^%.]+)$")
-                mh = (h2 and t2) and (h2:sub(1, 4) .. "***." .. t2) or (host:sub(1, 3) .. "***")
-            end
-        end
-        return port and (mh .. ":*****") or mh
-    end
-    if p2 then
-        return mask_one(p1) .. "|" .. mask_one(p2)
-    end
-    return mask_one(p1 or addr)
+    return workers.mask_addr(proto, addr)
 end
 
 function sakura.parse_export_field(exp_str)
-    if type(exp_str) ~= "string" or #exp_str < 5 then return nil end
-    local _, ip_raw, port_raw = exp_str:match("^([^|]+)|([^|]+)|(%d+)$")
-    local port = tonumber(port_raw)
-    if not ip_raw or not port or port <= 0 or port > 65535 then return nil end
-    local ip_str = nil
-    if ip_raw:match("^%d+%.%d+%.%d+%.%d+$") then
-        ip_str = ip_raw
-    elseif ip_raw:match("^%d+$") then
-        local n = tonumber(ip_raw)
-        if n and n > 0 and n <= 4294967295 then
-            local b1 = math.floor(n / 16777216) % 256
-            local b2 = math.floor(n / 65536) % 256
-            local b3 = math.floor(n / 256) % 256
-            local b4 = n % 256
-            ip_str = string.format("%d.%d.%d.%d", b1, b2, b3, b4)
-        end
-    end
-    if not ip_str or ip_str == "0.0.0.0" or ip_str:match("^127%.") then return nil end
-    return ip_str .. ":" .. tostring(math.floor(port))
+    return workers.parse_export_field(exp_str)
 end
 
 -- === Part 1: Read-Only Local Software & Log Detection (NO SECRETS) ===
 
 local function scan_processes(self)
     self.service_running = false
+    self.official_frpc_running = false
+    self.standalone_frpc_running = false
     self.frpc_running = false
-    if not init_win32(self) or not self._k32 then return end
+    local standalone_pids = {}
+    if not init_win32(self) or not self._k32 then return standalone_pids end
     local ffi, k32 = self._ffi, self._k32
     local snap = k32.CreateToolhelp32Snapshot(0x00000002, 0) -- TH32CS_SNAPPROCESS
-    if snap == nil or tonumber(ffi.cast("intptr_t", snap)) == -1 then return end
+    if snap == nil or tonumber(ffi.cast("intptr_t", snap)) == -1 then return standalone_pids end
     local pe = ffi.new("KR_PROCESSENTRY32")
     pe.dwSize = ffi.sizeof(pe)
     if k32.Process32First(snap, pe) ~= 0 then
@@ -217,93 +197,58 @@ local function scan_processes(self)
             if name == "sakurafrpservice.exe" or name == "sakuralauncher.exe" then
                 self.service_running = true
             elseif name == "frpc.exe" then
-                self.frpc_running = true
+                self.official_frpc_running = true
+            elseif name == "sakura_frpc.exe" then
+                self.standalone_frpc_running = true
+                standalone_pids[#standalone_pids + 1] = tonumber(pe.th32ProcessID) or 0
             end
         until k32.Process32Next(snap, pe) == 0
     end
     k32.CloseHandle(snap)
+    self.frpc_running = self.official_frpc_running or self.standalone_frpc_running
+    return standalone_pids
 end
 
-local function parse_log_timestamp(line)
-    local y, mo, d, h, mi, s = line:match("(%d%d%d%d)[/%-](%d%d)[/%-](%d%d)%s+(%d%d):(%d%d):(%d%d)")
-    if not y then return 0 end
-    local ok, ts = pcall(os.time, {
-        year = tonumber(y), month = tonumber(mo), day = tonumber(d),
-        hour = tonumber(h), min = tonumber(mi), sec = tonumber(s),
-    })
-    return (ok and tonumber(ts)) or 0
+function sakura:find_standalone_frpc()
+    local base = get_base_dir()
+    local save = get_save_dir()
+    for _, p in ipairs({
+        base .. "\\kr_mp\\bin\\sakura_frpc.exe",
+        save .. "\\kr_mp_bin\\sakura_frpc.exe",
+    }) do
+        if file_exists(p) then return p end
+    end
+    return nil
 end
 
-local function parse_sakura_log_tail(text)
-    local tunnels = {}
-    local line_no = 0
-    for line in text:gmatch("[^\r\n]+") do
-        line_no = line_no + 1
-        local tname = line:match("frpc%[([^|%]]+)|") or line:match("Tunnel/([^%s]+)")
-        if tname then
-            if not tunnels[tname] then
-                tunnels[tname] = {
-                    name = tname, alive = false, is_http = false,
-                    addr = nil, p2p = nil, speed = nil, last_seen = 0,
-                    warn_msg = nil, warn_kind = nil, warn_ts = 0,
-                }
-            end
-            local t = tunnels[tname]
-            t.last_seen = line_no
-            if line:find("frpc 已退出", 1, true) or line:find("frpc 异常退出", 1, true) or line:find("已关闭该隧道", 1, true) then
-                t.alive = false
-            end
-            if line:find("自动 HTTPS 已被禁用", 1, true) then
-                t.is_http = false
-            elseif line:find("自动 HTTPS", 1, true) or line:find("加载证书", 1, true) or line:find("生成自签证书", 1, true) then
-                t.is_http = true
-            end
-            if line:find("TCP 隧道启动成功", 1, true) then
-                t.alive = true
-            end
-            local spd = line:match("限速已更新:%s*([%w%./%s]+)")
-            if spd then t.speed = spd:gsub("%s+$", "") end
-            local addr = line:match(">>([%w%-]+%.[%w%.%-]+:%d+)<<")
-            if addr then
-                t.addr = addr
-                t.alive = true
-            end
-            if line:find("端口导出", 1, true) or line:find("NAT 开放", 1, true) then
-                local p2p = line:match("(%d+%.%d+%.%d+%.%d+:%d+)")
-                if p2p and not p2p:match("^127%.") then t.p2p = p2p end
-            end
-            if line:find("连接映射目标", 1, true) and line:find("失败", 1, true) then
-                t.warn_msg = "樱花日志提示：隧道无法连上本机游戏端口，请检查隧道本地端口是否设为 17777"
-                t.warn_kind = "local_refused"
-                t.warn_ts = parse_log_timestamp(line)
-            elseif line:find("无权使用该节点", 1, true) then
-                t.warn_msg = "樱花日志提示：当前节点 VIP 已到期或无权使用，请更换免费/多线节点"
-                t.warn_kind = "vip_denied"
-                t.warn_ts = parse_log_timestamp(line)
-            elseif line:find("网络波动导致数据连接断开", 1, true) then
-                t.warn_msg = "樱花节点近期有波动（联机中已自动受 180 秒热续传保护）"
-                t.warn_kind = "net_jitter"
-                t.warn_ts = parse_log_timestamp(line)
-            end
-        end
+function sakura:get_bin_dir()
+    local bin_dir = get_base_dir() .. "\\kr_mp\\bin"
+    if init_win32(self) and self._k32 then
+        pcall(self._k32.CreateDirectoryA, bin_dir, nil)
     end
+    local probe = bin_dir .. "\\.kr_write_test"
+    local f = io.open(probe, "wb")
+    if f then
+        f:close()
+        os.remove(probe)
+        return bin_dir
+    end
+    local save_bin = get_save_dir() .. "\\kr_mp_bin"
+    if init_win32(self) and self._k32 then
+        pcall(self._k32.CreateDirectoryA, save_bin, nil)
+    end
+    return save_bin
+end
 
-    local best_non_http, best_any = nil, nil
-    for _, t in pairs(tunnels) do
-        if t.alive and t.addr then
-            if not best_any or t.last_seen > best_any.last_seen then
-                best_any = t
-            end
-            if not t.is_http and (not best_non_http or t.last_seen > best_non_http.last_seen) then
-                best_non_http = t
-            end
-        end
-    end
-    local picked = best_non_http or best_any
-    if picked and picked.warn_msg then
-        return picked, picked.warn_msg, picked.warn_kind, picked.warn_ts
-    end
-    return picked, nil, nil, 0
+local function read_file_tail(path, max_bytes)
+    local f = io.open(path, "rb")
+    if not f then return nil end
+    local sz = f:seek("end") or 0
+    local start_pos = math.max(0, sz - (max_bytes or 32768))
+    f:seek("set", start_pos)
+    local chunk = f:read("*a") or ""
+    f:close()
+    return chunk
 end
 
 function sakura:scan_local(force)
@@ -335,6 +280,7 @@ function sakura:scan_local(force)
         if self.launcher_path or self.frpc_path then break end
     end
     self.installed = (self.launcher_path ~= nil or self.frpc_path ~= nil)
+    self.standalone_frpc_path = self:find_standalone_frpc()
 
     scan_processes(self)
     self:poll_managed_frpc()
@@ -347,21 +293,15 @@ function sakura:scan_local(force)
     self.log_warning = nil
     self.log_warning_kind = nil
     self.log_warning_ts = 0
-    if self.frpc_running then
+    if self.official_frpc_running then
         local pd = os.getenv("ProgramData") or "C:\\ProgramData"
         local log_dir = pd .. "\\SakuraFrpService\\Logs"
         local now_t = os.time()
         local dates = { os.date("%Y%m%d", now_t), os.date("%Y%m%d", now_t - 86400) }
         for _, dstr in ipairs(dates) do
-            local lp = log_dir .. "\\SakuraFrpService." .. dstr .. ".log"
-            local f = io.open(lp, "rb")
-            if f then
-                local sz = f:seek("end") or 0
-                local start_pos = math.max(0, sz - 49152)
-                f:seek("set", start_pos)
-                local chunk = f:read("*a") or ""
-                f:close()
-                local best, warn, wkind, wts = parse_sakura_log_tail(chunk)
+            local chunk = read_file_tail(log_dir .. "\\SakuraFrpService." .. dstr .. ".log", 49152)
+            if chunk then
+                local best, warn, wkind, wts = workers.parse_sakura_log_tail(chunk)
                 self.log_warning = warn
                 self.log_warning_kind = wkind
                 self.log_warning_ts = tonumber(wts) or 0
@@ -372,6 +312,20 @@ function sakura:scan_local(force)
                     self.log_speed_text = best.speed
                     break
                 end
+            end
+        end
+    end
+    -- Also inspect kept-alive standalone sakura_frpc.log if no official log address was picked
+    if (not self.log_detected_addr) and self.standalone_frpc_running and self.standalone_frpc_path then
+        local ldir = self.standalone_frpc_path:match("^(.*)[/\\][^/\\]+$")
+        local chunk = ldir and read_file_tail(ldir .. "\\sakura_frpc.log", 16384) or nil
+        if chunk then
+            local best = workers.parse_sakura_log_tail(chunk, "standalone")
+            if best and best.addr then
+                self.log_detected_addr = best.addr
+                self.log_detected_p2p = best.p2p
+                self.log_detected_tunnel = best.name
+                self.log_speed_text = best.speed
             end
         end
     end
@@ -416,59 +370,83 @@ function sakura:open_url(url, toast_msg)
     return true
 end
 
-function sakura:launch_official_launcher()
+function sakura:launch_official_launcher(tunnel_name)
     if self.launcher_path and init_win32(self) and self._shell32 then
         self._shell32.ShellExecuteA(nil, "open", self.launcher_path, nil, nil, 1)
         if self.overlay then
-            self.overlay:show_toast("已唤起官方 SakuraFrp 启动器，启动 17777 隧道后战桌会自动识别地址！", 3.5)
+            if type(tunnel_name) == "string" and #tunnel_name > 0 then
+                self.overlay:show_toast(string.format(
+                    "已打开官方樱花启动器！在「隧道」页打开「%s」开关，战桌会自动识别公网地址！",
+                    tunnel_name), 4.5)
+            else
+                self.overlay:show_toast("已唤起官方 SakuraFrp 启动器，启动 17777 / 17780 隧道后战桌会自动识别地址！", 3.5)
+            end
         end
         return true
     end
     return self:start_official_installer_download()
 end
 
--- === Part 2: Official SakuraLauncher.exe 1-Click Downloader (Route 1A) ===
+-- === Part 2: Official SakuraLauncher.exe & Standalone frpc 1-Click Downloaders ===
 
-function sakura:get_download_pct()
-    if self.dl_total_bytes and self.dl_total_bytes > 0 then
-        return math.max(0, math.min(100, math.floor((self.dl_done_bytes / self.dl_total_bytes) * 100 + 0.5)))
+local function calc_pct(done_b, total_b)
+    if total_b and total_b > 0 then
+        return math.max(0, math.min(100, math.floor(((done_b or 0) / total_b) * 100 + 0.5)))
     end
     return 0
 end
+
+function sakura:get_download_pct() return calc_pct(self.dl_done_bytes, self.dl_total_bytes) end
+function sakura:get_frpc_download_pct() return calc_pct(self.frpc_dl_done_bytes, self.frpc_dl_total_bytes) end
 
 function sakura:start_official_installer_download()
     if not is_windows() then
         return self:open_url(self.DOWNLOAD_URL, "已打开 SakuraFrp 官方下载页，请按你的设备下载官方客户端。")
     end
     if self.dl_busy then
-        if self.overlay then
-            self.overlay:show_toast(string.format("正在后台下载官方樱花安装器（%d%%），请稍候...", self:get_download_pct()), 2.4)
-        end
+        if self.overlay then self.overlay:show_toast(string.format("正在后台下载官方樱花安装器（%d%%），请稍候...", self:get_download_pct()), 2.4) end
         return false
     end
     if not (love and love.thread and love.thread.newThread and love.thread.getChannel) then
         return self:open_url(self.DOWNLOAD_URL, "已在浏览器打开 SakuraFrp 官方下载页。")
     end
     self._dl_channel = self._dl_channel or love.thread.getChannel("kr_mp_sakura_dl")
-    self.dl_seq = self.dl_seq + 1
-    self.dl_busy = true
-    self.dl_stage = "meta"
-    self.dl_done_bytes = 0
-    self.dl_total_bytes = 0
-    self.dl_error = nil
+    self.dl_seq, self.dl_busy, self.dl_stage, self.dl_done_bytes, self.dl_total_bytes, self.dl_error =
+        self.dl_seq + 1, true, "meta", 0, 0, nil
     local ok, th = pcall(love.thread.newThread, workers.INSTALLER_WORKER_CODE)
     if not ok or not th then
-        self.dl_busy = false
-        self.dl_stage = "error"
-        self.dl_error = "无法启动后台下载线程"
+        self.dl_busy, self.dl_stage, self.dl_error = false, "error", "无法启动后台下载线程"
         return self:open_url(self.DOWNLOAD_URL, "已在浏览器打开 SakuraFrp 官方下载页。")
     end
-    local tmp = os.getenv("TEMP") or os.getenv("TMP") or "."
-    th:start("kr_mp_sakura_dl", self.dl_seq, tmp, package.path)
-    if self.overlay then
-        self.overlay:show_toast("正在从樱花官方源获取最新启动器安装包并校验完整性...", 3.0)
-    end
+    th:start("kr_mp_sakura_dl", self.dl_seq, os.getenv("TEMP") or os.getenv("TMP") or ".", package.path, "launcher", "")
+    if self.overlay then self.overlay:show_toast("正在从樱花官方源获取最新启动器安装包并校验完整性...", 3.0) end
     return true
+end
+
+function sakura:start_standalone_frpc_download(pending_tunnel, pending_opts)
+    if not is_windows() then return false, "仅 PC Windows 支持自动下载官方独立版 frpc" end
+    if pending_tunnel then self._pending_start = { tunnel = pending_tunnel, opts = pending_opts } end
+    if self.frpc_dl_busy then
+        if self.overlay then self.overlay:show_toast(string.format("正在下载官方独立版 frpc（%d%%），下完立即自动启动隧道...", self:get_frpc_download_pct()), 2.6) end
+        return true, "downloading"
+    end
+    if not (love and love.thread and love.thread.newThread and love.thread.getChannel) then
+        return false, "当前环境不支持后台下载线程，请点「用官方樱花开」"
+    end
+    self._frpc_dl_channel = self._frpc_dl_channel or love.thread.getChannel("kr_mp_sakura_frpc_dl")
+    self.frpc_dl_seq, self.frpc_dl_busy, self.frpc_dl_stage, self.frpc_dl_done_bytes, self.frpc_dl_total_bytes =
+        self.frpc_dl_seq + 1, true, "meta", 0, 0
+    self.frpc_dl_error, self.managed_last_error = nil, nil
+    local ok, th = pcall(love.thread.newThread, workers.INSTALLER_WORKER_CODE)
+    if not ok or not th then
+        self.frpc_dl_busy, self.frpc_dl_stage, self.frpc_dl_error, self._pending_start = false, "error", "无法启动后台下载线程", nil
+        return false, self.frpc_dl_error
+    end
+    th:start("kr_mp_sakura_frpc_dl", self.frpc_dl_seq, self:get_bin_dir(), package.path, "frpc", detect_windows_frpc_arch())
+    if self.overlay then
+        self.overlay:show_toast("首次内启将从樱花官方源下载独立版 frpc（约 13.5 MB，自动 MD5 校验），下完自动开启隧道！", 3.8)
+    end
+    return true, "downloading"
 end
 
 -- Get best active connectable address for Host to share with 2P (returns display_addr, copy_addr, has_p2p)
@@ -627,101 +605,10 @@ function sakura:create_krmp_tunnel(node_id, local_port)
 end
 
 local function process_api_refresh(self, res)
-    local u = res.user or {}
-    local grp = type(u.group) == "table" and u.group or {}
-    local tr = type(u.traffic) == "table" and u.traffic or {}
-    local used_b = tonumber(tr[1]) or 0
-    local rem_b = tonumber(tr[2]) or 0
-    self.user_info = {
-        id = tonumber(u.id) or 0,
-        name = tostring(u.name or "SakuraUser"),
-        group_name = tostring(grp.name or "免费用户"),
-        group_level = tonumber(grp.level) or 0,
-        speed = tostring(u.speed or "10 Mbps"),
-        tunnels_max = tonumber(u.tunnels) or 2,
-        realname = tonumber(u.realname) or 0,
-        used_today_mib = math.floor(used_b / 1048576 + 0.5),
-        remain_gib = math.floor((rem_b / 1073741824) * 10 + 0.5) / 10,
-    }
-
-    -- Index nodes & live stats
-    local bit = require("bit")
-    local stats_by_id = {}
-    if type(res.stats) == "table" and type(res.stats.nodes) == "table" then
-        for _, ns in ipairs(res.stats.nodes) do
-            if tonumber(ns.id) then stats_by_id[tonumber(ns.id)] = ns end
-        end
-    end
-
-    local nodes_by_id = {}
-    local rec = {}
-    if type(res.nodes) == "table" then
-        for id_k, nd in pairs(res.nodes) do
-            local nid = tonumber(id_k) or tonumber(nd.id)
-            if nid and type(nd) == "table" and nd.host then
-                local fl = tonumber(nd.flag) or 0
-                local name = tostring(nd.name or ("节点#" .. nid))
-                local st = stats_by_id[nid] or {}
-                local online = (st.online == nil) or (tonumber(st.online) >= 0)
-                local load_pct = tonumber(st.load) or 50
-                local allow_create = (bit.band(fl, 4) ~= 0)
-                local is_mainland = (bit.band(fl, 8) ~= 0)
-                local is_public_ok = (bit.band(fl, 2048) ~= 0) or (name:find("多线", 1, true) ~= nil)
-                local entry = {
-                    id = nid,
-                    name = name,
-                    host = tostring(nd.host),
-                    vip = tonumber(nd.vip) or 0,
-                    flag = fl,
-                    online = online,
-                    load = load_pct,
-                    allow_create = allow_create,
-                    is_mainland = is_mainland,
-                    is_public_ok = is_public_ok,
-                }
-                nodes_by_id[nid] = entry
-                if online and allow_create and entry.vip <= self.user_info.group_level then
-                    rec[#rec + 1] = entry
-                end
-            end
-        end
-    end
-
+    local user_info, rec, tlist = workers.parse_api_refresh(res, proto.DEFAULT_TCP_PORT)
+    self.user_info = user_info
     self._all_rec_nodes = rec
     self:rebuild_filtered_nodes()
-
-    -- Build user's TCP tunnel list (17777 prioritized)
-    local tlist = {}
-    if type(res.tunnels) == "table" then
-        for _, t in ipairs(res.tunnels) do
-            if type(t) == "table" and (t.type == "tcp" or t.type == "etcp") then
-                local nd = nodes_by_id[tonumber(t.node)]
-                local host = nd and nd.host or nil
-                local remote_s = tostring(t.remote or "")
-                local addr = (host and remote_s:match("^%d+$")) and (host .. ":" .. remote_s) or nil
-                local p2p = sakura.parse_export_field(t.export)
-                tlist[#tlist + 1] = {
-                    id = tonumber(t.id) or 0,
-                    name = tostring(t.name or "tunnel"),
-                    type = tostring(t.type),
-                    node = tonumber(t.node) or 0,
-                    node_name = nd and nd.name or ("节点#" .. tostring(t.node)),
-                    local_ip = tostring(t.local_ip or "127.0.0.1"),
-                    local_port = tonumber(t.local_port) or 0,
-                    remote = remote_s,
-                    online = (t.online == true),
-                    addr = addr,
-                    p2p_addr = p2p,
-                    is_krmp = (tonumber(t.local_port) == proto.DEFAULT_TCP_PORT),
-                }
-            end
-        end
-    end
-    table.sort(tlist, function(a, b)
-        if a.is_krmp ~= b.is_krmp then return a.is_krmp end
-        if a.online ~= b.online then return a.online end
-        return a.id < b.id
-    end)
     self.tunnels = tlist
 end
 
@@ -743,68 +630,139 @@ function sakura:rebuild_filtered_nodes()
     self.node_page = 1
 end
 
--- === Part 5: Zero-Popup Managed frpc.exe Launcher (Env-Passed Token, Clean Stop) ===
+-- === Part 5: Zero-Popup Managed Standalone sakura_frpc.exe Launcher (Option A + B Fallback) ===
 
 function sakura:poll_managed_frpc()
     if not self.managed_proc or not self._k32 then return false end
+    local mp = self.managed_proc
+    local chunk = mp.log_path and read_file_tail(mp.log_path, 8192) or nil
+    if chunk and #chunk > 0 then
+        local parsed = workers.parse_sakura_log_tail(chunk, mp.tunnel_name or "standalone")
+        if parsed and parsed.alive then
+            mp.confirmed = true
+            if parsed.addr then mp.addr = parsed.addr end
+            if parsed.p2p then mp.p2p_addr = parsed.p2p end
+            if parsed.speed then self.log_speed_text = parsed.speed end
+        end
+    end
     local code = self._ffi.new("uint32_t[1]", 0)
-    local ok = self._k32.GetExitCodeProcess(self.managed_proc.hProcess, code)
+    local ok = self._k32.GetExitCodeProcess(mp.hProcess, code)
     if ok == 0 or tonumber(code[0]) ~= 259 then -- 259 = STILL_ACTIVE
-        self._k32.CloseHandle(self.managed_proc.hProcess)
+        local exit_code = tonumber(code[0]) or 0
+        pcall(self._k32.CloseHandle, mp.hProcess)
+        local final_chunk = mp.log_path and read_file_tail(mp.log_path, 8192) or chunk or ""
+        local diag = workers.diagnose_frpc_log(final_chunk)
+        local tname = tostring(mp.tunnel_name or ("#" .. tostring(mp.tunnel_id)))
         self.managed_proc = nil
+        self.standalone_frpc_running = false
+        self.frpc_running = self.official_frpc_running
+        self.managed_last_error = diag
+        self.managed_last_tunnel_name = tname
+        if self.boot then
+            self.boot:log("[SAKURA] Managed standalone frpc exited (tunnel=%s exit=%d diag=%s)", tname, exit_code, diag)
+        end
+        if self.overlay then
+            self.overlay:show_toast(string.format(
+                "独立版 frpc 异常退出（%s）；可点「用官方樱花开」在官方客户端开启「%s」！", diag, tname), 5.0)
+        end
         return false
     end
     return true
 end
 
 function sakura:stop_managed_frpc()
-    if not self.managed_proc then return false end
-    if self._k32 and self.managed_proc.hProcess ~= nil then
+    local stopped = false
+    local name = self.managed_proc and self.managed_proc.tunnel_name or nil
+    if self.managed_proc and self._k32 and self.managed_proc.hProcess ~= nil then
         pcall(self._k32.TerminateProcess, self.managed_proc.hProcess, 0)
         pcall(self._k32.CloseHandle, self.managed_proc.hProcess)
+        self.managed_proc = nil
+        stopped = true
     end
-    local name = self.managed_proc.tunnel_name
-    self.managed_proc = nil
-    if self.boot then
-        self.boot:log("[SAKURA] Stopped managed frpc process (tunnel=%s)", tostring(name))
+    -- Also terminate any kept-alive standalone sakura_frpc.exe (NEVER touches official frpc.exe!)
+    if init_win32(self) and self._k32 then
+        local spids = scan_processes(self)
+        for _, pid in ipairs(spids) do
+            if pid > 0 then
+                local h = self._k32.OpenProcess(0x0001, 0, pid) -- PROCESS_TERMINATE
+                if h ~= nil then
+                    pcall(self._k32.TerminateProcess, h, 0)
+                    pcall(self._k32.CloseHandle, h)
+                    stopped = true
+                end
+            end
+        end
     end
-    return true
+    self.standalone_frpc_running = false
+    self.frpc_running = self.official_frpc_running
+    if stopped and self.boot then
+        self.boot:log("[SAKURA] Stopped managed standalone sakura_frpc.exe (tunnel=%s)", tostring(name or "kept-alive"))
+    end
+    return stopped
 end
 
-function sakura:start_managed_frpc(tunnel)
+function sakura:start_managed_frpc(tunnel, opts)
     if not tunnel or not tunnel.id then return false, "无效隧道" end
     if not is_windows() or not init_win32(self) or not self._k32 then
-        return false, "仅 PC Windows 支持内置启动 frpc.exe"
-    end
-    if not self.frpc_path then
-        return false, "未找到本机 frpc.exe，请先点上方「一键装官方樱花」安装启动器"
+        return false, "仅 PC Windows 支持内置启动独立版 frpc"
     end
     if type(self.token) ~= "string" or #self.token < 8 then
         return false, "请先粘贴你的樱花访问密钥"
     end
     if tunnel.online and (not self.managed_proc or self.managed_proc.tunnel_id ~= tunnel.id) then
-        return false, "该隧道已在官方启动器中运行！无需重复启动，可直接复制地址使用。"
+        return false, "该隧道已在运行中！无需重复启动，可直接复制地址使用。"
+    end
+
+    -- Option A: Always use official standalone sakura_frpc.exe (NEVER SakuraFrpLauncher\frpc.exe!)
+    self.standalone_frpc_path = self:find_standalone_frpc()
+    if not self.standalone_frpc_path then
+        return self:start_standalone_frpc_download(tunnel, opts)
     end
 
     self:stop_managed_frpc()
+    self.managed_last_error = nil
+    self.managed_last_tunnel_name = tunnel.name
     local ffi, k32 = self._ffi, self._k32
-    local cmd = string.format('"%s" -n --disable_log_color', self.frpc_path)
+    local watch_pid = (opts and tonumber(opts.watch_pid) and tonumber(opts.watch_pid) > 0)
+        and math.floor(tonumber(opts.watch_pid))
+        or tonumber(k32.GetCurrentProcessId()) or 0
+    local cmd = (watch_pid > 0)
+        and string.format('"%s" -n --disable_log_color --watch %d', self.standalone_frpc_path, watch_pid)
+        or string.format('"%s" -n --disable_log_color', self.standalone_frpc_path)
     local cmd_buf = ffi.new("char[?]", #cmd + 1, cmd)
     local si = ffi.new("KR_STARTUPINFOA")
     si.cb = ffi.sizeof(si)
     local pi = ffi.new("KR_PROCESS_INFORMATION")
-    local workdir = self.frpc_path:match("^(.*)[/\\][^/\\]+$")
+    local workdir = self.standalone_frpc_path:match("^(.*)[/\\][^/\\]+$") or self:get_bin_dir()
+    local log_path = workdir .. "\\sakura_frpc.log"
+
+    -- Redirect stdout/stderr to sakura_frpc.log (zero console popup, live startup & error diagnostics)
+    local sa = ffi.new("KR_SECURITY_ATTRIBUTES")
+    sa.nLength = ffi.sizeof(sa)
+    sa.lpSecurityDescriptor = nil
+    sa.bInheritHandle = 1
+    local hLog = k32.CreateFileA(log_path, 0x40000000, 3, sa, 2, 0x80, nil) -- GENERIC_WRITE, SHARE_RW, CREATE_ALWAYS
+    local log_ok = (hLog ~= nil and tonumber(ffi.cast("intptr_t", hLog)) ~= -1)
+    local inherit = 0
+    if log_ok then
+        si.dwFlags = 0x00000100 -- STARTF_USESTDHANDLES
+        si.hStdOutput = hLog
+        si.hStdError = hLog
+        inherit = 1
+    end
 
     local old_tok = os.getenv("NATFRP_TOKEN")
     local old_tgt = os.getenv("NATFRP_TARGET")
     k32.SetEnvironmentVariableA("NATFRP_TOKEN", self.token)
     k32.SetEnvironmentVariableA("NATFRP_TARGET", tostring(tunnel.id))
-    local ok = k32.CreateProcessA(nil, cmd_buf, nil, nil, 0, 0x08000000, nil, workdir, si, pi) -- CREATE_NO_WINDOW
+    local ok = k32.CreateProcessA(nil, cmd_buf, nil, nil, inherit, 0x08000000, nil, workdir, si, pi) -- CREATE_NO_WINDOW
     k32.SetEnvironmentVariableA("NATFRP_TOKEN", old_tok)
     k32.SetEnvironmentVariableA("NATFRP_TARGET", old_tgt)
+    if log_ok then pcall(k32.CloseHandle, hLog) end
 
     if ok == 0 then
-        return false, "启动 frpc.exe 失败（可能被杀毒软件拦截）"
+        self.managed_last_error = "系统拒绝启动 sakura_frpc.exe（可能被安全软件拦截）"
+        return false, self.managed_last_error
     end
     k32.CloseHandle(pi.hThread)
     self.managed_proc = {
@@ -812,58 +770,83 @@ function sakura:start_managed_frpc(tunnel)
         pid = tonumber(pi.dwProcessId) or 0,
         tunnel_id = tunnel.id,
         tunnel_name = tunnel.name,
+        local_port = tonumber(tunnel.local_port) or proto.DEFAULT_TCP_PORT,
         addr = tunnel.addr,
         p2p_addr = tunnel.p2p_addr,
+        started_at = now_sec(),
+        log_path = log_ok and log_path or nil,
+        confirmed = false,
+        keep_on_exit = (opts and opts.keep_on_exit == true) or false,
     }
+    self.standalone_frpc_running = true
     self.frpc_running = true
     if self.boot then
-        self.boot:log("[SAKURA] Started managed frpc pid=%d tunnel=#%d (%s -> %s)",
-            self.managed_proc.pid, tunnel.id, tostring(tunnel.name), tostring(tunnel.addr))
+        self.boot:log("[SAKURA] Started standalone sakura_frpc.exe pid=%d watch=%d tunnel=#%d (%s -> %s)",
+            self.managed_proc.pid, watch_pid, tunnel.id, tostring(tunnel.name), tostring(tunnel.addr))
     end
     return true
 end
 
 -- === Lifecycle ===
 
-function sakura:init(boot, overlay)
-    self.boot = boot
-    self.overlay = overlay
-    self:scan_local(true)
-end
-
-function sakura:update(dt, lobby)
-    -- 1. Drain official installer download progress/result
-    if self._dl_channel then
-        while true do
-            local res = self._dl_channel:pop()
-            if not res then break end
-            if res.seq == self.dl_seq then
-                self.dl_stage = res.stage
-                if res.ver then self.dl_ver = res.ver end
-                if res.done then self.dl_done_bytes = res.done end
-                if res.total then self.dl_total_bytes = res.total end
-                if res.stage == "error" then
-                    self.dl_busy = false
-                    self.dl_error = tostring(res.err or "下载失败")
-                    if self.overlay then self.overlay:show_toast("官方樱花下载失败：" .. self.dl_error, 4.2) end
-                elseif res.stage == "done" and res.ok and res.path then
-                    self.dl_busy = false
-                    self.dl_error = nil
-                    self.dl_path = res.path
-                    if init_win32(self) and self._shell32 then
-                        self._shell32.ShellExecuteA(nil, "open", res.path, nil, nil, 1)
-                    end
-                    if self.overlay then
-                        self.overlay:show_toast(string.format(
-                            "官方樱花 v%s 校验通过，已拉起安装向导！装完点「刷新状态」即可。",
-                            tostring(res.ver or "")), 5.0)
-                    end
+local function drain_launcher_dl(self)
+    if not self._dl_channel then return end
+    while true do
+        local res = self._dl_channel:pop()
+        if not res then break end
+        if res.seq == self.dl_seq then
+            self.dl_stage = res.stage
+            if res.ver then self.dl_ver = res.ver end
+            if res.done then self.dl_done_bytes = res.done end
+            if res.total then self.dl_total_bytes = res.total end
+            if res.stage == "error" then
+                self.dl_busy, self.dl_error = false, tostring(res.err or "下载失败")
+                if self.overlay then self.overlay:show_toast("官方樱花下载失败：" .. self.dl_error, 4.2) end
+            elseif res.stage == "done" and res.ok and res.path then
+                self.dl_busy, self.dl_error, self.dl_path = false, nil, res.path
+                if init_win32(self) and self._shell32 then self._shell32.ShellExecuteA(nil, "open", res.path, nil, nil, 1) end
+                if self.overlay then
+                    self.overlay:show_toast(string.format("官方樱花 v%s 校验通过，已拉起安装向导！装完点「刷新状态」即可。", tostring(res.ver or "")), 5.0)
                 end
             end
         end
     end
+end
 
-    -- 2. Drain 3-line carrier probe result
+local function drain_frpc_dl(self)
+    if not self._frpc_dl_channel then return end
+    while true do
+        local res = self._frpc_dl_channel:pop()
+        if not res then break end
+        if res.seq == self.frpc_dl_seq then
+            self.frpc_dl_stage = res.stage
+            if res.ver then self.frpc_dl_ver = res.ver end
+            if res.done then self.frpc_dl_done_bytes = res.done end
+            if res.total then self.frpc_dl_total_bytes = res.total end
+            if res.stage == "error" then
+                self.frpc_dl_busy, self.frpc_dl_error = false, tostring(res.err or "下载失败")
+                self.managed_last_error, self._pending_start = self.frpc_dl_error, nil
+                if self.overlay then self.overlay:show_toast("独立版 frpc 下载失败：" .. self.frpc_dl_error .. "（可点「用官方樱花开」）", 4.5) end
+            elseif res.stage == "done" and res.ok and res.path then
+                self.frpc_dl_busy, self.frpc_dl_error, self.standalone_frpc_path = false, nil, res.path
+                local pend = self._pending_start
+                self._pending_start = nil
+                if pend and pend.tunnel then
+                    local ok, err = self:start_managed_frpc(pend.tunnel, pend.opts)
+                    if ok and err ~= "downloading" and self.overlay then
+                        self.overlay:show_toast(string.format("官方独立版 frpc v%s 校验通过，正在后台连接隧道「%s」...", tostring(res.ver or ""), tostring(pend.tunnel.name)), 3.5)
+                    elseif (not ok) and self.overlay then
+                        self.overlay:show_toast("独立版 frpc 启动失败：" .. tostring(err), 4.0)
+                    end
+                elseif self.overlay then
+                    self.overlay:show_toast("官方独立版 frpc 校验完成！点击隧道「启动」即可后台直启。", 3.2)
+                end
+            end
+        end
+    end
+end
+
+local function drain_probe_and_api(self, lobby)
     if self._probe_channel then
         while true do
             local res = self._probe_channel:pop()
@@ -873,22 +856,17 @@ function sakura:update(dt, lobby)
                 if res.ok then
                     self.probe_result = res
                     if res.best_addr and lobby then
-                        lobby.sakura_ip_input = res.best_addr
-                        lobby.ip_input = res.best_addr
+                        lobby.sakura_ip_input, lobby.ip_input = res.best_addr, res.best_addr
                         lobby_prefs.record_recent_addr(lobby, res.best_addr)
                         lobby:save_prefs()
                     end
                     local r = res.results or {}
                     local function fmt(id, name)
                         local x = r[id]
-                        if x and x.ok then return string.format("%s %dms", name, x.ms) end
-                        return name .. " 不通"
+                        return (x and x.ok) and string.format("%s %dms", name, x.ms) or (name .. " 不通")
                     end
-                    local summary = string.format("三线测速完成：%s | %s | %s",
-                        fmt("default", "默认"), fmt("dx", "电信"), fmt("yd", "移动"))
-                    if res.best_addr then
-                        summary = summary .. " -> 已自动选最快线！"
-                    end
+                    local summary = string.format("三线测速完成：%s | %s | %s", fmt("default", "默认"), fmt("dx", "电信"), fmt("yd", "移动"))
+                    if res.best_addr then summary = summary .. " -> 已自动选最快线！" end
                     if self.overlay then self.overlay:show_toast(summary, 4.5) end
                 elseif self.overlay then
                     self.overlay:show_toast("三线测速失败：" .. tostring(res.err), 3.0)
@@ -896,8 +874,6 @@ function sakura:update(dt, lobby)
             end
         end
     end
-
-    -- 3. Drain OpenAPI v4 worker result
     if self._api_channel then
         while true do
             local res = self._api_channel:pop()
@@ -912,37 +888,50 @@ function sakura:update(dt, lobby)
                     process_api_refresh(self, res)
                     if lobby then lobby.sakura_show_wizard = false end
                     if self.overlay then
-                        if self.user_info.realname == 0 then
-                            self.overlay:show_toast(string.format(
-                                "已登录 %s，但账号尚未完成实名认证，请先点「去官网实名」！",
-                                self.user_info.name), 4.5)
-                        else
-                            self.overlay:show_toast(string.format(
-                                "樱花账号已同步：%s · 剩余 %.1f GiB · %d 条 TCP 隧道",
-                                self.user_info.name, self.user_info.remain_gib, #self.tunnels), 3.0)
-                        end
+                        local msg = (self.user_info.realname == 0)
+                            and string.format("已登录 %s，但账号尚未完成实名认证，请先点「去官网实名」！", self.user_info.name)
+                            or string.format("樱花账号已同步：%s · 剩余 %.1f GiB · %d 条 TCP 隧道", self.user_info.name, self.user_info.remain_gib, #self.tunnels)
+                        self.overlay:show_toast(msg, self.user_info.realname == 0 and 4.5 or 3.0)
                     end
                 elseif res.action == "create" then
                     self.api_error = nil
                     local c = res.created or {}
                     if self.overlay then
-                        self.overlay:show_toast(string.format(
-                            "樱花联机隧道创建成功（#%s · 远程端口 %s），正在刷新列表...",
-                            tostring(c.id), tostring(c.remote)), 3.5)
+                        self.overlay:show_toast(string.format("樱花联机隧道创建成功（#%s · 远程端口 %s），正在刷新列表...", tostring(c.id), tostring(c.remote)), 3.5)
                     end
                     self:refresh_api()
                 end
             end
         end
     end
+end
 
-    -- 4. Periodic lightweight local status check only while Lobby is open
-    if lobby and lobby.open then
-        self:scan_local(false)
+function sakura:init(boot, overlay)
+    self.boot, self.overlay = boot, overlay
+    self:scan_local(true)
+end
+
+function sakura:update(dt, lobby)
+    drain_launcher_dl(self)
+    drain_frpc_dl(self)
+    drain_probe_and_api(self, lobby)
+    if self.managed_proc then
+        local now = now_sec()
+        if (now - self._last_managed_poll_ts) >= 0.4 then
+            self._last_managed_poll_ts = now
+            self:poll_managed_frpc()
+        end
     end
+    if lobby and lobby.open then self:scan_local(false) end
 end
 
 function sakura:shutdown()
+    if self.managed_proc and self._k32 and self.managed_proc.keep_on_exit then
+        pcall(self._k32.CloseHandle, self.managed_proc.hProcess)
+        self.managed_proc = nil
+        if self.boot then self.boot:log("[SAKURA] Keeping standalone sakura_frpc.exe alive with kr-mp-server (keep_on_exit=true).") end
+        return
+    end
     self:stop_managed_frpc()
 end
 

@@ -187,7 +187,7 @@ local function draw_home_sakura(ctx, y)
     local st_y, st_h = y + 34, 48
     ui.draw_parchment_card(cx + 12, st_y, cw - 24, st_h, { radius = 6 })
     local inst_s = (sk and sk.installed) and "官方启动器：已安装" or "官方启动器：未安装"
-    local proc_s = (sk and sk.managed_proc) and "内置 frpc 运行中 √"
+    local proc_s = (sk and sk.managed_proc) and (sk.managed_proc.confirmed and "独立 frpc 运行中 √" or "独立 frpc 连接中...")
         or ((sk and sk.frpc_running) and "官方 frpc 运行中 √"
             or ((sk and sk.service_running) and "后台服务待机" or "未运行"))
     local spd_s = (sk and sk.log_speed_text) and ("  ·  " .. sk.log_speed_text) or ""
@@ -200,6 +200,14 @@ local function draw_home_sakura(ctx, y)
         line2 = string.format("正在从樱花官方源下载启动器 v%s（%d%%），下完将自动校验并拉起安装...",
             tostring(sk.dl_ver or ""), sk:get_download_pct())
         line2_col = { 34, 108, 48, 255 }
+    elseif sk and sk.frpc_dl_busy then
+        local fp = (sk.get_frpc_download_pct and sk:get_frpc_download_pct()) or 0
+        line2 = string.format("正在从樱花官方源下载独立版 frpc v%s（%d%%），校验完立即自动启动隧道...",
+            tostring(sk.frpc_dl_ver or ""), fp)
+        line2_col = { 34, 108, 48, 255 }
+    elseif sk and (sk.managed_last_error or sk.frpc_dl_error) then
+        line2 = "独立版 frpc：" .. tostring(sk.managed_last_error or sk.frpc_dl_error)
+        line2_col = { 166, 46, 36, 255 }
     elseif sk_warn then
         line2, line2_col = sk_warn, { 166, 46, 36, 255 }
     elseif sk_disp then

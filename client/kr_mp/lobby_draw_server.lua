@@ -13,7 +13,9 @@ local function mask_addr(lobby, addr)
     return tostring(addr or "")
 end
 
-local function draw_dl_bar(x, y, w, h, pct, stage, ver, done_b, total_b, fm)
+local function draw_dl_bar(x, y, w, h, pct, stage, ver, done_b, total_b, fm, item_name, verify_alg)
+    local name = item_name or "官方服务端 kr-mp-server.exe"
+    local alg = verify_alg or "SHA-256"
     love.graphics.setColor(58, 42, 26, 225)
     love.graphics.rectangle("fill", x, y, w, h, 4, 4)
     local fill_w = math.max(0, math.min(w - 2, math.floor((w - 2) * (pct / 100))))
@@ -26,16 +28,16 @@ local function draw_dl_bar(x, y, w, h, pct, stage, ver, done_b, total_b, fm)
     love.graphics.rectangle("line", x, y, w, h, 4, 4)
     local lbl
     if stage == "meta" then
-        lbl = "正在连接官方源获取最新服务端版本与校验信息..."
+        lbl = string.format("正在连接官方源获取 %s 最新版本与校验信息...", name)
     elseif stage == "verifying" then
-        lbl = string.format("正在校验 kr-mp-server.exe v%s 完整性 (SHA-256)...", tostring(ver or ""))
+        lbl = string.format("正在校验 %s v%s 完整性 (%s)...", name, tostring(ver or ""), alg)
     else
         local dm = (done_b or 0) / 1048576
         local tm = (total_b or 0) / 1048576
         if tm > 0 then
-            lbl = string.format("正在下载官方服务端 kr-mp-server.exe：%.1f / %.1f MB (%d%%)", dm, tm, pct)
+            lbl = string.format("正在下载 %s：%.1f / %.1f MB (%d%%)", name, dm, tm, pct)
         else
-            lbl = string.format("正在下载官方服务端 kr-mp-server.exe：%.1f MB...", dm)
+            lbl = string.format("正在下载 %s：%.1f MB...", name, dm)
         end
     end
     ui.text(lbl, x + 6, y + 2, { 255, 250, 234, 255 }, fm.tiny_bold, w - 12, "center")
@@ -115,39 +117,72 @@ function M.draw(ctx)
     end
     y = y + c1_h + 8
 
-    -- Step 2 Card: SakuraFrp 17780 Public Exposure (114px)
+    -- Step 2 Card: SakuraFrp 17780 Public Exposure (114px, Option A standalone frpc + Option B official launcher)
     local c2_h = 114
     local relay = (sh and sk) and sh:get_sakura_relay_info(sk) or nil
     local has_pub = (relay ~= nil and (relay.state == "managed" or relay.state == "online") and relay.addr ~= nil)
+    local pub_confirmed = has_pub and (relay.confirmed ~= false)
+    local frpc_dl_busy = (sk ~= nil and sk.frpc_dl_busy == true)
+    local frpc_dl_pct = (sk and sk.get_frpc_download_pct and sk:get_frpc_download_pct()) or 0
     local sk_logged = (sk ~= nil and sk.user_info ~= nil)
     ui.draw_parchment_card(cx, y, cw, c2_h, {
-        border = has_pub and { 48, 134, 68, 240 } or { 138, 94, 40, 235 }, border_w = 1.6, radius = 8,
+        border = pub_confirmed and { 48, 134, 68, 240 } or { 138, 94, 40, 235 }, border_w = 1.6, radius = 8,
     })
     ui.draw_pill(cx + 10, y + 8, 50, 19, "步骤 2", { 72, 48, 28, 235 }, { 148, 112, 62, 220 }, T.gold_bright, fm.tiny_bold)
     ui.text("樱花联动暴露公网（把地址发群里，所有水友免装樱花！）", cx + 66, y + 10, T.ink_text, fm.small_bold, cw - 196, "left")
-    local b2_txt = has_pub and "公网就绪 √" or (relay and "隧道离线" or "外网必选")
-    local b2_bg = has_pub and { 38, 128, 62, 240 } or { 126, 86, 36, 225 }
-    local b2_bd = has_pub and { 24, 84, 40, 255 } or { 86, 56, 20, 245 }
+    local b2_txt = pub_confirmed and "公网就绪 √"
+        or (has_pub and "连接中..." or (frpc_dl_busy and (frpc_dl_pct .. "%") or (relay and "隧道离线" or "外网必选")))
+    local b2_bg = pub_confirmed and { 38, 128, 62, 240 } or (has_pub and { 164, 108, 30, 240 } or { 126, 86, 36, 225 })
+    local b2_bd = pub_confirmed and { 24, 84, 40, 255 } or { 86, 56, 20, 245 }
     ui.draw_pill(cx + cw - 92, y + 8, 80, 19, b2_txt, b2_bg, b2_bd, { 255, 250, 242, 255 }, fm.tiny_bold)
 
     local b2y = y + c2_h - 31
-    if has_pub then
-        ui.text("公网中继服地址：" .. mask_addr(lobby, relay.addr) .. "  （水友直接粘贴进「公网服务器」页点连接即可！）",
-            cx + 12, y + 34, { 32, 108, 48, 255 }, fm.tiny_bold, cw - 24, "left")
-        ui.text("水友无需下载樱花、无需注册账号；你在大厅里建好房间，全群都能看到公开房或凭 4 位房间码加入。",
-            cx + 12, y + 54, T.ink_muted, fm.tiny, cw - 24, "left")
-        add_btn("srv_copy_public", "一键复制公网服地址发群里", cx + 12, b2y, 206, 24, "battle", { tiny = true, copy_addr = relay.addr })
-        add_btn("srv_connect_public", "用此公网地址连接", cx + 226, b2y, 146, 24, "azure", { tiny = true, addr = relay.addr })
-        if relay.state == "managed" then
+    if frpc_dl_busy then
+        draw_dl_bar(cx + 12, y + 34, cw - 24, 20, frpc_dl_pct, sk.frpc_dl_stage, sk.frpc_dl_ver,
+            sk.frpc_dl_done_bytes, sk.frpc_dl_total_bytes, fm, "官方独立版 frpc", "MD5")
+        ui.text("首次内启自动从樱花官方源拉取独立版 frpc（约 13.5 MB，自动 MD5 校验），下完立即自动启动 17780 隧道！",
+            cx + 12, y + 58, T.ink_muted, fm.tiny, cw - 24, "left")
+        local tname = relay and relay.tunnel and relay.tunnel.name or (sk and sk.managed_last_tunnel_name)
+        add_btn("srv_start_sakura_17780", string.format("下载独立 frpc %d%%...", frpc_dl_pct),
+            cx + 12, b2y, 196, 24, "wood", { tiny = true, tunnel = relay and relay.tunnel })
+        add_btn("sakura_launch_app", "改用官方樱花开", cx + 216, b2y, 134, 24, "parchment", { tiny = true, tunnel_name = tname })
+    elseif has_pub then
+        if pub_confirmed then
+            ui.text("公网中继服地址：" .. mask_addr(lobby, relay.addr) .. "  （水友直接粘贴进「公网服务器」页点连接即可！）",
+                cx + 12, y + 34, { 32, 108, 48, 255 }, fm.tiny_bold, cw - 24, "left")
+            ui.text("水友无需下载樱花、无需注册账号；你在大厅里建好房间，全群都能看到公开房或凭 4 位房间码加入。",
+                cx + 12, y + 54, T.ink_muted, fm.tiny, cw - 24, "left")
+        else
+            ui.text("正在通过官方独立版 frpc 连接节点：" .. mask_addr(lobby, relay.addr) .. "（预计 1~2 秒就绪）",
+                cx + 12, y + 34, { 164, 96, 20, 255 }, fm.tiny_bold, cw - 24, "left")
+            ui.text("如持续未就绪或被安全软件拦截，可随时点右侧「改用官方樱花开」在官方启动器打开隧道。",
+                cx + 12, y + 54, T.ink_muted, fm.tiny, cw - 24, "left")
+        end
+        add_btn("srv_copy_public", "一键复制公网服地址发群里", cx + 12, b2y, 202, 24, "battle", { tiny = true, copy_addr = relay.addr })
+        add_btn("srv_connect_public", "用此公网地址连接", cx + 222, b2y, 140, 24, "azure", { tiny = true, addr = relay.addr })
+        if not pub_confirmed then
+            add_btn("sakura_launch_app", "改用官方樱花开", cx + 370, b2y, 126, 24, "wood", {
+                tiny = true, tunnel_name = relay.tunnel and relay.tunnel.name,
+            })
+        end
+        if relay.state == "managed" or relay.can_stop_standalone then
             add_btn("sakura_stop_frpc", "停 17780 隧道", cx + cw - 114, b2y, 102, 24, "crimson", { tiny = true })
         end
     elseif relay and relay.state == "offline" then
-        ui.text(string.format("已检测到你的樱花 17780 隧道「%s」（当前离线），点击下方绿色按钮立即一键启动！", tostring(relay.tunnel.name)),
-            cx + 12, y + 34, T.ink_text, fm.tiny_bold, cw - 24, "left")
-        ui.text("启动后即可获得公网地址发给群友，房主自己直接连 127.0.0.1:17780（0 延迟）。",
-            cx + 12, y + 54, T.ink_muted, fm.tiny, cw - 24, "left")
-        add_btn("srv_start_sakura_17780", "一键启动 17780 樱花隧道", cx + 12, b2y, 198, 24, "battle", { tiny = true, tunnel = relay.tunnel })
-        add_btn("open_sakura", "打开樱花助手", cx + 218, b2y, 126, 24, "wood", { tiny = true })
+        local err_txt = sk and (sk.managed_last_error or sk.frpc_dl_error) or nil
+        if err_txt then
+            ui.text("独立版 frpc 异常：" .. tostring(err_txt), cx + 12, y + 34, { 166, 46, 36, 255 }, fm.tiny_bold, cw - 24, "left")
+            ui.text(string.format("可直接点「用官方樱花开」在官方软件打开「%s」，开启后战桌自动识别公网地址！", tostring(relay.tunnel.name)),
+                cx + 12, y + 54, T.ink_sub, fm.tiny, cw - 24, "left")
+        else
+            ui.text(string.format("已检测到你的樱花 17780 隧道「%s」（当前离线），可直接后台启动或用官方樱花开！", tostring(relay.tunnel.name)),
+                cx + 12, y + 34, T.ink_text, fm.tiny_bold, cw - 24, "left")
+            ui.text("方案 A 直启官方独立版 frpc（首次自动下载校验，免切换窗口）；方案 B 唤起官方樱花客户端手动开启。",
+                cx + 12, y + 54, T.ink_muted, fm.tiny, cw - 24, "left")
+        end
+        add_btn("srv_start_sakura_17780", "一键后台启动 (独立frpc)", cx + 12, b2y, 196, 24, "battle", { tiny = true, tunnel = relay.tunnel })
+        add_btn("sakura_launch_app", "用官方樱花开", cx + 216, b2y, 124, 24, "wood", { tiny = true, tunnel_name = relay.tunnel.name })
+        add_btn("open_sakura", "樱花助手", cx + 348, b2y, 96, 24, "parchment", { tiny = true })
     elseif sk_logged then
         local best_nd = (sk.recommended_nodes and sk.recommended_nodes[1]) or nil
         if best_nd then

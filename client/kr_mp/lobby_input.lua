@@ -181,8 +181,10 @@ function BTN_HANDLERS.sakura_rescan(lobby)
         lobby.overlay:show_toast("已刷新本机官方樱花启动器与隧道状态。", 2.0)
     end
 end
-function BTN_HANDLERS.sakura_launch_app(lobby)
-    if lobby.sakura then lobby.sakura:launch_official_launcher() end
+function BTN_HANDLERS.sakura_launch_app(lobby, btn)
+    if lobby.sakura then
+        lobby.sakura:launch_official_launcher(btn and btn.tunnel_name)
+    end
 end
 function BTN_HANDLERS.sakura_download_official(lobby)
     if lobby.sakura then lobby.sakura:start_official_installer_download() end
@@ -286,9 +288,11 @@ function BTN_HANDLERS.sakura_start_frpc(lobby, btn)
     if not lobby.sakura or not btn.tunnel then return end
     local ok, err = lobby.sakura:start_managed_frpc(btn.tunnel)
     if ok then
-        lobby.overlay:show_toast("已后台静默启动隧道「" .. tostring(btn.tunnel.name) .. "」，可直接建房并一键复制地址！", 3.2)
+        if err ~= "downloading" then
+            lobby.overlay:show_toast("正在后台通过官方独立版 frpc 启动隧道「" .. tostring(btn.tunnel.name) .. "」...", 3.0)
+        end
     else
-        lobby.overlay:show_toast("启动隧道失败：" .. tostring(err), 3.6)
+        lobby.overlay:show_toast("启动隧道失败：" .. tostring(err), 3.8)
     end
 end
 function BTN_HANDLERS.sakura_stop_frpc(lobby)
@@ -441,11 +445,19 @@ function BTN_HANDLERS.srv_connect_public(lobby, btn)
 end
 function BTN_HANDLERS.srv_start_sakura_17780(lobby, btn)
     if not lobby.sakura or not btn.tunnel then return end
-    local ok, err = lobby.sakura:start_managed_frpc(btn.tunnel)
+    local watch_pid = (lobby.server_host and lobby.server_host.get_running_pid)
+        and lobby.server_host:get_running_pid() or nil
+    local keep_alive = (watch_pid ~= nil and lobby.server_host and lobby.server_host.keep_running_on_exit ~= false)
+    local ok, err = lobby.sakura:start_managed_frpc(btn.tunnel, {
+        watch_pid = watch_pid,
+        keep_on_exit = keep_alive,
+    })
     if ok then
-        lobby.overlay:show_toast("已后台静默启动 17780 公网服隧道！点击绿色按钮即可复制地址发群里。", 3.5)
+        if err ~= "downloading" then
+            lobby.overlay:show_toast("正在后台通过官方独立版 frpc 连接 17780 公网服隧道，预计 1~2 秒就绪...", 3.2)
+        end
     else
-        lobby.overlay:show_toast("启动 17780 隧道失败：" .. tostring(err), 3.8)
+        lobby.overlay:show_toast("启动 17780 隧道失败：" .. tostring(err) .. "（可点「用官方樱花开」）", 4.2)
     end
 end
 function BTN_HANDLERS.srv_create_sakura_17780(lobby, btn)

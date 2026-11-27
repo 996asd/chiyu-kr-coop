@@ -134,20 +134,66 @@ local function get_save_dir()
     return (os.getenv("TEMP") or "."):gsub("/", "\\"):gsub("\\+$", "")
 end
 
+local function is_usable_lan_ip(ip)
+    if type(ip) ~= "string" or not ip:match("^%d+%.%d+%.%d+%.%d+$") then return false end
+    if ip == "0.0.0.0" or ip:match("^127%.") or ip:match("^169%.254%.") then return false end
+    -- Filter out RFC 2544 benchmark / Mihomo / Clash TUN fake-IP virtual adapters
+    if ip:match("^198%.18%.") or ip:match("^198%.19%.") then return false end
+    return true
+end
+
+local function lan_ip_score(ip)
+    if ip:match("^192%.168%.") then return 100 end
+    if ip:match("^10%.") then return 90 end
+    local b2 = tonumber(ip:match("^172%.(%d+)%."))
+    if b2 and b2 >= 16 and b2 <= 31 then return 60 end -- often WSL / Hyper-V vEthernet
+    return 30
+end
+
+function server_host._pick_best_lan_ip(candidates)
+    local best, best_score = nil, -1
+    for _, ip in ipairs(candidates or {}) do
+        if is_usable_lan_ip(ip) then
+            local sc = lan_ip_score(ip)
+            if sc > best_score then
+                best, best_score = ip, sc
+            end
+        end
+    end
+    return best
+end
+
 function server_host:detect_lan_ip()
     local ok_s, socket = pcall(require, "socket")
-    if not ok_s or not socket or not socket.udp then return nil end
-    local u = socket.udp()
-    if not u then return nil end
-    -- UDP connect does not transmit packets; OS merely selects outbound LAN interface IP
-    pcall(u.setpeername, u, "223.5.5.5", 53)
-    local ip = nil
-    local ok_g, addr = pcall(u.getsockname, u)
-    pcall(u.close, u)
-    if ok_g and type(addr) == "string" and addr:match("^%d+%.%d+%.%d+%.%d+$") and addr ~= "0.0.0.0" and not addr:match("^127%.") then
-        ip = addr
+    if not ok_s or not socket then return nil end
+    local cands = {}
+    if socket.udp then
+        -- Probe RFC-1918 destinations first (bypasses Mihomo/Clash TUN default routes) then public fallback
+        for _, dst in ipairs({ "192.168.255.254", "10.255.255.254", "223.5.5.5" }) do
+            local u = socket.udp()
+            if u then
+                pcall(u.setpeername, u, dst, 53)
+                local ok_g, addr = pcall(u.getsockname, u)
+                pcall(u.close, u)
+                if ok_g and type(addr) == "string" then
+                    cands[#cands + 1] = addr
+                end
+            end
+        end
     end
-    return ip
+    if socket.dns and socket.dns.gethostname and socket.dns.toip then
+        local ok_h, hname = pcall(socket.dns.gethostname)
+        if ok_h and type(hname) == "string" and #hname > 0 then
+            local ok_r, ip1, info = pcall(socket.dns.toip, hname)
+            if ok_r then
+                if type(ip1) == "string" then cands[#cands + 1] = ip1 end
+                if type(info) == "table" and type(info.ip) == "table" then
+                    for _, ip in ipairs(info.ip) do cands[#cands + 1] = ip end
+                end
+            end
+        end
+    end
+    return server_host._pick_best_lan_ip(cands)
 end
 
 function server_host:find_binary()
@@ -545,23 +591,43 @@ function server_host:stop_local_server()
     return stopped
 end
 
+function server_host:get_running_pid()
+    if self.managed_proc and self:poll_managed_proc() and self.managed_proc.pid and self.managed_proc.pid > 0 then
+        return self.managed_proc.pid
+    end
+    local pids = scan_server_processes(self)
+    if #pids > 0 and pids[1] > 0 then return pids[1] end
+    return nil
+end
+
 -- Helper: Inspect SakuraFrp tunnels for a TCP 17780 relay tunnel
 function server_host:get_sakura_relay_info(sakura)
     if not sakura then return nil end
     local port = self.DEFAULT_PORT
     if sakura.managed_proc and sakura.managed_proc.addr then
-        for _, t in ipairs(sakura.tunnels or {}) do
-            if t.id == sakura.managed_proc.tunnel_id and tonumber(t.local_port) == port then
-                return { state = "managed", tunnel = t, addr = t.addr }
+        local mp = sakura.managed_proc
+        if tonumber(mp.local_port) == port then
+            local matched_t = nil
+            for _, t in ipairs(sakura.tunnels or {}) do
+                if t.id == mp.tunnel_id then matched_t = t; break end
             end
+            return {
+                state = "managed",
+                confirmed = (mp.confirmed == true),
+                tunnel = matched_t or { id = mp.tunnel_id, name = mp.tunnel_name, local_port = port, addr = mp.addr },
+                addr = mp.addr,
+                can_stop_standalone = true,
+            }
         end
     end
     for _, t in ipairs(sakura.tunnels or {}) do
         if (t.type == "tcp" or t.type == "etcp") and tonumber(t.local_port) == port then
             return {
                 state = t.online and "online" or "offline",
+                confirmed = (t.online == true),
                 tunnel = t,
                 addr = t.addr,
+                can_stop_standalone = (t.online == true and sakura.standalone_frpc_running == true),
             }
         end
     end
