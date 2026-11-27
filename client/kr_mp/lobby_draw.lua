@@ -49,13 +49,13 @@ end
 
 local function resolve_banner_title(lobby)
     if lobby.sub_modal == "guide" then return "新手指南 · 1分钟开黑"
+    elseif lobby.sub_modal == "sakura" then return "樱花映射助手 · SakuraFrp"
     elseif lobby.view == "home" then return "联机酒馆 · 冒险驿站"
     elseif lobby.sub_modal == "stages" then return "战役舆图 · 选择关卡"
     elseif lobby.sub_modal == "hero1" then return "英雄殿 · 选 1P 主将"
     elseif lobby.sub_modal == "hero2" then return "英雄殿 · 选 2P 队友"
     elseif lobby.sub_modal == "towers" then return "皇家军械库 · 59选12"
     elseif lobby.sub_modal == "voice" then return "语音调音 · 麦克风设置"
-    elseif lobby.sub_modal == "sakura" then return "樱花映射助手 · SakuraFrp"
     end
     return "双人同盟 · 皇家战桌"
 end
