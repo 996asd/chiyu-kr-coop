@@ -273,9 +273,15 @@ function HANDLERS.REINF_RALLY(ctx, cmd)
     for i = 1, #targets do
         local ee = targets[i]
         if not ee.nav_grid.ignore_waypoints then
-            ee.nav_grid.waypoints = GR:find_waypoints(
+            local wp = GR:find_waypoints(
                 ee.pos, ee.nav_rally.pos, { x = cmd.wx, y = cmd.wy }, ee.nav_grid.valid_terrains, true
             )
+            if not wp and ee.nav_rally.center then
+                wp = GR:find_waypoints(
+                    ee.pos, ee.nav_rally.center, { x = cmd.wx, y = cmd.wy }, ee.nav_grid.valid_terrains, true
+                )
+            end
+            ee.nav_grid.waypoints = wp or {}
         end
         local ox = (ee.nav_rally.pos and ee.nav_rally.center) and (ee.nav_rally.pos.x - ee.nav_rally.center.x) or 0
         local oy = (ee.nav_rally.pos and ee.nav_rally.center) and (ee.nav_rally.pos.y - ee.nav_rally.center.y) or 0
@@ -308,6 +314,16 @@ function HANDLERS.POWER_FIRE(ctx, cmd)
         local spec = ctx.coop:get_player_reinf_spec(ctx.pid)
         ctx.coop._active_g4_branch = (spec and spec.gen == 4 and spec.branch) or nil
         ctx.coop._active_g5_branch = (spec and spec.gen == 5 and spec.branch) or nil
+    end
+
+    -- Deterministic squad_id tagging so G1-G4 reinforcements spawned in one cast move together
+    local prev_reinf_sid = ctx.store._kr_mp_active_reinf_squad_id
+    local prev_pending_n = type(ctx.store.pending_inserts) == "table" and #ctx.store.pending_inserts or 0
+    local reinf_sid = nil
+    if is_indep_reinf then
+        ctx.store._kr_mp_reinf_squad_seq = (ctx.store._kr_mp_reinf_squad_seq or 0) + 1
+        reinf_sid = 90000000 + ctx.store._kr_mp_reinf_squad_seq
+        ctx.store._kr_mp_active_reinf_squad_id = reinf_sid
     end
 
     local fired_cd = nil
@@ -344,6 +360,18 @@ function HANDLERS.POWER_FIRE(ctx, cmd)
         fired_cd = tonumber(btn.cooldown_time)
     end
 
+    if is_indep_reinf then
+        ctx.store._kr_mp_active_reinf_squad_id = prev_reinf_sid
+        local pend = ctx.store.pending_inserts
+        if reinf_sid and type(pend) == "table" then
+            for pi = prev_pending_n + 1, #pend do
+                local pe = pend[pi]
+                if pe and not pe._kr_mp_local and pe.reinforcement and not pe.reinforcement.squad_id then
+                    pe.reinforcement.squad_id = reinf_sid
+                end
+            end
+        end
+    end
     if ctx.mp_on and is_indep_reinf then
         ctx.coop._active_power_actor = prev_actor
         ctx.coop._active_g4_branch = prev_g4

@@ -197,6 +197,10 @@ function M.load_prefs(lobby)
         if obj.voice_peer_muted ~= nil then lobby.voice.peer_muted = (obj.voice_peer_muted == true) end
         if type(obj.voice_indicator_style) == "string" then lobby.voice:set_indicator_style(obj.voice_indicator_style) end
     end
+    if lobby.overlay then
+        if tonumber(obj.hud_mini_x) then lobby.overlay.mini_x = math.floor(tonumber(obj.hud_mini_x) + 0.5) end
+        if tonumber(obj.hud_mini_y) then lobby.overlay.mini_y = math.floor(tonumber(obj.hud_mini_y) + 0.5) end
+    end
     if obj.seen_guide ~= nil then
         lobby.seen_guide = (obj.seen_guide == true)
     end
@@ -243,6 +247,8 @@ function M.save_prefs(lobby)
         voice_peer_volume = lobby.voice and lobby.voice.peer_volume or 1.0,
         voice_peer_muted = lobby.voice and (lobby.voice.peer_muted == true) or false,
         voice_indicator_style = lobby.voice and lobby.voice.indicator_style or "compact",
+        hud_mini_x = lobby.overlay and tonumber(lobby.overlay.mini_x) or nil,
+        hud_mini_y = lobby.overlay and tonumber(lobby.overlay.mini_y) or nil,
         seen_guide = (lobby.seen_guide == true),
         privacy_mask = (lobby.privacy_mask == true),
         sakura_token = (lobby.sakura and type(lobby.sakura.token) == "string") and lobby.sakura.token or "",

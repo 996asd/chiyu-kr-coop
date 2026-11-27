@@ -18,7 +18,20 @@ local overlay = {
     _wait_banner_until = 0,
     _leave_confirm_until = 0,
     voice_panel_open = false,
+    -- Movable collapsed floating badge ("小标") state (logical HUD coordinates)
+    mini_x = nil,
+    mini_y = nil,
+    _mini_rect = nil,
+    _mini_drag = false,
+    _mini_moved = false,
+    _mini_start_lx = 0,
+    _mini_start_ly = 0,
+    _mini_orig_x = 0,
+    _mini_orig_y = 0,
 }
+
+local MINI_W, MINI_H = 58, 28
+local MINI_DRAG_THRESH = 5
 
 local PHASE_LABELS = {
     IDLE = "待机",
@@ -73,14 +86,44 @@ function overlay:set_status(state)
     self.state = state or {}
 end
 
-function overlay:is_point_over_hud(x, y)
-    if not self.visible then return false end
+local function clamp_mini_pos(self, mx, my, vsw, vsh)
+    local max_x = math.max(6, math.floor((vsw or 960) - MINI_W - 6))
+    local max_y = math.max(6, math.floor((vsh or 540) - MINI_H - 6))
+    local x = math.max(6, math.min(max_x, math.floor((mx or 10) + 0.5)))
+    local y = math.max(6, math.min(max_y, math.floor((my or 10) + 0.5)))
+    return x, y
+end
+
+function overlay:get_mini_rect(vsw, vsh)
+    if self.mini_x == nil or self.mini_y == nil then
+        local bar = self._last_bar
+        local def_x = bar and (bar.x + bar.w - MINI_W) or 10
+        local def_y = bar and (bar.y + 4) or 10
+        self.mini_x, self.mini_y = clamp_mini_pos(self, def_x, def_y, vsw, vsh)
+    else
+        self.mini_x, self.mini_y = clamp_mini_pos(self, self.mini_x, self.mini_y, vsw, vsh)
+    end
+    local r = { x = self.mini_x, y = self.mini_y, w = MINI_W, h = MINI_H }
+    self._mini_rect = r
+    return r
+end
+
+local function normalize_screen_xy(x, y)
     if x >= 0 and x <= 1 and y >= 0 and y <= 1 and love and love.graphics then
         x = x * (love.graphics.getWidth() or 1)
         y = y * (love.graphics.getHeight() or 1)
     end
+    return x, y
+end
+
+function overlay:is_point_over_hud(x, y)
+    x, y = normalize_screen_xy(x, y)
     local s = self._ui_scale or 1
     local lx, ly = x / s, y / s
+    if not self.visible then
+        local mr = self._mini_rect
+        return mr ~= nil and lx >= mr.x and lx <= mr.x + mr.w and ly >= mr.y and ly <= mr.y + mr.h
+    end
     for _, b in ipairs(self.buttons) do
         if lx >= b.x and lx <= b.x + b.w and ly >= b.y and ly <= b.y + b.h then
             return true
@@ -98,7 +141,25 @@ function overlay:is_point_over_hud(x, y)
 end
 
 function overlay:mousepressed(x, y, button)
-    if not self.visible or (button ~= 1 and button ~= 2) then
+    if not self.visible then
+        if button ~= 1 then return false end
+        local mr = self._mini_rect
+        if not mr then return false end
+        local s = self._ui_scale or 1
+        local lx, ly = x / s, y / s
+        if lx >= mr.x and lx <= mr.x + mr.w and ly >= mr.y and ly <= mr.y + mr.h then
+            self._mini_drag = true
+            self._mini_moved = false
+            self._consumed_down = true
+            self._mini_start_lx = lx
+            self._mini_start_ly = ly
+            self._mini_orig_x = mr.x
+            self._mini_orig_y = mr.y
+            return true
+        end
+        return false
+    end
+    if button ~= 1 and button ~= 2 then
         return false
     end
     local s = self._ui_scale or 1
@@ -178,7 +239,41 @@ function overlay:mousepressed(x, y, button)
     return false
 end
 
+function overlay:mousemoved(x, y, dx, dy)
+    if not self._mini_drag then return false end
+    local s = self._ui_scale or 1
+    local lx, ly = x / s, y / s
+    local off_x, off_y = lx - self._mini_start_lx, ly - self._mini_start_ly
+    if not self._mini_moved and (math.abs(off_x) >= MINI_DRAG_THRESH or math.abs(off_y) >= MINI_DRAG_THRESH) then
+        self._mini_moved = true
+    end
+    if self._mini_moved then
+        local sw = (love and love.graphics and love.graphics.getWidth and love.graphics.getWidth()) or 960
+        local sh = (love and love.graphics and love.graphics.getHeight and love.graphics.getHeight()) or 540
+        local nx, ny = clamp_mini_pos(self, self._mini_orig_x + off_x, self._mini_orig_y + off_y, sw / s, sh / s)
+        self.mini_x, self.mini_y = nx, ny
+        if self._mini_rect then
+            self._mini_rect.x, self._mini_rect.y = nx, ny
+        end
+    end
+    return true
+end
+
 function overlay:mousereleased(x, y, button)
+    if self._mini_drag and button == 1 then
+        local was_moved = self._mini_moved
+        self._mini_drag = false
+        self._mini_moved = false
+        self._consumed_down = false
+        if not was_moved then
+            self.visible = true
+            ui.play_sfx("open")
+            if self.on_action then self.on_action("show") end
+        elseif self.on_action then
+            self.on_action("hud_mini_moved")
+        end
+        return true
+    end
     if self._ptt_btn_down and button == 1 then
         self._ptt_btn_down = false
         self._consumed_down = false
@@ -192,56 +287,104 @@ function overlay:mousereleased(x, y, button)
     return false
 end
 
-function overlay:draw()
-    if not self.visible or not love.graphics then
-        return
+local function draw_collapsed_badge(self, G, T, font_map, s, vsw, vsh, mx, my)
+    if self._mini_drag and (not proto.is_android()) and love and love.mouse and love.mouse.isDown and not love.mouse.isDown(1) then
+        self._mini_drag, self._mini_moved, self._consumed_down = false, false, false
+    end
+    local mr = self:get_mini_rect(vsw, vsh)
+    local bx, by, bw, bh = mr.x, mr.y, mr.w, mr.h
+    local hover = (not proto.is_android()) and (mx >= bx and mx <= bx + bw and my >= by and my <= by + bh)
+    local drag_on = self._mini_drag and self._mini_moved
+
+    local top_c, bot_c = T.wood_top, T.wood_bot
+    local rim_c = (hover or drag_on) and T.gold_bright or T.gold_mid
+    if s.mp_active then
+        if s.mp_phase == "DESYNC" or s.mp_phase == "DISCONNECTED" then
+            top_c, bot_c, rim_c = { 172, 36, 34, 246 }, { 102, 18, 18, 246 }, { 255, 168, 152, 255 }
+        elseif s.mp_phase == "WAIT_RECONNECT" then
+            top_c, bot_c = { 166, 102, 24, 246 }, { 102, 58, 12, 246 }
+        elseif s.mp_phase == "CATCHING_UP" then
+            top_c, bot_c = { 30, 96, 142, 246 }, { 16, 56, 92, 246 }
+        elseif s.mp_phase == "PAUSED" then
+            top_c, bot_c = { 48, 92, 54, 244 }, { 28, 58, 32, 244 }
+        end
     end
 
-    local G = love.graphics
-    local T = ui.THEME
+    G.setColor(0, 0, 0, drag_on and 145 or 106)
+    G.rectangle("fill", bx - 1, by + (drag_on and 4 or 3), bw + 2, bh + 1, 9, 9)
+    ui.draw_vgrad_rect(bx, by, bw, bh, top_c, bot_c, 8)
+    G.setColor(255, 224, 166, (hover or drag_on) and 126 or 78)
+    G.setLineWidth(1.2)
+    G.line(bx + 8, by + 2, bx + bw - 8, by + 2)
+    G.setColor(rim_c[1], rim_c[2], rim_c[3], (hover or drag_on) and 255 or 218)
+    G.setLineWidth((hover or drag_on) and 2.0 or 1.6)
+    G.rectangle("line", bx, by, bw, bh, 8, 8)
+
+    local ty = by + (bh - ui.font_h(font_map.tiny_bold)) * 0.5
+    if s.mp_active then
+        local ok_link = (s.mp_phase ~= "DISCONNECTED" and s.mp_phase ~= "WAIT_RECONNECT" and s.mp_phase ~= "DESYNC")
+        ui.draw_ping_dot(bx + 12, by + bh * 0.5, s.mp_rtt or 0, ok_link)
+        local is_p1 = (s.mp_pid == 1)
+        local lbl = (s.mp_phase == "PAUSED") and "暂停" or (is_p1 and "1P" or "2P")
+        local fg = (s.mp_phase == "DESYNC" or s.mp_phase == "DISCONNECTED") and { 255, 236, 176, 255 }
+            or (is_p1 and T.p1_light or T.p2_light)
+        ui.print_shadow(lbl, bx + 20, ty, fg, bw - 24, "center", nil, font_map.tiny_bold)
+    else
+        G.setColor(T.ok_bright[1], T.ok_bright[2], T.ok_bright[3], 230)
+        G.circle("fill", bx + 11, by + bh * 0.5, 3.2)
+        ui.print_shadow("联机", bx + 17, ty, T.gold_bright, bw - 20, "center", nil, font_map.tiny_bold)
+    end
+    self.buttons = {}
+end
+
+function overlay:draw()
+    if not love.graphics then return end
+
+    local G, T = love.graphics, ui.THEME
     local prev_font = G.getFont()
     local r, g, b, a = G.getColor()
     local prev_blend = G.getBlendMode()
-
     local sw = (G.getWidth and G.getWidth()) or 960
     local sh = (G.getHeight and G.getHeight()) or 540
     local scale = ui.compute_hud_scale(sw, sh)
     self._ui_scale = scale
-    local vsw = sw / scale
-
+    local vsw, vsh = sw / scale, sh / scale
     local font_map = ui.make_font_map(scale)
-
     local s = self.state or {}
-    local mode = s.mode or "IDLE"
-    local tick = s.tick or 0
-    local max_tick = s.max_tick or 0
-    local catchup_target = s.mp_catchup_target or 0
-    local hash_hex = s.last_hash or "--------"
-    local sock_txt = s.socket_ok and "网络正常" or "网络异常"
-    local extra = s.extra or ""
-
     local raw_mx, raw_my = 0, 0
-    if love.mouse and love.mouse.getPosition then
-        raw_mx, raw_my = love.mouse.getPosition()
-    end
+    if love.mouse and love.mouse.getPosition then raw_mx, raw_my = love.mouse.getPosition() end
     local mx, my = raw_mx / scale, raw_my / scale
-
-    local btns = {}
-    local function add_btn(id, label, bx, by, bw, bh, style, extra_b)
-        local btn = { id = id, label = label, x = bx, y = by, w = bw, h = bh, style = style or "wood", radius = 6 }
-        if extra_b then
-            for k, v in pairs(extra_b) do btn[k] = v end
-        end
-        btns[#btns + 1] = btn
-    end
 
     G.push("all")
     G.origin()
     G.setScissor()
     G.setShader()
     G.setBlendMode("alpha")
-
     ui.begin_transform(scale, 0, 0)
+
+    if not self.visible then
+        draw_collapsed_badge(self, G, T, font_map, s, vsw, vsh, mx, my)
+        ui.end_transform()
+        G.pop()
+        if prev_font then G.setFont(prev_font) end
+        G.setColor(r, g, b, a)
+        G.setBlendMode(prev_blend)
+        return
+    end
+
+    local mode = s.mode or "IDLE"
+    local tick, max_tick = s.tick or 0, s.max_tick or 0
+    local catchup_target = s.mp_catchup_target or 0
+    local hash_hex = s.last_hash or "--------"
+    local sock_txt = s.socket_ok and "网络正常" or "网络异常"
+    local extra = s.extra or ""
+
+    local btns = {}
+    local function add_btn(id, label, bx, by, bw, bh, style, extra_b)
+        local btn = { id = id, label = label, x = bx, y = by, w = bw, h = bh, style = style or "wood", radius = 6 }
+        if extra_b then for k, v in pairs(extra_b) do btn[k] = v end end
+        btns[#btns + 1] = btn
+    end
 
     local x, y, w, h
 
@@ -508,52 +651,29 @@ function overlay:draw()
                 return bar_x + bar_w + 30
             end
 
-            -- Row 1: Local Mic Gain (40% .. 200%)
-            local mic_g = tonumber(s.mp_voice_mic_gain) or 1.0
-            draw_vol_row(py_v + 33, "我的麦", mic_g, 0.4, 2.0, s.mp_voice_mode == "mute",
-                "mp_voice_mic_down", "mp_voice_mic_set", "mp_voice_mic_up",
-                T.emerald_top, T.emerald_bot, 0)
-
-            -- Row 2: Peer Voice Volume (0% .. 180%) + Mute toggle
-            local peer_v = tonumber(s.mp_voice_peer_vol) or 1.0
+            -- Row 1..4: Local Mic Gain, Peer Vol, Mic Mode, Speaking Style
+            draw_vol_row(py_v + 33, "我的麦", tonumber(s.mp_voice_mic_gain) or 1.0, 0.4, 2.0, s.mp_voice_mode == "mute",
+                "mp_voice_mic_down", "mp_voice_mic_set", "mp_voice_mic_up", T.emerald_top, T.emerald_bot, 0)
             local peer_m = (s.mp_voice_peer_muted == true)
-            local mute_x = draw_vol_row(py_v + 61, "队友音", peer_v, 0.0, 1.8, peer_m,
+            local mute_x = draw_vol_row(py_v + 61, "队友音", tonumber(s.mp_voice_peer_vol) or 1.0, 0.0, 1.8, peer_m,
                 "mp_voice_peer_down", "mp_voice_peer_set", "mp_voice_peer_up",
                 { 84, 186, 255, 255 }, { 34, 112, 188, 255 }, 44)
             add_btn("mp_voice_peer_mute", peer_m and "恢复" or "静音", mute_x, py_v + 61, 40, 22,
                 peer_m and "crimson" or "wood", { tiny = true, radius = 5 })
 
-            -- Row 3: Mic Mode quick selector
-            local v_mode = s.mp_voice_mode or "ptt"
+            local v_mode, mx0, mw0 = s.mp_voice_mode or "ptt", px_v + 60, 68
             ui.print_shadow("收音", px_v + 12, py_v + 94, { 244, 224, 186, 255 }, nil, nil, nil, font_map.tiny_bold)
-            local m_items = {
-                { id = "ptt",  lbl = is_mob and "按住讲" or "按V麦" },
-                { id = "vad",  lbl = "自由麦" },
-                { id = "mute", lbl = "闭麦" },
-            }
-            local mx0, mw0 = px_v + 60, 68
-            for idx_m, mi in ipairs(m_items) do
-                local act = (v_mode == mi.id)
-                local mst = act and ((mi.id == "mute") and "crimson" or "battle") or "wood"
-                add_btn("mp_voice_set_mode", mi.lbl, mx0 + (idx_m - 1) * (mw0 + 5), py_v + 90, mw0, 23, mst, {
-                    tiny = true, arg = mi.id, radius = 5,
-                })
+            local m_items = { { "ptt", is_mob and "按住讲" or "按V麦" }, { "vad", "自由麦" }, { "mute", "闭麦" } }
+            for i, mi in ipairs(m_items) do
+                local mst = (v_mode == mi[1]) and ((mi[1] == "mute") and "crimson" or "battle") or "wood"
+                add_btn("mp_voice_set_mode", mi[2], mx0 + (i - 1) * (mw0 + 5), py_v + 90, mw0, 23, mst, { tiny = true, arg = mi[1], radius = 5 })
             end
-
-            -- Row 4: Speaking Indicator Style selector
             local v_ind = s.mp_voice_style or "compact"
             ui.print_shadow("说话标", px_v + 12, py_v + 123, { 244, 224, 186, 255 }, nil, nil, nil, font_map.tiny_bold)
-            local s_items = {
-                { id = "compact", lbl = "极简微标" },
-                { id = "off",     lbl = "关闭提示" },
-                { id = "card",    lbl = "醒目大卡" },
-            }
-            for idx_s, si in ipairs(s_items) do
-                local act = (v_ind == si.id)
-                add_btn("mp_voice_style_set", si.lbl, mx0 + (idx_s - 1) * (mw0 + 5), py_v + 119, mw0, 23,
-                    act and "azure" or "wood", {
-                        tiny = true, arg = si.id, radius = 5,
-                    })
+            local s_items = { { "compact", "极简微标" }, { "off", "关闭提示" }, { "card", "醒目大卡" } }
+            for i, si in ipairs(s_items) do
+                add_btn("mp_voice_style_set", si[2], mx0 + (i - 1) * (mw0 + 5), py_v + 119, mw0, 23,
+                    (v_ind == si[1]) and "azure" or "wood", { tiny = true, arg = si[1], radius = 5 })
             end
         elseif hud_hover and not has_catchup_bar and not is_alert then
             local tip_y = y + h + 5
@@ -689,25 +809,15 @@ function overlay:draw()
             add_btn("record", "重录 (F6)", bx + 216, by, 86, 26, "crimson", { small = true })
         else
             local is_mob = proto.is_android()
-            if is_mob then
-                add_btn("lobby", "联机大厅", bx, by, 134, 28, "battle", { small = true })
-                add_btn("record", "录制", bx + 142, by, 72, 28, "crimson", { small = true })
-                local nx = bx + 222
-                if s.has_replay then
-                    add_btn("replay", "回放", nx, by, 72, 28, "azure", { small = true })
-                    nx = nx + 80
-                end
-                add_btn("hide", "隐藏", nx, by, 72, 28, "wood", { small = true })
-            else
-                add_btn("lobby", "联机大厅 (F10)", bx, by, 134, 26, "battle", { small = true })
-                add_btn("record", "录制 (F6)", bx + 142, by, 78, 26, "crimson", { small = true })
-                local nx = bx + 228
-                if s.has_replay then
-                    add_btn("replay", "回放 (F7)", nx, by, 78, 26, "azure", { small = true })
-                    nx = nx + 86
-                end
-                add_btn("hide", "隐藏 (F9)", nx, by, 74, 26, "wood", { small = true })
+            local bh, rw, hw = is_mob and 28 or 26, is_mob and 72 or 78, is_mob and 72 or 74
+            add_btn("lobby", is_mob and "联机大厅" or "联机大厅 (F10)", bx, by, 134, bh, "battle", { small = true })
+            add_btn("record", is_mob and "录制" or "录制 (F6)", bx + 142, by, rw, bh, "crimson", { small = true })
+            local nx = bx + 150 + rw
+            if s.has_replay then
+                add_btn("replay", is_mob and "回放" or "回放 (F7)", nx, by, rw, bh, "azure", { small = true })
+                nx = nx + rw + 8
             end
+            add_btn("hide", is_mob and "隐藏" or "隐藏 (F9)", nx, by, hw, bh, "wood", { small = true })
         end
 
         if has_replay_bar then
@@ -760,10 +870,6 @@ function overlay:draw_toast(lobby)
     end
 
     local lobby_open = (lobby ~= nil and lobby.open == true)
-    if not lobby_open and not self.visible then
-        self._last_toast_rect = nil
-        return
-    end
 
     local G = love.graphics
     local T = ui.THEME
@@ -821,29 +927,17 @@ function overlay:draw_toast(lobby)
         local nlines = 1
         if tf and tf.getWrap then
             local _, wrapped = tf:getWrap(msg, math.max(80, math.floor(inner_tw * scale)))
-            if type(wrapped) == "table" and #wrapped > 1 then
-                nlines = #wrapped
-            end
+            if type(wrapped) == "table" and #wrapped > 1 then nlines = #wrapped end
         end
         local fh = ui.font_h(tf)
         local th = math.max(28, math.ceil(nlines * fh + 11))
         local tx = math.floor((780 - tw) * 0.5)
-        -- Dock cleanly onto the bottom dark-oak lip of the War-Table so ZERO interactive buttons,
-        -- tower icons, hero cards, rules, or sub-modal choices are EVER covered!
-        local max_ty = math.floor((sh - 6 - oy) / scale - th)
-        local ty = math.min(476, max_ty)
-        self._last_toast_rect = {
-            x = ox + tx * scale,
-            y = oy + ty * scale,
-            w = tw * scale,
-            h = th * scale,
-        }
+        local ty = math.min(476, math.floor((sh - 6 - oy) / scale - th))
+        self._last_toast_rect = { x = ox + tx * scale, y = oy + ty * scale, w = tw * scale, h = th * scale }
 
-        -- Elevated warm dark-oak + parchment snackbar inside the War-Table
         G.setColor(0, 0, 0, math.floor(138 * alpha_mul))
         G.rectangle("fill", tx - 2, ty + 4, tw + 4, th + 3, 10, 10)
         ui.draw_vgrad_rect(tx, ty, tw, th, ca({ 56, 33, 16, 248 }), ca({ 34, 19, 9, 250 }), 9)
-        -- Accent rim & subtle top bevel highlight
         G.setColor(255, 226, 174, math.floor(72 * alpha_mul))
         G.setLineWidth(1.2)
         G.line(tx + 9, ty + 2, tx + tw - 9, ty + 2)
@@ -851,29 +945,24 @@ function overlay:draw_toast(lobby)
         G.setLineWidth(2.0)
         G.rectangle("line", tx, ty, tw, th, 9, 9)
 
-        -- Glowing semantic indicator crystal on the left
-        local dx = tx + pad_x + 3
-        local dy = ty + th * 0.5
+        local dx, dy = tx + pad_x + 3, ty + th * 0.5
         G.setColor(accent[1], accent[2], accent[3], math.floor(78 * alpha_mul))
         G.circle("fill", dx, dy, 6.2)
         G.setColor(accent[1], accent[2], accent[3], math.floor(255 * alpha_mul))
         G.circle("fill", dx, dy, 3.6)
 
-        -- Crisp bold message text
-        local text_y = ty + (th - nlines * fh) * 0.5
-        ui.print_shadow(msg, tx + pad_x + dot_space, text_y,
-            ca({ 255, 246, 222, 255 }), inner_tw, (nlines == 1) and "center" or "left",
-            ca({ 16, 8, 3, 220 }), tf)
-
+        ui.print_shadow(msg, tx + pad_x + dot_space, ty + (th - nlines * fh) * 0.5,
+            ca({ 255, 246, 222, 255 }), inner_tw, (nlines == 1) and "center" or "left", ca({ 16, 8, 3, 220 }), tf)
         ui.end_transform()
     else
-        -- Lobby is closed: anchor directly under the active HUD / Toolbar
-        local bar = self._last_bar
+        -- Lobby is closed: anchor directly under the active HUD / Toolbar (or top-center when collapsed)
+        local bar = self.visible and self._last_bar or nil
         local sw, sh = G.getWidth(), G.getHeight()
-        local scale = (bar and bar.scale) or ui.compute_hud_scale(sw, sh)
-        local x = (bar and bar.x) or 10
-        local y = (bar and (bar.y + bar.h + 8)) or 90
-        local w = (bar and bar.w) or math.min(448, sw / scale - 20)
+        local scale = (bar and bar.scale) or self._ui_scale or ui.compute_hud_scale(sw, sh)
+        local vsw = sw / scale
+        local w = (bar and bar.w) or math.min(448, vsw - 20)
+        local x = (bar and bar.x) or math.max(10, math.floor((vsw - w) * 0.5))
+        local y = (bar and (bar.y + bar.h + 8)) or 10
         local font_map = ui.make_font_map(scale)
         local tf = font_map.small
 

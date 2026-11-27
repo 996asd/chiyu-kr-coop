@@ -3,7 +3,7 @@
 local bit = require("bit")
 
 local proto = {
-    MOD_VERSION = "2.4.1",
+    MOD_VERSION = "2.4.2",
     PROTOCOL_VER = 3,
     DEFAULT_TCP_PORT = 17777,
     LAN_DISCOVERY_PORT = 17778,

@@ -99,6 +99,111 @@ local function wrap_g5_reinforcements(hooks, E)
     end)
 end
 
+-- Universal G1-G4 draggable reinforcements: FL 8.2.0 only gives G5/G6 reinforcements `nav_grid`,
+-- `squad_id`, and `nav_rally.new` rally handling. Granting canonical `nav_grid` + deterministic
+-- `squad_id` on insert and handling `nav_rally.new` via SU makes ALL G1..G6 squads draggable.
+local function ensure_draggable_reinforcement(store, e, E)
+    if not (e and not e._kr_mp_local and e.reinforcement and e.soldier and e.nav_rally) then
+        return
+    end
+    if not e.nav_grid then
+        local ng = E and E.clone_c and E:clone_c("nav_grid") or nil
+        if ng then
+            e.nav_grid = ng
+        else
+            local ok_b, bit_mod = pcall(require, "bit")
+            local tmask = (ok_b and bit_mod and bit_mod.bor)
+                and bit_mod.bor(TERRAIN_LAND or 1, TERRAIN_ICE or 4)
+                or ((TERRAIN_LAND or 1) + (TERRAIN_ICE or 4))
+            e.nav_grid = {
+                valid_terrains = tmask,
+                valid_terrains_dest = tmask,
+                waypoints = {},
+                ignore_waypoints = nil,
+            }
+        end
+        e._kr_mp_reinf_drag = true
+        if e.sound_events and not e.sound_events.change_rally_point and e.sound_events.insert then
+            e.sound_events.change_rally_point = e.sound_events.insert
+        end
+    end
+    if not e.reinforcement.squad_id and store then
+        if store._kr_mp_active_reinf_squad_id then
+            e.reinforcement.squad_id = store._kr_mp_active_reinf_squad_id
+        else
+            local c = e.nav_rally.center or e.pos
+            local key = string.format("%d:%d:%d",
+                store.tick or 0,
+                math.floor(((c and c.x) or 0) * 100 + 0.5),
+                math.floor(((c and c.y) or 0) * 100 + 0.5))
+            if store._kr_mp_reinf_squad_key ~= key then
+                store._kr_mp_reinf_squad_seq = (store._kr_mp_reinf_squad_seq or 0) + 1
+                store._kr_mp_reinf_squad_key = key
+                store._kr_mp_reinf_squad_cur = 90000000 + store._kr_mp_reinf_squad_seq
+            end
+            e.reinforcement.squad_id = store._kr_mp_reinf_squad_cur
+        end
+    end
+end
+
+local function handle_augmented_reinf_rally(SU_mod, store, this)
+    if not (this and this._kr_mp_reinf_drag and this.nav_rally and this.nav_rally.new and this.nav_grid) then
+        return false
+    end
+    if this.health and this.health.dead then
+        this.nav_rally.new = false
+        return false
+    end
+    while this.nav_rally.new do
+        if this.health and this.health.dead then
+            this.nav_rally.new = false
+            return true
+        end
+        if this.reinforcement and this.reinforcement.duration
+            and (store.tick_ts - (this.reinforcement.ts or 0) > this.reinforcement.duration) then
+            this.nav_rally.new = false
+            return true
+        end
+        if SU_mod.y_hero_new_rally(store, this) then
+            return true
+        end
+    end
+    return true
+end
+
+local function wrap_reinf_drag_script_utils(hooks)
+    local orig_pairs = hooks.orig_pairs
+    for mod_name, SU_mod in orig_pairs(package.loaded) do
+        if type(mod_name) == "string" and mod_name:find("^script_utils")
+            and type(SU_mod) == "table" and type(SU_mod.y_hero_new_rally) == "function" then
+            hooks.wrap_once(SU_mod, "y_soldier_melee_block_and_attacks", "reinf_drag", function(orig_melee)
+                return function(store, this, ...)
+                    if handle_augmented_reinf_rally(SU_mod, store, this) then
+                        return true
+                    end
+                    return orig_melee(store, this, ...)
+                end
+            end)
+            hooks.wrap_once(SU_mod, "y_soldier_ranged_attacks", "reinf_drag", function(orig_ranged)
+                return function(store, this, ...)
+                    if handle_augmented_reinf_rally(SU_mod, store, this) then
+                        return true
+                    end
+                    return orig_ranged(store, this, ...)
+                end
+            end)
+            hooks.wrap_once(SU_mod, "soldier_go_back_step", "reinf_drag", function(orig_back)
+                return function(store, this, ...)
+                    if handle_augmented_reinf_rally(SU_mod, store, this) then
+                        return true
+                    end
+                    return orig_back(store, this, ...)
+                end
+            end)
+        end
+    end
+end
+
 local function wrap_sim_skip_local_systems(hooks, S_sys)
     local sim_skip_sys = { "sso_post", "events", "count_groups", "game_upgrades", "game_upgrades_6", "health" }
     local cb_names = { "on_insert", "on_remove", "on_insert_unconditional", "on_remove_unconditional", "on_queue", "on_dequeue" }
@@ -508,6 +613,7 @@ function M.install_simulation(hooks)
             hooks.wrap_local_ui(self_sim, "prepare_render")
             wrap_medical_kit(hooks, E)
             wrap_g5_reinforcements(hooks, E)
+            wrap_reinf_drag_script_utils(hooks)
             wrap_sim_skip_local_systems(hooks, S_sys)
             wrap_main_script_system(hooks, S_sys, E)
 
@@ -546,6 +652,7 @@ function M.install_simulation(hooks)
                 hooks.local_entity_depth = hooks.local_entity_depth + 1
                 prng:enter_visual()
             else
+                ensure_draggable_reinforcement(st, e, E)
                 hooks.sso_mutation_gen = (hooks.sso_mutation_gen or 0) + 1
             end
             local ok_i, err_i = pcall(orig_insert, self_sim, e)

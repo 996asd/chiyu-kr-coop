@@ -135,6 +135,16 @@ function boot:wrap_love_callbacks()
         end
     end
 
+    local orig_mousemoved = love.mousemoved
+    love.mousemoved = function(x, y, dx, dy, istouch, ...)
+        if not (self.lobby and self.lobby.open) and overlay:mousemoved(x, y, dx, dy) then
+            return
+        end
+        if orig_mousemoved then
+            return orig_mousemoved(x, y, dx, dy, istouch, ...)
+        end
+    end
+
     local orig_mousereleased = love.mousereleased
     love.mousereleased = function(x, y, button, istouch, ...)
         if self.lobby and self.lobby:mousereleased(x, y, button) then
@@ -165,6 +175,15 @@ function boot:wrap_love_callbacks()
     local orig_touchmoved = love.touchmoved
     love.touchmoved = function(id, x, y, dx, dy, pressure, ...)
         if self.lobby and self.lobby.open then
+            return
+        end
+        if overlay._mini_drag then
+            local px, py = x, y
+            if px >= 0 and px <= 1 and py >= 0 and py <= 1 and love and love.graphics then
+                px = px * (love.graphics.getWidth() or 1)
+                py = py * (love.graphics.getHeight() or 1)
+            end
+            overlay:mousemoved(px, py, dx or 0, dy or 0)
             return
         end
         if overlay._consumed_down then
@@ -343,6 +362,7 @@ function boot:on_keypressed(key, isrepeat)
     end
     if key == "f9" then
         overlay.visible = not overlay.visible
+        if not overlay.visible then overlay.voice_panel_open = false end
         return true
     end
     if not (self.coop and self.coop:is_active()) then
@@ -359,7 +379,16 @@ function boot:on_hud_action(action_id, arg)
     self:log("HUD ACTION: %s", tostring(action_id))
     if action_id == "hide" then
         overlay.visible = not overlay.visible
-        if not overlay.visible then overlay.voice_panel_open = false end
+        if not overlay.visible then
+            overlay.voice_panel_open = false
+            overlay:show_toast("已收起为悬浮小标：点击小标展开，按住小标可自由拖动位置", 2.6)
+        end
+    elseif action_id == "show" then
+        overlay.visible = true
+    elseif action_id == "hud_mini_moved" then
+        if self.lobby and self.lobby.save_prefs then
+            self.lobby:save_prefs()
+        end
     elseif action_id == "lobby" and self.lobby then
         self.lobby:toggle()
     elseif action_id == "mp_send_gold" and self.lockstep and self.lockstep:is_active() then
