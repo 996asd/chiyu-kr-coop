@@ -309,8 +309,10 @@ function lobby:host_lan_room()
         if sk_disp then
             local shown = self.privacy_mask and self.sakura.mask_addr(sk_disp) or sk_disp
             self.overlay:show_toast("战桌已就绪！检测到本机樱花 " .. shown .. "，点上方绿条一键复制给队友！", 3.6)
+        elseif self.net_tab == "sakura" then
+            self.overlay:show_toast("战桌已建好，但未检测到活跃樱花隧道！请先点上方「樱花助手」开启 TCP " .. tostring(res) .. " 隧道，否则异地队友连不上！", 5.0)
         else
-            self.overlay:show_toast("樱花/局域网战桌已创建（TCP " .. tostring(res) .. " · 内置热续传），等待 2P 加入...", 2.5)
+            self.overlay:show_toast("局域网战桌已创建（TCP " .. tostring(res) .. " · 内置热续传），同 Wi-Fi 队友可直接揭榜加入！", 3.0)
         end
     end
     return true

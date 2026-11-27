@@ -156,13 +156,19 @@ try {
         $Body = Get-Content $BodyFile -Raw -Encoding UTF8
     } elseif (-not $Body) {
         $Body = @"
+> **新手下载必看（别下错了！）**
+> - **99% 普通玩家只下载第 1 个**：``KR-MP-FL8.2.0-$Tag-client-patch.zip``（约 336 KB）→ **先右键全部解压缩到桌面** → 双击 ``一键安装联机补丁.bat`` 即可！
+> - **不要单独下载下方的 ``kr-mp-server.exe`` / ``kr-mp-server-linux-amd64``**，那是给游戏内「一键自建公网服」和云服务器脚本自动拉取校验用的程序。
+> - **本 MOD 永久免费开源**（仅适配 Windows PC 同人改版 **FL 8.2.0**，不支持 Steam 原版）；如在闲鱼/网盘付费购买请立刻退款！
+
 ## $Tag 更新说明
 
 $($verObj.notes)
 
-### 下载说明
-- **普通玩家开黑**：下载 ``KR-MP-FL8.2.0-$Tag-client-patch.zip``（轻量化客户端补丁），解压后双击 ``一键安装联机补丁.bat`` 即可。
-- **房主自建公网中继服 / 樱花映射断线重连**：下载 ``KR-MP-FL8.2.0-$Tag-full-and-server.zip``（内置 Windows / Linux Go 中继服）。
+### 附件清单说明
+- ``KR-MP-FL8.2.0-$Tag-client-patch.zip``：**普通玩家双排首选**（轻量化客户端补丁，解压后双击 ``一键安装联机补丁.bat``，支持游戏内一键自动拉取独立版 frpc / 中继服）。
+- ``KR-MP-FL8.2.0-$Tag-full-and-server.zip``：离线完整包（额外打包了 Windows / Linux Go 公网中继服，适合断网环境或手搭服务端）。
+- ``kr-mp-server.exe`` / ``kr-mp-server-linux-amd64``：供游戏内一键开服助手与 Linux 云服 1 行部署脚本自动下载校验的独立服务端文件（普通玩家无需手动下载）。
 "@
     }
 

@@ -52,34 +52,29 @@ function Populate-BasePackage([string]$dest) {
         Copy-Item (Join-Path $Root "LICENSE") (Join-Path $dest "LICENSE") -Force
     }
 
-    $installBat = @"
-@echo off
-chcp 65001 >nul
-cd /d "%~dp0"
-powershell -ExecutionPolicy Bypass -File "%~dp0tools\install_patch.ps1"
-pause
-"@
-    $uninstallBat = @"
-@echo off
-chcp 65001 >nul
-cd /d "%~dp0"
-powershell -ExecutionPolicy Bypass -File "%~dp0tools\uninstall_patch.ps1"
-pause
-"@
-    $bugBat = @"
-@echo off
-chcp 65001 >nul
-cd /d "%~dp0"
-powershell -ExecutionPolicy Bypass -File "%~dp0tools\collect_bug_report.ps1"
-pause
-"@
-    $exportBat = @"
-@echo off
-chcp 65001 >nul
-cd /d "%~dp0"
-powershell -ExecutionPolicy Bypass -File "%~dp0tools\export_my_fix.ps1"
-pause
-"@
+    function Build-GuardBat([string]$scriptName) {
+        $lines = @(
+            '@echo off',
+            'chcp 65001 >nul',
+            'cd /d "%~dp0"',
+            ('if exist "%~dp0tools\{0}" goto :run' -f $scriptName),
+            'echo ============================================================',
+            'echo   [Error] Please UNZIP the archive before running!',
+            'echo   检测到你直接在压缩包预览窗口里双击了本程序，尚未解压！',
+            'echo   请先右键压缩包选择「全部解压缩」到桌面，再双击解压出来的程序！',
+            'echo ============================================================',
+            'pause',
+            'exit /b 1',
+            ':run',
+            ('powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\{0}"' -f $scriptName),
+            'pause'
+        )
+        return ($lines -join "`r`n") + "`r`n"
+    }
+    $installBat   = Build-GuardBat 'install_patch.ps1'
+    $uninstallBat = Build-GuardBat 'uninstall_patch.ps1'
+    $bugBat       = Build-GuardBat 'collect_bug_report.ps1'
+    $exportBat    = Build-GuardBat 'export_my_fix.ps1'
     [System.IO.File]::WriteAllText((Join-Path $dest "一键安装联机补丁.bat"), $installBat, (New-Object System.Text.UTF8Encoding($false)))
     [System.IO.File]::WriteAllText((Join-Path $dest "一键卸载联机补丁.bat"), $uninstallBat, (New-Object System.Text.UTF8Encoding($false)))
     [System.IO.File]::WriteAllText((Join-Path $dest "一键收集报错包.bat"), $bugBat, (New-Object System.Text.UTF8Encoding($false)))

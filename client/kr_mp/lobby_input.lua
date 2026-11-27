@@ -346,9 +346,22 @@ function BTN_HANDLERS.copy_net_info(lobby)
                 msg = (sk_p2p and "已复制 P2P+樱花双地址：" or "已复制本机樱花公网地址：") .. sk_copy
             end
             lobby:copy_to_clipboard(sk_copy, msg)
+        elseif lobby.net_tab == "sakura" then
+            lobby.overlay:show_toast(string.format(
+                "尚未检测到活跃樱花隧道！127.0.0.1 仅限本机，发给异地队友必连不上！请先点「樱花助手」开启 TCP %d 隧道。",
+                port), 4.8)
         else
-            lobby:copy_to_clipboard("127.0.0.1:" .. tostring(port),
-                string.format("已复制本机端口 127.0.0.1:%d（樱花隧道本地端口请设为 %d）", port, port))
+            local lan_ip = (lobby.server_host and lobby.server_host.lan_ip)
+                or (lobby.server_host and lobby.server_host.detect_lan_ip and lobby.server_host:detect_lan_ip())
+                or nil
+            if lan_ip and #lan_ip > 0 then
+                local addr = lan_ip .. ":" .. tostring(port)
+                local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(addr) or addr
+                lobby:copy_to_clipboard(addr, "已复制局域网直连地址：" .. shown .. "（同 Wi-Fi / 宿舍网队友可粘贴直连）")
+            else
+                lobby:copy_to_clipboard("127.0.0.1:" .. tostring(port),
+                    string.format("已复制本机端口 127.0.0.1:%d（仅限本机双开；局域网请查看本机内网 IP）", port))
+            end
         end
     else
         local addr = tostring(lobby.last_direct_host or lobby.ip_input or "127.0.0.1")
