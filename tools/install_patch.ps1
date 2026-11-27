@@ -274,13 +274,14 @@ if (Test-Path -LiteralPath $TargetUH) {
     }
 }
 
-# Clean-install lightweight patch (UH.lua + kr_mp/)
+# Clean-install lightweight patch (UH.lua + kr_mp/, preserving cached/running kr_mp/bin)
 Copy-Item -LiteralPath (Join-Path $PatchDir "UH.lua") -Destination $TargetUH -Force
 $TargetKrMp = Join-Path $TargetDir "kr_mp"
-if (Test-Path -LiteralPath $TargetKrMp) {
-    Remove-Item -LiteralPath $TargetKrMp -Recurse -Force
+New-Item -ItemType Directory -Force -Path $TargetKrMp | Out-Null
+Get-ChildItem -LiteralPath $TargetKrMp -Force | Where-Object { $_.Name -ne "bin" } | Remove-Item -Recurse -Force
+Get-ChildItem -LiteralPath (Join-Path $PatchDir "kr_mp") -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $TargetKrMp $_.Name) -Recurse -Force
 }
-Copy-Item -LiteralPath (Join-Path $PatchDir "kr_mp") -Destination $TargetKrMp -Recurse -Force
 
 # Verify installed files & assets against manifest.json SHA-256
 $TargetManifest = Join-Path $TargetKrMp "manifest.json"

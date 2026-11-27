@@ -11,8 +11,9 @@ if (-not (Test-Path $SandboxDir)) {
 
 Copy-Item -Path (Join-Path $ClientDir "UH.lua") -Destination (Join-Path $SandboxDir "UH.lua") -Force
 $dstMod = Join-Path $SandboxDir "kr_mp"
-if (Test-Path $dstMod) {
-    Remove-Item -Recurse -Force $dstMod
+New-Item -ItemType Directory -Force -Path $dstMod | Out-Null
+Get-ChildItem -LiteralPath $dstMod -Force | Where-Object { $_.Name -ne "bin" } | Remove-Item -Recurse -Force
+Get-ChildItem -LiteralPath (Join-Path $ClientDir "kr_mp") -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dstMod $_.Name) -Recurse -Force
 }
-Copy-Item -Path (Join-Path $ClientDir "kr_mp") -Destination $dstMod -Recurse -Force
 Write-Host "[KR-MP] Synced client/ -> $SandboxDir"

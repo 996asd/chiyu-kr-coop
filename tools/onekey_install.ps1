@@ -346,13 +346,14 @@ try {
         }
     }
 
-    # Install UH.lua + kr_mp/
+    # Install UH.lua + kr_mp/ (preserving cached/running kr_mp/bin)
     Copy-Item -LiteralPath (Join-Path $PatchSource "UH.lua") -Destination $TargetUH -Force
     $TargetKrMp = Join-Path $TargetDir "kr_mp"
-    if (Test-Path -LiteralPath $TargetKrMp) {
-        Remove-Item -LiteralPath $TargetKrMp -Recurse -Force
+    New-Item -ItemType Directory -Force -Path $TargetKrMp | Out-Null
+    Get-ChildItem -LiteralPath $TargetKrMp -Force | Where-Object { $_.Name -ne "bin" } | Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath (Join-Path $PatchSource "kr_mp") -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $TargetKrMp $_.Name) -Recurse -Force
     }
-    Copy-Item -LiteralPath (Join-Path $PatchSource "kr_mp") -Destination $TargetKrMp -Recurse -Force
 
     # Verify installed manifest SHA-256 (files + assets)
     $TargetManifest = Join-Path $TargetKrMp "manifest.json"
