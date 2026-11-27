@@ -62,8 +62,10 @@ kr-mp-mod/
 │       ├── lobby_draw.lua      # 皇家战桌首页与备战房间主渲染器
 │       ├── lobby_draw_modals.lua # 新手教程 / 201 关 / 105 英雄 / 59 选 12 塔 / 语音调音弹窗渲染器
 │       ├── lobby_draw_sakura.lua # 樱花映射专属助手弹窗（免密钥感知/官方下载进度/4步新手向导/翻页节点/防窥打码）
+│       ├── lobby_draw_server.lua # 傻瓜式一键开服助手弹窗（本机零成本开17780服/樱花17780联动/云服1行命令）
 │       ├── sakura.lua          # 樱花映射深度适配（只读状态与日志感知、官方安装器一键下载、三线测速、OpenAPI v4、无窗 frpc 托管）
 │       ├── sakura_workers.lua  # 樱花后台 love.thread 线程脚本（三线测速 / OpenAPI v4 / 官方安装器流式下载与 MD5 校验）
+│       ├── server_host.lua     # 本机公网中继服一键下载校验、无窗托管启停（退游戏保活）与樱花 17780 联动
 │       ├── autotest.lua        # M1/M2 多进程自动化联机回归测试驱动（与正式 UI 完全解耦）
 │       ├── overlay.lua         # 顶部居中紧凑中文 HUD（金币/延迟/校验/倍速/暂停/转50金/语音调音/追帧进度条）
 │       ├── voice.lua           # 内置低延迟双向连麦语音（ADPCM/按V/自由麦/闭麦/混音增益/声波状态）
@@ -89,6 +91,7 @@ kr-mp-mod/
 │   ├── collect_bug_report.ps1  # 群友双击：一键打包报错日志、哈希与 AI 提问词
 │   ├── install_patch.ps1       # 离线补丁安装器（自动找目录 / SHA-256 校验 / 自动建桌面快捷方式 / 可选下载官方樱花）
 │   ├── onekey_install.ps1      # 在线/离线统一懒人安装器（支持 irm|iex 与 AI 智能体 -AutoFind -Silent 静默全自动安装）
+│   ├── deploy_server.sh        # Linux 云服务器 1 行全自动开服脚本（自动下载校验 + systemd 常驻 + 防火墙放行）
 │   ├── export_my_fix.ps1       # 群友双击：比对 manifest.json 一键导出精简修复补丁包
 │   ├── apply_community_fix.ps1 # 维护者双击：预览、备份、应用并自动测试群友提交的修复包
 │   └── setup_repo_sync.ps1     # 维护者双击：配置 GitHub + Gitee 双远端并同步推送

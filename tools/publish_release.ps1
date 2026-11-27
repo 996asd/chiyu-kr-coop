@@ -94,7 +94,8 @@ try {
             $req.Headers.TryAddWithoutValidation("Accept", "application/vnd.github+json") | Out-Null
             $req.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28") | Out-Null
             $content = New-Object System.Net.Http.StreamContent($fs)
-            $content.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue("application/zip")
+            $mime = if ($fileName.EndsWith(".zip")) { "application/zip" } else { "application/octet-stream" }
+            $content.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue($mime)
             $req.Content = $content
 
             $resp = $client.SendAsync($req).GetAwaiter().GetResult()
@@ -120,7 +121,8 @@ try {
         $multipart = New-Object System.Net.Http.MultipartFormDataContent
         try {
             $fileContent = New-Object System.Net.Http.StreamContent($fs)
-            $fileContent.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue("application/zip")
+            $mime = if ($fileName.EndsWith(".zip")) { "application/zip" } else { "application/octet-stream" }
+            $fileContent.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue($mime)
             $multipart.Add($fileContent, "file", $fileName)
 
             $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, $targetUrl)
@@ -177,6 +179,10 @@ $($verObj.notes)
         if ($LASTEXITCODE -ne 0) { throw "package_release.ps1 失败" }
     }
     $Assets = @($ClientZip, $FullZip)
+    $WinSrvBin   = Join-Path $Root "server\kr-mp-server.exe"
+    $LinuxSrvBin = Join-Path $Root "server\kr-mp-server-linux-amd64"
+    if (Test-Path -LiteralPath $WinSrvBin)   { $Assets += $WinSrvBin }
+    if (Test-Path -LiteralPath $LinuxSrvBin) { $Assets += $LinuxSrvBin }
     foreach ($a in $Assets) {
         if (-not (Test-Path $a)) { throw "未找到发布压缩包: $a" }
         Write-Host ("  [资产] {0} ({1:N1} KB)" -f (Split-Path -Leaf $a), ((Get-Item $a).Length / 1KB)) -ForegroundColor Gray

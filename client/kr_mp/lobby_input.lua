@@ -22,7 +22,7 @@ local TAB_SFX_IDS = {
     tab_sakura = true, tab_lan = true, tab_online = true,
     stage_pack = true, hero_pack = true, tower_pack = true,
     open_stages = true, open_hero1 = true, open_hero2 = true, open_towers = true,
-    open_guide = true, guide_tab = true, open_sakura = true,
+    open_guide = true, guide_tab = true, open_sakura = true, open_server_host = true,
     sakura_toggle_wizard = true, sakura_nodes_prev = true, sakura_nodes_next = true,
 }
 
@@ -356,7 +356,110 @@ function BTN_HANDLERS.copy_net_info(lobby)
     end
 end
 
--- Online Home
+-- Online Home & 1-Click Self-Hosted Relay Server Modal
+function BTN_HANDLERS.open_server_host(lobby)
+    if lobby.overlay then lobby.overlay:clear_toast() end
+    if lobby.server_host then lobby.server_host:scan_local(true) end
+    if lobby.sakura then
+        lobby.sakura:scan_local(true)
+        if type(lobby.sakura.token) == "string" and #lobby.sakura.token >= 8 and not lobby.sakura.user_info and not lobby.sakura.api_busy then
+            lobby.sakura:refresh_api()
+        end
+    end
+    lobby.sub_modal = "server_host"
+end
+function BTN_HANDLERS.srv_rescan(lobby)
+    if lobby.server_host then lobby.server_host:scan_local(true) end
+    if lobby.sakura then lobby.sakura:scan_local(true) end
+    lobby.overlay:show_toast("已刷新本机服务端与樱花 17780 隧道状态。", 2.0)
+end
+function BTN_HANDLERS.srv_toggle_keep(lobby)
+    if lobby.server_host then
+        lobby.server_host.keep_running_on_exit = not lobby.server_host.keep_running_on_exit
+        lobby.overlay:show_toast(
+            lobby.server_host.keep_running_on_exit
+                and "已开启【退游戏保活】：房主游戏意外闪退时本机中继服继续运行，5 分钟内可重连！"
+                or "已关闭【退游戏保活】：退出游戏时将自动关闭本机中继服。",
+            3.0
+        )
+    end
+end
+function BTN_HANDLERS.srv_start_local(lobby)
+    if not lobby.server_host then return end
+    local ok, err = lobby.server_host:start_local_server(lobby)
+    if not ok then
+        lobby.overlay:show_toast("启动本机服失败：" .. tostring(err), 3.8)
+    end
+end
+function BTN_HANDLERS.srv_stop_local(lobby)
+    if lobby.server_host then
+        lobby.server_host:stop_local_server()
+        if lobby.transport and lobby.transport:is_online() and tostring(lobby.server_input or ""):match("^127%.0%.0%.1:") then
+            lobby.transport:close()
+            lobby.server_connected = false
+            lobby.server_handshaking = false
+        end
+        lobby.overlay:show_toast("已停止本机公网中继服 (TCP 17780)。", 2.4)
+    end
+end
+function BTN_HANDLERS.srv_connect_local(lobby)
+    local port = (lobby.server_host and lobby.server_host.DEFAULT_PORT) or proto.DEFAULT_ONLINE_PORT
+    local addr = "127.0.0.1:" .. tostring(port)
+    lobby.server_input = addr
+    lobby:save_prefs()
+    lobby.sub_modal = nil
+    if lobby.view == "home" and lobby.net_tab ~= "online" then
+        lobby:switch_tab("online")
+    end
+    lobby:connect_online_server(addr, false)
+end
+function BTN_HANDLERS.srv_copy_lan(lobby)
+    local port = (lobby.server_host and lobby.server_host.DEFAULT_PORT) or proto.DEFAULT_ONLINE_PORT
+    local ip = (lobby.server_host and lobby.server_host.lan_ip) or "127.0.0.1"
+    local addr = ip .. ":" .. tostring(port)
+    local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(addr) or addr
+    lobby:copy_to_clipboard(addr, "已复制局域网中继服地址：" .. shown .. "（同 Wi-Fi 队友贴进「公网服务器」即可）")
+end
+function BTN_HANDLERS.srv_copy_public(lobby, btn)
+    local addr = btn and btn.copy_addr
+    if type(addr) == "string" and #addr > 0 then
+        local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(addr) or addr
+        lobby:copy_to_clipboard(addr, "已复制公网大厅服地址：" .. shown .. "，发群里让水友填进「公网服务器」即可！")
+    end
+end
+function BTN_HANDLERS.srv_connect_public(lobby, btn)
+    local addr = btn and btn.addr
+    if type(addr) == "string" and #addr > 0 then
+        lobby.server_input = addr
+        lobby:save_prefs()
+        lobby.sub_modal = nil
+        if lobby.view == "home" and lobby.net_tab ~= "online" then
+            lobby:switch_tab("online")
+        end
+        lobby:connect_online_server(addr, false)
+    end
+end
+function BTN_HANDLERS.srv_start_sakura_17780(lobby, btn)
+    if not lobby.sakura or not btn.tunnel then return end
+    local ok, err = lobby.sakura:start_managed_frpc(btn.tunnel)
+    if ok then
+        lobby.overlay:show_toast("已后台静默启动 17780 公网服隧道！点击绿色按钮即可复制地址发群里。", 3.5)
+    else
+        lobby.overlay:show_toast("启动 17780 隧道失败：" .. tostring(err), 3.8)
+    end
+end
+function BTN_HANDLERS.srv_create_sakura_17780(lobby, btn)
+    if lobby.sakura and btn.node_id then
+        local port = (lobby.server_host and lobby.server_host.DEFAULT_PORT) or proto.DEFAULT_ONLINE_PORT
+        lobby.sakura:create_krmp_tunnel(btn.node_id, port)
+    end
+end
+function BTN_HANDLERS.srv_copy_vps_cmd(lobby)
+    local cmd = (lobby.server_host and lobby.server_host.VPS_DEPLOY_CMD) or ""
+    if #cmd > 0 then
+        lobby:copy_to_clipboard(cmd, "已复制 Linux 云服务器 1 行开服命令！贴到云主机终端回车即可永久部署。")
+    end
+end
 function BTN_HANDLERS.server_box(lobby) lobby:set_focus("server") end
 function BTN_HANDLERS.paste_server(lobby) lobby:paste_into_field("server") end
 function BTN_HANDLERS.connect_server(lobby)

@@ -7,6 +7,7 @@ local lobby_prefs = require("kr_mp.lobby_prefs")
 local ui = require("kr_mp.ui_assets")
 local modals = require("kr_mp.lobby_draw_modals")
 local sakura_modal = require("kr_mp.lobby_draw_sakura")
+local server_modal = require("kr_mp.lobby_draw_server")
 
 local M = {}
 
@@ -50,6 +51,7 @@ end
 local function resolve_banner_title(lobby)
     if lobby.sub_modal == "guide" then return "新手指南 · 1分钟开黑"
     elseif lobby.sub_modal == "sakura" then return "樱花映射助手 · SakuraFrp"
+    elseif lobby.sub_modal == "server_host" then return "一键开服助手 · 自建公网大厅"
     elseif lobby.view == "home" then return "联机酒馆 · 冒险驿站"
     elseif lobby.sub_modal == "stages" then return "战役舆图 · 选择关卡"
     elseif lobby.sub_modal == "hero1" then return "英雄殿 · 选 1P 主将"
@@ -417,12 +419,16 @@ local function draw_home_online(ctx, y)
     ui.draw_armory_tray(cx, y, cw, tray_h, 9)
     ui.draw_ping_dot(cx + 18, y + 17, lobby.transport:get_rtt_ms(), lobby.server_connected)
     ui.print_shadow(string.format("公开在线房间大厅 (%d 个房间)", #lobby.online_rooms), cx + 30, y + 10, T.gold_bright, nil, nil, nil, fm.small_bold)
+    local sh = lobby.server_host
+    local srv_btn_lbl = (sh and sh.running) and "本机服运行中 √ (管理)" or "一键自建公网服"
+    local srv_btn_w = (sh and sh.running) and 142 or 116
+    add_btn("open_server_host", srv_btn_lbl, cx + cw - srv_btn_w - 10, y + 6, srv_btn_w, 22, "battle", { tiny = true })
 
     if is_connecting then
         ui.text("正在连接并校验公网中继服协议（不卡界面），也可直接修改上方地址后点「连接」。",
             cx + 22, y + math.floor(tray_h * 0.44), { 246, 224, 174, 225 }, fm.small, cw - 44, "center")
     elseif not lobby.server_connected then
-        ui.text("尚未连接公网中继服 · 樱花 17777 直连请切回「樱花联机」页；本页需连接运行中的 kr-mp-server (TCP 17780)。",
+        ui.text("尚未连接公网中继服 · 樱花 17777 直连请切回「樱花联机」页；想零成本自建水友大厅请点右上绿色「一键自建公网服」！",
             cx + 22, y + math.floor(tray_h * 0.44), { 232, 206, 158, 220 }, fm.small, cw - 44, "center")
     elseif #lobby.online_rooms == 0 then
         ui.text("已连接服务器！当前暂无公开房间，可点左上「创建公网房间」或「刷新」。",
@@ -844,6 +850,8 @@ function M.draw(lobby)
         modals.draw_guide(ctx)
     elseif lobby.sub_modal == "sakura" then
         sakura_modal.draw(ctx)
+    elseif lobby.sub_modal == "server_host" then
+        server_modal.draw(ctx)
     elseif lobby.view == "home" then
         draw_home(ctx)
     elseif lobby.sub_modal == "stages" then

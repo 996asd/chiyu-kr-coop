@@ -651,7 +651,7 @@ function sakura:create_krmp_tunnel(node_id, local_port)
     end
     th:start("kr_mp_sakura_api", self.api_seq, "create", self.token, payload, package.path)
     if self.overlay then
-        self.overlay:show_toast("正在通过樱花官方 API 创建 17777 专属联机隧道...", 2.5)
+        self.overlay:show_toast(string.format("正在通过樱花官方 API 创建 %d 专属联机隧道...", port_n), 2.5)
     end
     return true
 end
@@ -957,7 +957,7 @@ function sakura:update(dt, lobby)
                     local c = res.created or {}
                     if self.overlay then
                         self.overlay:show_toast(string.format(
-                            "17777 联机隧道创建成功（#%s · 远程端口 %s），正在刷新列表...",
+                            "樱花联机隧道创建成功（#%s · 远程端口 %s），正在刷新列表...",
                             tostring(c.id), tostring(c.remote)), 3.5)
                     end
                     self:refresh_api()

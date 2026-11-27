@@ -68,14 +68,13 @@ irm https://gitee.com/chiyu-studio/chiyu-kr-coop/raw/main/tools/onekey_install.p
 1. 1P 点 **`创建局域网房间`**（首次放行 Windows 防火墙）。
 2. 2P 等 2 秒在下方「酒馆布告栏」点 **`揭榜加入`**（也可右侧输入局域网 IP 或点 `本机双开` 测试）。
 
-### 方式 C：自建公网中继服（切到「公网服务器」页）
-- **Windows**：双击 `server\启动公网中继服.bat`（监听 TCP `17780`，状态监控 `:17781/health`）。
-- **Linux VPS**：
+### 方式 C：傻瓜式一键自建公网中继服（切到「公网服务器」页，适合主播水友多房大厅！）
+- **零成本 · 游戏内一键开服（小白推荐）**：在「公网服务器」页点右上绿色 **`一键自建公网服`** → 点 **`一键启动本机服务器 (17780)`**（自动下载校验 `kr-mp-server.exe` 并无黑框启动、自动接入）→ 步骤 2 配合樱花一键映射 `17780` 把地址发群里，**所有水友免装樱花、免注册**直接进大厅互开房间！默认开启「退游戏保活」，房主游戏闪退也不炸水友房。
+- **7×24 小时永久群服 · Linux 云服务器 1 行命令**：
   ```bash
-  chmod +x kr-mp-server-linux-amd64
-  nohup ./kr-mp-server-linux-amd64 -addr :17780 -http :17781 -grace 300 > kr_mp_server.log 2>&1 &
+  curl -fsSL https://gitee.com/chiyu-studio/chiyu-kr-coop/raw/main/tools/deploy_server.sh | sudo bash
   ```
-- 放行 TCP `17780` 后，双方填入 `公网IP:17780` 连接即可。
+  自动下载校验最新版 + 配置 `systemd` 开机自启 + 放行防火墙 `17780` 并打印可直接粘贴的 `公网IP:17780`（记得云控制台安全组放行 TCP `17780`）。
 
 ---
 

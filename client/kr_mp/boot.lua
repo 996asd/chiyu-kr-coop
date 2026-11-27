@@ -92,6 +92,9 @@ function boot:wrap_love_callbacks()
         if self.sakura then
             self.sakura:update(dt, self.lobby)
         end
+        if self.server_host then
+            self.server_host:update(dt, self.lobby)
+        end
         if self.voice then
             self.voice:update(dt, self.lobby, self.coop)
         end
@@ -190,6 +193,9 @@ function boot:wrap_love_callbacks()
         self:log("Shutting down KR-MP...")
         if self.sakura then
             self.sakura:shutdown()
+        end
+        if self.server_host then
+            self.server_host:shutdown()
         end
         if self.voice then
             self.voice:shutdown()
@@ -501,6 +507,7 @@ function boot:init(source)
     local ok_lb, lobby_mod = pcall(require, "kr_mp.lobby_ui")
     local ok_v, voice_mod = pcall(require, "kr_mp.voice")
     local ok_sk, sakura_mod = pcall(require, "kr_mp.sakura")
+    local ok_sh, server_host_mod = pcall(require, "kr_mp.server_host")
 
     if ok_t and ok_c and ok_l and ok_lb then
         self.transport = transport_mod
@@ -521,6 +528,13 @@ function boot:init(source)
             self.lobby.sakura = self.sakura
         else
             self:log("ERROR loading kr_mp.sakura: %s", tostring(sakura_mod))
+        end
+        if ok_sh and server_host_mod then
+            self.server_host = server_host_mod
+            pcall(server_host_mod.init, server_host_mod, self, overlay)
+            self.lobby.server_host = self.server_host
+        else
+            self:log("ERROR loading kr_mp.server_host: %s", tostring(server_host_mod))
         end
         self.coop:init(self, self.lockstep, overlay)
         self.lockstep:init(self, self.transport, self.coop, overlay)

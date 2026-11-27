@@ -64,6 +64,7 @@ local lobby = {
     overlay = nil,
     voice = nil,
     sakura = nil,
+    server_host = nil,
     privacy_mask = false,
     sakura_show_wizard = false,
     sakura_wizard_dismissed = false,
