@@ -257,6 +257,34 @@ if (-not $TargetDir) {
             exit 2
         } else {
             Write-Host "KR_MP_NOT_FOUND" -ForegroundColor Red
+            $scanDirs = @(
+                (Join-Path $env:USERPROFILE "Downloads"),
+                ([Environment]::GetFolderPath("Desktop"))
+            ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+            $archives = New-Object System.Collections.Generic.List[object]
+            foreach ($sd in $scanDirs) {
+                Get-ChildItem -LiteralPath $sd -File -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Extension -match '^\.(zip|7z|rar)$' -and $_.Length -gt 50MB -and $_.Name -match 'FL|8\.2|Kingdom|王国|保卫战'
+                } | ForEach-Object { $archives.Add($_) }
+            }
+            if ($archives.Count -gt 0) {
+                Write-Host "KR_MP_FOUND_ARCHIVES:" -ForegroundColor Yellow
+                foreach ($a in $archives) {
+                    Write-Host ("  {0} ({1:N0} MB)" -f $a.FullName, ($a.Length / 1MB))
+                }
+            }
+            $steamHits = New-Object System.Collections.Generic.List[string]
+            foreach ($sr in @("C:\Program Files (x86)\Steam\steamapps\common", "D:\SteamLibrary\steamapps\common", "E:\SteamLibrary\steamapps\common")) {
+                if (Test-Path -LiteralPath $sr) {
+                    Get-ChildItem -LiteralPath $sr -Directory -Filter "Kingdom Rush*" -ErrorAction SilentlyContinue | ForEach-Object {
+                        $steamHits.Add($_.FullName)
+                    }
+                }
+            }
+            if ($steamHits.Count -gt 0) {
+                Write-Host "KR_MP_FOUND_STEAM:" -ForegroundColor Yellow
+                foreach ($sh in $steamHits) { Write-Host ("  " + $sh) }
+            }
             exit 3
         }
     } else {

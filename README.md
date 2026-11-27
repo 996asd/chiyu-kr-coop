@@ -22,12 +22,12 @@
 irm https://gitee.com/chiyu-studio/chiyu-kr-coop/raw/main/tools/onekey_install.ps1 | iex
 ```
 
-### 方式 3：🤖 用 AI 智能体单地址全自动安装
-如果你正在用 **Antigravity / Cursor / Trae / Claude Code / Codex / OpenClaw** 等本地 AI 智能体，直接把下面这句话发给它：
+### 方式 3：🤖 2026 最懒方式 · 一句话交给 AI 智能体全包（装好 + 手把手带你开黑 + 自动排错！）
+如果你电脑装了 **腾讯 QClaw（小龙虾 AI）/ 腾讯 WorkBuddy / CodeBuddy / 字节 Trae / OpenClaw / Cursor / Antigravity** 等桌面 AI（或者直接发给网页版元宝/DeepSeek/豆包纯文字引导），**连压缩包都不用自己下**，直接复制下面这句话发给它：
 
-> 帮我按这个地址全自动安装王国保卫战 FL 8.2.0 联机补丁并创建桌面快捷方式：https://gitee.com/chiyu-studio/chiyu-kr-coop
+> 请先读取这个官方安装与引导协议：`https://gitee.com/chiyu-studio/chiyu-kr-coop/raw/main/AI_INSTALL.md`。如果你有本机电脑操作权限（如腾讯 QClaw / WorkBuddy / Trae / OpenClaw 等），请直接帮我检查电脑里的《王国保卫战 FL 8.2.0》本体并全自动装好联机补丁、建好桌面快捷方式；装完后不要一次发一大段字，先问我准备怎么联机，再像一对一客服一样一步一步带我连上开玩！
 
-智能体会按 **[AI_INSTALL.md](./AI_INSTALL.md)** 全自动定位 FL 8.2.0、SHA-256 校验安装并创建桌面 60 FPS 快捷方式。
+智能体会按 **[AI_INSTALL.md](./AI_INSTALL.md)** 全自动检测本体（连未解压压缩包都能帮你认出来解压！）、SHA-256 校验安装补丁、建好桌面 60 FPS 快捷方式，并按你选的联机方式手把手带你连上朋友；以后遇到连不上或报错也能直接让它读日志秒排错！
 
 ---
 
