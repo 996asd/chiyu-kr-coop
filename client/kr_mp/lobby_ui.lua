@@ -675,6 +675,7 @@ function lobby:reconnect_online_session(sess)
 end
 
 function lobby:leave_room()
+    local was_in_match = (self.coop and self.coop:is_active()) == true
     self.direct_auto_retry = nil
     self.online_reconnecting_room = false
     self.online_reconnect_attempt = 0
@@ -684,8 +685,9 @@ function lobby:leave_room()
     if self.transport:is_online() and self.transport:is_connected() then
         self.transport:send({ t = "LEAVE_ROOM" })
     end
-    if self.coop and self.coop:is_active() then
+    if was_in_match then
         self.coop:leave_match()
+        self.open = true
     end
     self:clear_saved_session()
     self.role = "none"
@@ -714,12 +716,18 @@ function lobby:leave_room()
 end
 
 function lobby:return_to_lobby()
-    if not self.transport or not self.transport:is_connected() then
+    if not self.transport or not self.transport:is_connected()
+        or (self.lockstep and self.lockstep.phase == "DISCONNECTED") then
         self:leave_room()
         self.open = true
         return false
     end
-    self.transport:send({ t = "RETURN_LOBBY", pid = self.local_pid })
+    local sent = self.transport:send({ t = "RETURN_LOBBY", pid = self.local_pid })
+    if not sent then
+        self:leave_room()
+        self.open = true
+        return false
+    end
     if not self.transport:is_online() then
         self:on_return_lobby(self.local_pid)
     end

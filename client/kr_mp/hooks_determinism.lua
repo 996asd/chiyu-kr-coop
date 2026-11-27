@@ -389,31 +389,75 @@ local function install_misc_determinism_hooks(hooks)
     end
 
     -- Hook storage:load_slot / save_slot so replay & Co-op inject exact initial hero/upgrade snapshot safely
+    -- and active-slot lookups (idx == nil) NEVER return nil (prevents FL 8.2.0 game_gui.lua:3599 nil-slot crash!).
+    local function make_fallback_slot()
+        local ok_t, tpl = pcall(require, "data.slot_template")
+        if ok_t and type(tpl) == "table" and table and table.deepclone then
+            local ok_c, cloned = pcall(table.deepclone, tpl)
+            if ok_c and type(cloned) == "table" then
+                return cloned
+            end
+        end
+        return {
+            levels = {},
+            upgrades = { archers = 0, barracks = 0, mages = 0, rocks = 0, thunder = 0, reinforcements = 0 },
+            heroes = { selected = "hero_vesper", status = {} },
+            bag = {},
+            gems = 0,
+            seen = {},
+        }
+    end
+
     local storage = require("storage")
     hooks.wrap_once(storage, "load_slot", "det_storage", function(orig_load_slot)
         return function(self_s, idx, force)
-            if hooks.coop then
-                local mp_snap = hooks.coop:get_slot_override()
-                if mp_snap then
-                    return ensure_fl_slot_defaults(hooks, mp_snap)
+            local bypass = hooks.coop and hooks.coop._bypass_slot_override == true
+            if not bypass then
+                if hooks.coop then
+                    local mp_snap = hooks.coop:get_slot_override()
+                    if mp_snap then
+                        return ensure_fl_slot_defaults(hooks, mp_snap)
+                    end
+                end
+                if hooks.replay then
+                    local snap = hooks.replay:get_slot_override()
+                    if snap then
+                        return ensure_fl_slot_defaults(hooks, snap)
+                    end
                 end
             end
-            if hooks.replay then
-                local snap = hooks.replay:get_slot_override()
-                if snap then
-                    return ensure_fl_slot_defaults(hooks, snap)
+            local res = orig_load_slot(self_s, idx, force)
+            if res == nil and idx == nil and not bypass then
+                for i = 1, 3 do
+                    local cand = orig_load_slot(self_s, i, force)
+                    if type(cand) == "table" then
+                        self_s.active_slot_idx = i
+                        res = cand
+                        break
+                    end
+                end
+                if res == nil then
+                    res = make_fallback_slot()
+                    res._kr_mp_fallback = true
                 end
             end
-            return ensure_fl_slot_defaults(hooks, orig_load_slot(self_s, idx, force))
+            return ensure_fl_slot_defaults(hooks, res)
         end
     end)
 
     hooks.wrap_once(storage, "save_slot", "det_storage", function(orig_save_slot)
-        return function(self_s, ...)
-            if (hooks.coop and hooks.coop:is_active()) or (hooks.replay and hooks.replay:is_replaying()) then
+        return function(self_s, data_table, idx, should_sync)
+            local bypass = hooks.coop and hooks.coop._bypass_slot_override == true
+            if not bypass and ((hooks.coop and hooks.coop:is_active()) or (hooks.replay and hooks.replay:is_replaying())) then
                 return true -- never overwrite disk save during Co-op or replay
             end
-            return orig_save_slot(self_s, ...)
+            if type(data_table) == "table" and data_table._kr_mp_fallback then
+                return true -- never persist synthetic fallback slot to disk
+            end
+            if data_table == nil then
+                return false
+            end
+            return orig_save_slot(self_s, data_table, idx, should_sync)
         end
     end)
 

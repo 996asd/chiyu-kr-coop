@@ -248,10 +248,14 @@ local function install_coop_menu_guards(hooks, game_gui)
         return function(self_gui, ...)
             if hooks:is_mp_active() and hooks.boot and hooks.boot.on_hud_action then
                 local connected = hooks.boot.transport and hooks.boot.transport:is_connected()
-                if connected and stage_flow:is_victory_auto_ready() then
+                local pause_open = self_gui and self_gui.pauseview and (self_gui.pauseview.hidden == false)
+                if connected and not pause_open and stage_flow:is_victory_auto_ready() then
                     if stage_flow:request_next() then
                         return
                     end
+                end
+                if self_gui and self_gui.pauseview then
+                    self_gui.pauseview.hidden = true
                 end
                 pcall(hooks.boot.on_hud_action, hooks.boot, connected and "mp_return_lobby" or "mp_leave")
                 return

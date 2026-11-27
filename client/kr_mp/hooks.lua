@@ -54,6 +54,8 @@ local hooks = {
     installed_core = false,
     installed_game = false,
     installed_gui = false,
+    _hooked_game = nil,
+    _hooked_gui = nil,
     active_store = nil,
     sso_ref = nil,
     sso_mutation_gen = 0,
@@ -187,13 +189,16 @@ function hooks:install_simulation_hooks()
 end
 
 function hooks:install_game_hooks(g)
+    if not g or self._hooked_game == g then return end
     hooks_sim.install_game(self, g)
+    self._hooked_game = g
 end
 
 function hooks:install_gui_hooks(gui)
-    if self.installed_gui then return end
     gui = gui or (game and game.game_gui) or package.loaded["game_gui"]
     if not gui or not PickView or not TowerMenuButton then return end
+    if self._hooked_gui == gui then return end
+    self._hooked_gui = gui
     self.installed_gui = true
 
     hooks_gui_actions.install(self, gui)
@@ -202,11 +207,11 @@ function hooks:install_gui_hooks(gui)
 end
 
 function hooks:ensure_game_and_gui_hooks()
-    if game and not self.installed_game then
+    if game and self._hooked_game ~= game then
         self:install_game_hooks(game)
     end
     local gui = (game and game.game_gui) or package.loaded["game_gui"]
-    if gui and not self.installed_gui then
+    if gui and self._hooked_gui ~= gui then
         self:install_gui_hooks(gui)
     end
 end
@@ -224,7 +229,8 @@ function hooks:on_update(dt)
     if self.coop and self.coop.try_launch_pending then
         self.coop:try_launch_pending()
     end
-    if not self.installed_game or not self.installed_gui then
+    local cur_gui = (game and game.game_gui) or package.loaded["game_gui"]
+    if (game and self._hooked_game ~= game) or (cur_gui and self._hooked_gui ~= cur_gui) then
         self:ensure_game_and_gui_hooks()
     end
     if self.replay and self.replay.on_frame_update then

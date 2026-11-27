@@ -158,19 +158,58 @@ function coop:is_active()
 end
 
 function coop:get_slot_override()
-    if self.active and self.slot_snapshot then
+    if self.active and self.slot_snapshot and not self._bypass_slot_override then
         return deep_copy(self.slot_snapshot)
     end
     return nil
 end
 
+-- Ensure storage.active_slot_idx always points to a REAL disk save slot without clobbering
+-- an existing active slot (e.g. Android auto-created Slot 2/3 while Slot 1 is empty).
+-- Must run with _bypass_slot_override=true so Co-op snapshot/save-suppression hooks do not
+-- mask a missing disk file or block initial slot creation.
+function coop:ensure_valid_disk_slot()
+    local ok_st, storage = pcall(require, "storage")
+    if not ok_st or type(storage) ~= "table" then return nil end
+    local prev_bypass = self._bypass_slot_override
+    self._bypass_slot_override = true
+    local chosen_idx = nil
+    local ok_find = pcall(function()
+        local cur = storage.active_slot_idx
+        if cur and storage:load_slot(cur) then
+            chosen_idx = cur
+        else
+            for i = 1, 3 do
+                if storage:load_slot(i) then
+                    chosen_idx = i
+                    break
+                end
+            end
+        end
+        if not chosen_idx then
+            if love and love.filesystem and love.filesystem.createDirectory then
+                pcall(love.filesystem.createDirectory, "fl_save")
+            end
+            storage:create_slot(1)
+            if storage:load_slot(1) then
+                chosen_idx = 1
+            end
+        end
+        if chosen_idx and storage.active_slot_idx ~= chosen_idx then
+            storage:set_active_slot(chosen_idx)
+        end
+    end)
+    self._bypass_slot_override = prev_bypass
+    return ok_find and chosen_idx or nil
+end
+
 function coop:build_host_slot_snapshot(heroes, towers, room_loadout)
     local storage = require("storage")
-    if not storage:load_slot(1) then
-        storage:create_slot(1)
-    end
-    storage:set_active_slot(1)
-    local raw = storage:load_slot(nil, true) or {}
+    local chosen_idx = self:ensure_valid_disk_slot()
+    local prev_bypass = self._bypass_slot_override
+    self._bypass_slot_override = true
+    local raw = (chosen_idx and storage:load_slot(chosen_idx, true)) or storage:load_slot(nil, true) or {}
+    self._bypass_slot_override = prev_bypass
     local snap = deep_copy(raw)
 
     -- Keep packet compact by trimming bulky history tables not needed during battle
@@ -303,12 +342,10 @@ function coop:prepare_match(local_pid, cfg, reconnect_data)
         end
     end
 
-    -- Ensure active slot exists and trigger FL director to load the exact target level + hero atlases
+    -- Ensure a real disk save slot is active BEFORE director loads 'game' (bypasses Co-op override so
+    -- Android 2P phones without Slot 1 never end up with active_slot_idx pointing at a missing file!).
+    self:ensure_valid_disk_slot()
     local storage = require("storage")
-    if not storage:load_slot(1) then
-        storage:create_slot(1)
-    end
-    storage:set_active_slot(1)
     -- Clear direct storage.slot cache so hero_enhance_mod always reads the synced Co-op slot_snapshot
     storage.slot = nil
     local ok_hem, hem = pcall(require, "hero_enhance_mod")
@@ -405,6 +442,18 @@ function coop:leave_match()
     end
     if game and game.store then
         game.store.paused = false
+    end
+    if game and game.game_gui and game.game_gui.pauseview then
+        game.game_gui.pauseview.hidden = true
+    end
+    -- Always leave the Co-op battle cleanly back to 'slots' so players are never stranded inside a
+    -- ghost battle after leaving/disconnecting (where tapping FL's native Pause->Quit could break state).
+    if main and main.handler and (main.handler.active_item == game
+        or (main.handler.active_item and main.handler.active_item.item_name == "game")) then
+        if main.handler.next_item_name == nil then
+            main.handler.next_item_name = "slots"
+            main.handler.next_item_args = {}
+        end
     end
     -- Restore real local slot onto screen_map.user_data so temporary co-op snapshot never leaks to single-player map
     local ok_st, storage = pcall(require, "storage")
