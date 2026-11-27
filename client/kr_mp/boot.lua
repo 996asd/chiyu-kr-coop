@@ -214,7 +214,8 @@ function boot:wrap_love_callbacks()
         end
         if self.smoke_mode or (os.getenv("KR_MP_AUTO_VERIFY") == "1")
             or (os.getenv("KR_MP_AUTO_COOP") ~= nil)
-            or (os.getenv("KR_MP_AUTO_M2") ~= nil) then
+            or (os.getenv("KR_MP_AUTO_M2") ~= nil)
+            or (os.getenv("KR_MP_AUTO_SAKURA") ~= nil) then
             os.exit(1)
         end
         if orig_errhand then return orig_errhand(msg) end
@@ -258,7 +259,10 @@ function boot:on_update(dt)
         mp_g1 = self.coop and self.coop:get_player_gold(1) or 0,
         mp_g2 = self.coop and self.coop:get_player_gold(2) or 0,
         mp_rtt = self.transport and self.transport:get_rtt_ms() or 0,
+        mp_delay_ms = self.lockstep and math.floor((self.lockstep.input_delay_turns or 2) * (self.lockstep.turn_ticks or 3) * (1000 / 60) + 0.5) or 100,
         mp_phase = self.lockstep and self.lockstep.phase or "IDLE",
+        mp_reconnect_remain = self.lockstep and self.lockstep.get_reconnect_remaining and self.lockstep:get_reconnect_remaining() or 0,
+        mp_direct_reconnect = self.lockstep and self.lockstep.direct_reconnect == true or false,
         mp_speed = self.lockstep and self.lockstep.game_speed or 1,
         mp_sync_ok = self.lockstep and self.lockstep.sync_ok_count or 0,
         mp_waiting = ls_waiting,
@@ -347,7 +351,13 @@ function boot:on_hud_action(action_id, arg)
     elseif action_id == "lobby" and self.lobby then
         self.lobby:toggle()
     elseif action_id == "mp_send_gold" and self.lockstep and self.lockstep:is_active() then
-        self.lockstep:queue_local_command({ op = "SEND_GOLD", amount = 50 })
+        local amt = (tonumber(arg) == 200) and 200 or 50
+        self.lockstep:queue_local_command({ op = "SEND_GOLD", amount = amt })
+    elseif action_id == "mp_cycle_delay" and self.lockstep and self.lockstep:is_active() then
+        self.lockstep:request_cycle_delay()
+    elseif action_id == "mp_return_lobby" and self.lobby then
+        overlay.voice_panel_open = false
+        self.lobby:return_to_lobby()
     elseif action_id == "mp_speed" and self.lockstep and self.lockstep:is_active() then
         self.lockstep:request_toggle_speed()
     elseif action_id == "mp_pause" and self.lockstep and self.lockstep:is_active() then

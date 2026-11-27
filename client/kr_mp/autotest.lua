@@ -4,26 +4,30 @@ local proto = require("kr_mp.proto")
 local catalog = require("kr_mp.catalog")
 
 local autotest = {
-    auto_role = nil,     -- "host" | "guest" (KR_MP_AUTO_COOP)
-    auto_m2_role = nil,  -- "host" | "guest" | "guest_reconnect" (KR_MP_AUTO_M2)
+    auto_role = nil,        -- "host" | "guest" (KR_MP_AUTO_COOP)
+    auto_m2_role = nil,     -- "host" | "guest" | "guest_reconnect" (KR_MP_AUTO_M2)
+    auto_sakura_role = nil, -- "host" | "guest" | "guest_cold_reconnect" (KR_MP_AUTO_SAKURA)
     stage = nil,
     timer = 0,
     sent_ticks = {},
     saw_reconnect = false,
+    saw_hot_resume = false,
     ui_chaos_bucket = nil,
 }
 
 function autotest:is_active()
-    return self.auto_role ~= nil or self.auto_m2_role ~= nil
+    return self.auto_role ~= nil or self.auto_m2_role ~= nil or self.auto_sakura_role ~= nil
 end
 
 function autotest:init(lobby)
     self.auto_role = nil
     self.auto_m2_role = nil
+    self.auto_sakura_role = nil
     self.stage = nil
     self.timer = 0
     self.sent_ticks = {}
     self.saw_reconnect = false
+    self.saw_hot_resume = false
     self.ui_chaos_bucket = nil
 
     local ar = os.getenv("KR_MP_AUTO_COOP")
@@ -43,13 +47,26 @@ function autotest:init(lobby)
         lobby.net_tab = "online"
         lobby.open = true
         lobby.boot:log("[LOBBY] AUTO_M2 (Online + Reconnect) test role=%s enabled!", am2)
+        return
+    end
+
+    local asak = os.getenv("KR_MP_AUTO_SAKURA")
+    if asak == "host" or asak == "guest" or asak == "guest_cold_reconnect" then
+        self.auto_sakura_role = asak
+        self.stage = "INIT"
+        lobby.net_tab = "lan"
+        lobby.open = true
+        lobby.boot:log("[LOBBY] AUTO_SAKURA (Direct Hot-Resume + Cold-Reconnect + Live Delay + Return-Lobby) role=%s enabled!", asak)
     end
 end
 
 function autotest:on_lan_connect_failed()
-    if self.auto_role == "guest" and self.stage == "GUEST_WAIT_START" then
+    if (self.auto_role == "guest" or self.auto_sakura_role == "guest") and self.stage == "GUEST_WAIT_START" then
         self.stage = "INIT"
         self.timer = 0.5
+    elseif self.auto_sakura_role == "guest_cold_reconnect" and self.stage == "RECONNECT_WAIT" then
+        self.stage = "INIT"
+        self.timer = 0
     end
 end
 
@@ -62,6 +79,10 @@ end
 
 function autotest:on_peer_reconnected()
     self.saw_reconnect = true
+end
+
+function autotest:on_hot_resumed()
+    self.saw_hot_resume = true
 end
 
 local function find_sorted_ents(store, pred)
@@ -407,11 +428,171 @@ function autotest:step_auto_m2(lobby, dt)
     end
 end
 
+local function run_sakura_actions(self_at, lobby, store, tick)
+    local once = make_once(self_at, tick)
+    local role = self_at.auto_sakura_role
+    if role == "host" then
+        once("s_p1_build", 20, function()
+            local hs = find_sorted_ents(store, function(e) return e.tower and e.template_name and e.template_name:find("tower_holder", 1, true) end)
+            if hs[1] then lobby.lockstep:queue_local_command({ op = "TW_UPGRADE", id = hs[1].id, arg = "tower_build_paladin_covenant" }) end
+        end)
+        once("s_p1_hero", 45, function()
+            local h = lobby.coop.hero_ids[1] and store.entities[lobby.coop.hero_ids[1]]
+            if h then lobby.lockstep:queue_local_command({ op = "HERO_RALLY", id = h.id, wx = h.pos.x + 80, wy = h.pos.y + 10 }) end
+        end)
+        once("s_p1_wave", 90, function() lobby.lockstep:queue_local_command({ op = "SEND_WAVE" }) end)
+        once("s_p1_delay_3", 240, function() lobby.lockstep:request_cycle_delay() end) -- 2 -> 3 (150ms)
+        once("s_p1_gold200", 360, function() lobby.lockstep:queue_local_command({ op = "SEND_GOLD", amount = 200 }) end)
+        once("s_p1_delay_4", 450, function() lobby.lockstep:request_cycle_delay() end) -- 3 -> 4 (200ms)
+        once("s_p1_delay_6", 720, function() lobby.lockstep:request_cycle_delay() end) -- 4 -> 6 (300ms)
+        once("s_p1_delay_2", 810, function() lobby.lockstep:request_cycle_delay() end) -- 6 -> 2 (100ms)
+        once("s_p1_ult", 870, function()
+            local es = find_sorted_ents(store, function(e) return e.enemy and e.health and not e.health.dead end)
+            if es[1] then lobby.lockstep:queue_local_command({ op = "POWER_FIRE", idx = 1, wx = es[1].pos.x, wy = es[1].pos.y }) end
+        end)
+        once("s_p1_post_build", 1200, function()
+            local hs = find_sorted_ents(store, function(e) return e.tower and e.template_name and e.template_name:find("tower_holder", 1, true) end)
+            if hs[1] then lobby.lockstep:queue_local_command({ op = "TW_UPGRADE", id = hs[1].id, arg = "tower_build_arcane_wizard" }) end
+        end)
+    elseif role == "guest" then
+        once("s_p2_build", 30, function()
+            local hs = find_sorted_ents(store, function(e) return e.tower and e.template_name and e.template_name:find("tower_holder", 1, true) end)
+            if hs[2] then lobby.lockstep:queue_local_command({ op = "TW_UPGRADE", id = hs[2].id, arg = "tower_build_royal_archers" }) end
+        end)
+        once("s_p2_hero", 60, function()
+            local h = lobby.coop.hero_ids[2] and store.entities[lobby.coop.hero_ids[2]]
+            if h then lobby.lockstep:queue_local_command({ op = "HERO_RALLY", id = h.id, wx = h.pos.x + 120, wy = h.pos.y - 10 }) end
+        end)
+        once("s_p2_sakura_eof", 600, function()
+            -- Simulate a SakuraFrp transient TCP EOF drop -> triggers natural peer_disconnected -> 0.2s zero-reload Hot Resume!
+            lobby.boot:log("AUTO_SAKURA_SIMULATED_EOF tick=%d hash=%s (dropping TCP to test 0.2s Hot Resume!)",
+                tick, tostring(lobby.lockstep.last_hash_hex))
+            lobby.transport:drop_peer_socket("simulated_sakura_eof", false)
+        end)
+        once("s_p2_reinf_post_hot", 870, function()
+            local h = lobby.coop.hero_ids[2] and store.entities[lobby.coop.hero_ids[2]]
+            if h then lobby.lockstep:queue_local_command({ op = "POWER_FIRE", idx = 2, wx = h.pos.x + 25, wy = h.pos.y }) end
+        end)
+        if tick >= 960 and self_at.saw_hot_resume then
+            lobby.boot:log("AUTO_SAKURA_SIMULATED_CRASH tick=%d hot_resumes=%d delay=%d hash=%s (hard exiting P2 to test Direct Cold Reconnect!)",
+                tick, lobby.lockstep.hot_resume_count or 0, lobby.lockstep.input_delay_turns or 0, tostring(lobby.lockstep.last_hash_hex))
+            if lobby.boot.log_file then lobby.boot.log_file:flush() end
+            os.exit(0)
+        end
+    elseif role == "guest_cold_reconnect" then
+        once("s_p2_cold_speed", 1140, function() lobby.lockstep:request_toggle_speed() end)
+        once("s_p2_cold_build", 1230, function()
+            local hs = find_sorted_ents(store, function(e) return e.tower and e.template_name and e.template_name:find("tower_holder", 1, true) end)
+            if hs[1] then lobby.lockstep:queue_local_command({ op = "TW_UPGRADE", id = hs[1].id, arg = "tower_build_paladin_covenant" }) end
+        end)
+        once("s_p2_cold_ping", 1440, function() lobby.lockstep:queue_local_command({ op = "MAP_PING", wx = 660, wy = 410 }) end)
+    end
+end
+
+function autotest:step_auto_sakura(lobby, dt)
+    self.timer = self.timer + math.min(dt or 0.016, 0.1)
+    local role = self.auto_sakura_role
+
+    if self.stage == "INIT" then
+        if role == "host" then
+            lobby.room.level_idx = tonumber(os.getenv("KR_MP_TEST_LEVEL")) or 101
+            lobby.room.econ_mode = "independent"
+            lobby.room.tower_mode = "owned"
+            lobby.room.input_delay_turns = 2
+            lobby.room.heroes = { catalog.DEFAULT_HERO_1 or 53, catalog.DEFAULT_HERO_2 or 54 }
+            if lobby:host_lan_room() then self.stage = "HOST_WAIT_GUEST" end
+        elseif role == "guest" then
+            if self.timer >= 1.0 then
+                local port = tonumber(os.getenv("KR_MP_PORT")) or proto.DEFAULT_TCP_PORT
+                if lobby:join_lan_room("127.0.0.1", port) then
+                    self.stage = "GUEST_WAIT_START"
+                else
+                    self.timer = 0.4
+                end
+            end
+        elseif role == "guest_cold_reconnect" then
+            local sess = lobby:load_saved_session()
+            if sess and sess.mode == "direct" and lobby:reconnect_direct_session(sess) then
+                self.stage = "RECONNECT_WAIT"
+            elseif self.timer > 6.0 then
+                lobby.boot:log("AUTO_SAKURA_FAILED no direct session found for cold reconnect!")
+                love.event.quit()
+            end
+        end
+    elseif self.stage == "HOST_WAIT_GUEST" then
+        if lobby.peer_connected and lobby.peer_ready then
+            self.stage = "MATCH_ACTIVE"
+            lobby:host_start_match()
+        end
+    elseif self.stage == "GUEST_WAIT_START" or self.stage == "RECONNECT_WAIT" then
+        if lobby.coop and lobby.coop:is_active() then
+            self.stage = "MATCH_ACTIVE"
+        end
+    elseif self.stage == "MATCH_ACTIVE" then
+        if not lobby.lockstep or not lobby.lockstep:is_active() then
+            if self.stage == "MATCH_ACTIVE" and lobby.view == "room" and lobby.transport:is_connected() and self.sent_ticks._wait_return_lobby then
+                lobby.boot:log("AUTO_SAKURA_PASSED role=%s pid=%d return_lobby_alive=true", role, lobby.local_pid)
+                love.event.quit()
+            end
+            return
+        end
+        if lobby.lockstep.phase == "DESYNC" then
+            lobby.boot:log("AUTO_SAKURA_FAILED desync_tick=%s", tostring(lobby.lockstep.desync_info and lobby.lockstep.desync_info.tick))
+            love.event.quit()
+            return
+        end
+        local store = game and game.store
+        if not store then return end
+        local tick = store.tick or 0
+
+        if role == "host" and tick >= 1680 and self.saw_hot_resume and self.saw_reconnect and lobby.lockstep.sync_ok_count >= 45 then
+            lobby.boot:log("AUTO_SAKURA_HOST_RETURN_LOBBY ticks=%d sync_ok=%d hot=%d cold=%d delay=%d gold=(P1:%d,P2:%d)",
+                tick, lobby.lockstep.sync_ok_count, lobby.lockstep.hot_resume_count or 0, lobby.lockstep.cold_reconnect_count or 0,
+                lobby.lockstep.input_delay_turns or 0, lobby.coop:get_player_gold(1), lobby.coop:get_player_gold(2))
+            lobby.lockstep:close_hash_log()
+            self.stage = "VERIFY_RETURN_LOBBY"
+            self.timer = 0
+            lobby:return_to_lobby()
+            return
+        end
+        if role == "guest_cold_reconnect" and tick >= 1680 and lobby.lockstep.sync_ok_count >= 18 then
+            self.sent_ticks._wait_return_lobby = true
+            lobby.lockstep:close_hash_log()
+            self.stage = "VERIFY_RETURN_LOBBY"
+            self.timer = 0
+            return
+        end
+
+        if lobby.lockstep.phase ~= "RUNNING" then return end
+        run_sakura_actions(self, lobby, store, tick)
+    elseif self.stage == "VERIFY_RETURN_LOBBY" then
+        local on_slots = (main and main.handler and main.handler.active_item and main.handler.active_item.item_name == "slots")
+        if lobby.view == "room" and lobby.transport:is_connected() and not (lobby.coop and lobby.coop:is_active()) and on_slots then
+            -- Let Host verify keep-alive connection first, while Guest holds TCP open briefly so Host finishes unloading cleanly
+            local wait_need = (role == "host") and 0.3 or 2.5
+            if self.timer >= wait_need then
+                lobby.boot:log("AUTO_SAKURA_PASSED role=%s pid=%d return_lobby_alive=true", role, lobby.local_pid)
+                love.event.quit()
+            end
+        elseif role == "guest_cold_reconnect" and lobby.view == "room" and not (lobby.coop and lobby.coop:is_active()) and on_slots and self.timer >= 0.5 then
+            -- Host already verified return_lobby_alive=true and exited cleanly
+            lobby.boot:log("AUTO_SAKURA_PASSED role=%s pid=%d return_lobby_alive=true", role, lobby.local_pid)
+            love.event.quit()
+        elseif self.timer >= 8.0 then
+            lobby.boot:log("AUTO_SAKURA_FAILED return_lobby timeout view=%s conn=%s slots=%s",
+                tostring(lobby.view), tostring(lobby.transport:is_connected()), tostring(on_slots))
+            love.event.quit()
+        end
+    end
+end
+
 function autotest:update(lobby, dt)
     if self.auto_role then
         self:step_auto_coop(lobby, dt)
     elseif self.auto_m2_role then
         self:step_auto_m2(lobby, dt)
+    elseif self.auto_sakura_role then
+        self:step_auto_sakura(lobby, dt)
     end
 end
 

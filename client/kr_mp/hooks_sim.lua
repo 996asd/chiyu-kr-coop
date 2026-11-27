@@ -511,6 +511,8 @@ function M.install_simulation(hooks)
             if is_local then
                 hooks.local_entity_depth = hooks.local_entity_depth + 1
                 prng:enter_visual()
+            else
+                hooks.sso_mutation_gen = (hooks.sso_mutation_gen or 0) + 1
             end
             local ok_i, err_i = pcall(orig_insert, self_sim, e)
             if is_local then
@@ -520,6 +522,8 @@ function M.install_simulation(hooks)
                 end
                 prng:exit_visual()
                 hooks.local_entity_depth = hooks.local_entity_depth - 1
+            else
+                hooks.sso_mutation_gen = (hooks.sso_mutation_gen or 0) + 1
             end
             if not ok_i then error(err_i) end
             if self_sim.store == hooks.active_store and e and e.id and self_sim.store.entities[e.id] == e then
@@ -540,6 +544,8 @@ function M.install_simulation(hooks)
             if is_local then
                 hooks.local_entity_depth = hooks.local_entity_depth + 1
                 prng:enter_visual()
+            else
+                hooks.sso_mutation_gen = (hooks.sso_mutation_gen or 0) + 1
             end
             local ok_r, err_r = pcall(orig_remove, self_sim, e)
             if is_local then
@@ -549,6 +555,8 @@ function M.install_simulation(hooks)
                 end
                 prng:exit_visual()
                 hooks.local_entity_depth = hooks.local_entity_depth - 1
+            else
+                hooks.sso_mutation_gen = (hooks.sso_mutation_gen or 0) + 1
             end
             if not ok_r then error(err_r) end
         end

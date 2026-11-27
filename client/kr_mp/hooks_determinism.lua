@@ -67,26 +67,42 @@ local function sorted_string_pairs(hooks, tbl)
     return iter, tbl, nil
 end
 
-local function sorted_numeric_pairs(hooks, tbl)
-    local list = {}
-    local n = 0
-    for k in hooks.orig_pairs(tbl) do
-        n = n + 1
-        list[n] = k
-    end
-    table.sort(list, function(a, b)
-        local ta, tb = type(a), type(b)
-        if ta == "number" and tb == "number" then
-            return a < b
+local sso_sorted_cache = setmetatable({}, { __mode = "k" })
+
+local function sorted_sso_pairs(hooks, tbl)
+    local gen = hooks.sso_mutation_gen or 0
+    local rec = sso_sorted_cache[tbl]
+    local list, n
+    if rec and rec.gen == gen then
+        list = rec.keys
+        n = rec.n
+    else
+        list = {}
+        n = 0
+        for k in hooks.orig_pairs(tbl) do
+            n = n + 1
+            list[n] = k
         end
-        return tostring(a) < tostring(b)
-    end)
+        if n > 1 then
+            table.sort(list, function(a, b)
+                local ta, tb = type(a), type(b)
+                if ta == "number" and tb == "number" then
+                    return a < b
+                end
+                return tostring(a) < tostring(b)
+            end)
+        end
+        sso_sorted_cache[tbl] = { gen = gen, keys = list, n = n }
+    end
     local idx = 0
     local function iter()
-        idx = idx + 1
-        local k = list[idx]
-        if k ~= nil then
-            return k, tbl[k]
+        while idx < n do
+            idx = idx + 1
+            local k = list[idx]
+            local v = tbl[k]
+            if v ~= nil then
+                return k, v
+            end
         end
         return nil
     end
@@ -101,6 +117,12 @@ local function install_sso_hooks(hooks)
     if not ok_sso or type(SSO) ~= "table" then return end
 
     hooks.sso_ref = SSO
+    hooks.wrap_once(SSO, "reset_p_lists", "det_sso", function(orig_reset_p)
+        return function(self_s, ...)
+            hooks.sso_mutation_gen = (hooks.sso_mutation_gen or 0) + 1
+            return orig_reset_p(self_s, ...)
+        end
+    end)
     hooks.wrap_once(SSO, "create", "det_sso", function(orig_sso_create)
         return function(self_s, name, x, y, w, h)
             -- Canonical fixed grid origin (0,0) during sync so different aspect ratios produce identical spatial buckets
@@ -428,7 +450,7 @@ function M.install(hooks)
             if sso and sso.persistent_lists then
                 local pl = sso.persistent_lists
                 if t == pl.alive_enemies or t == pl.graveyards or t == pl.modifiers or t == pl.towers then
-                    return sorted_numeric_pairs(hooks, t)
+                    return sorted_sso_pairs(hooks, t)
                 end
             end
         end

@@ -5,6 +5,8 @@ local proto = require("kr_mp.proto")
 local net_lan = {}
 net_lan.__index = net_lan
 
+local WATCHDOG_SEC = tonumber(os.getenv("KR_MP_WATCHDOG_SEC")) or 12.0
+
 local DNS_WORKER_CODE = [[
 local channel_name, seq, host = ...
 local ch = love.thread.getChannel(channel_name)
@@ -34,18 +36,27 @@ function net_lan.new(boot)
     self.connect_target_ip = nil
     self.dns_channel = (love and love.thread and love.thread.getChannel)
         and love.thread.getChannel("kr_mp_lan_dns") or nil
+    self.connect_silent = false
     self.recv_buf = ""
     self.send_queue = {}
+    self.voice_queue = {}
+    self.active_chunk = nil
     self.send_offset = 1
+    self.voice_dropped = 0
     self.udp_bcast = nil
     self.udp_scan = nil
     self.last_bcast_ts = 0
     self.room_advert = nil
     self.discovered = {} -- [key] = { ip, port, name, level_idx, players, fl_ver, seen_ts }
+    self.requested_port = proto.DEFAULT_TCP_PORT
     self.port = proto.DEFAULT_TCP_PORT
+    self.port_drifted = false
     self.peer_ip = nil
     self.last_error = nil
     self.last_ping_ts = 0
+    self.last_recv_ts = 0
+    self.last_poll_ts = 0
+    self.pending_disconnect_reason = nil
     self.rtt_ms = 0
     self.accept_enabled = true
     return self
@@ -91,7 +102,12 @@ function net_lan:close()
     self.connect_target_ip = nil
     self.recv_buf = ""
     self.send_queue = {}
+    self.voice_queue = {}
+    self.active_chunk = nil
     self.send_offset = 1
+    self.last_recv_ts = 0
+    self.pending_disconnect_reason = nil
+    self.port_drifted = false
     self.peer_ip = nil
     self.room_advert = nil
 end
@@ -99,6 +115,7 @@ end
 function net_lan:start_host(port, room_advert)
     self:close()
     local try_port = tonumber(port) or proto.DEFAULT_TCP_PORT
+    self.requested_port = try_port
     local srv, err
     for p = try_port, try_port + 10 do
         local s = assert(socket.tcp())
@@ -113,6 +130,7 @@ function net_lan:start_host(port, room_advert)
                 s:settimeout(0)
                 srv = s
                 self.port = p
+                self.port_drifted = (p ~= try_port)
                 break
             else
                 err = lerr
@@ -143,7 +161,8 @@ function net_lan:start_host(port, room_advert)
         self.udp_bcast = u
     end
 
-    self:log("Hosting LAN room on TCP 0.0.0.0:%d (UDP bcast -> %d)", self.port, proto.LAN_DISCOVERY_PORT)
+    self:log("Hosting LAN room on TCP 0.0.0.0:%d (requested=%d drifted=%s, UDP bcast -> %d)",
+        self.port, self.requested_port, tostring(self.port_drifted), proto.LAN_DISCOVERY_PORT)
     return true, self.port
 end
 
@@ -220,8 +239,12 @@ function net_lan:begin_tcp_connect(connect_ip, target_ip, target_port)
         self.state = "connected"
         self.recv_buf = ""
         self.send_queue = {}
+        self.voice_queue = {}
+        self.active_chunk = nil
         self.send_offset = 1
-        self.last_ping_ts = socket.gettime()
+        local now = socket.gettime()
+        self.last_ping_ts = now
+        self.last_recv_ts = now
         self.last_error = nil
         self:log("Connected to LAN/FRP host %s:%d (ip=%s)", target_ip, target_port, connect_ip)
         return true, "connected"
@@ -251,7 +274,7 @@ function net_lan:begin_tcp_connect(connect_ip, target_ip, target_port)
 end
 
 -- Non-blocking connect: returns (true, "connected"|"connecting"|"resolving") or (false, err_msg)
-function net_lan:connect(ip, port)
+function net_lan:connect(ip, port, silent_fail)
     local had_scan = (self.udp_scan ~= nil)
     self:close()
     if had_scan then
@@ -267,6 +290,7 @@ function net_lan:connect(ip, port)
         target_port = tonumber(p_port)
     end
 
+    self.connect_silent = (silent_fail == true)
     self.connect_target_host = target_ip
     self.connect_target_port = target_port
 
@@ -300,9 +324,23 @@ function net_lan:connect(ip, port)
     return self:begin_tcp_connect(resolved, target_ip, target_port)
 end
 
+function net_lan:is_lockstep_waiting()
+    return self.boot ~= nil and self.boot.lockstep ~= nil and self.boot.lockstep.waiting_for_peer == true
+end
+
 function net_lan:send(msg)
     if not self.peer or self.state ~= "connected" then
         return false
+    end
+    if msg and msg.t == "VOICE" then
+        -- Anti-HoL QoS for SakuraFrp: always yield to lockstep TURN/control traffic
+        if #self.send_queue > 2 or #self.voice_queue >= 2 or self:is_lockstep_waiting() then
+            self.voice_dropped = (self.voice_dropped or 0) + 1
+            return false
+        end
+        self.voice_queue[#self.voice_queue + 1] = proto.encode(msg)
+        self:flush_send()
+        return true
     end
     local raw = proto.encode(msg)
     self.send_queue[#self.send_queue + 1] = raw
@@ -312,11 +350,24 @@ end
 
 function net_lan:flush_send()
     if not self.peer then return end
-    while #self.send_queue > 0 do
-        local chunk = self.send_queue[1]
-        local sent, err, partial = self.peer:send(chunk, self.send_offset)
+    while self.active_chunk or #self.send_queue > 0 or #self.voice_queue > 0 do
+        if not self.active_chunk then
+            if #self.send_queue > 0 then
+                self.active_chunk = table.remove(self.send_queue, 1)
+                self.send_offset = 1
+            elseif #self.voice_queue > 0 then
+                if self:is_lockstep_waiting() then
+                    self.voice_dropped = (self.voice_dropped or 0) + #self.voice_queue
+                    self.voice_queue = {}
+                    break
+                end
+                self.active_chunk = table.remove(self.voice_queue, 1)
+                self.send_offset = 1
+            end
+        end
+        local sent, err, partial = self.peer:send(self.active_chunk, self.send_offset)
         if sent then
-            table.remove(self.send_queue, 1)
+            self.active_chunk = nil
             self.send_offset = 1
         elseif err == "timeout" then
             if partial and partial >= self.send_offset then
@@ -332,13 +383,17 @@ function net_lan:flush_send()
 end
 
 function net_lan:handle_peer_disconnect(reason)
+    local was_connected = (self.peer ~= nil or self.state == "connected")
     if self.peer then
         pcall(self.peer.close, self.peer)
         self.peer = nil
     end
     self.recv_buf = ""
     self.send_queue = {}
+    self.voice_queue = {}
+    self.active_chunk = nil
     self.send_offset = 1
+    self.last_recv_ts = 0
     self.peer_ip = nil
     if self.role == "host" and self.server then
         self.state = "listening"
@@ -346,12 +401,26 @@ function net_lan:handle_peer_disconnect(reason)
         self.state = "closed"
     end
     self.last_error = "Disconnected: " .. tostring(reason)
+    if was_connected then
+        self.pending_disconnect_reason = tostring(reason or "closed")
+    end
+end
+
+function net_lan:drop_peer_socket(reason, silent_event)
+    if not self.peer then return false end
+    self:log("Force-closing peer TCP socket (%s)", tostring(reason or "drop"))
+    self:handle_peer_disconnect(reason or "simulated_drop")
+    if silent_event then
+        self.pending_disconnect_reason = nil
+    end
+    return true
 end
 
 function net_lan:fail_pending_connect(events, raw_err, display_err)
     local host = self.connect_target_host or "127.0.0.1"
     local port = self.connect_target_port or proto.DEFAULT_TCP_PORT
     local ip = self.connect_target_ip or host
+    local silent = self.connect_silent
     if self.connecting_sock then
         pcall(self.connecting_sock.close, self.connecting_sock)
         self.connecting_sock = nil
@@ -364,12 +433,29 @@ function net_lan:fail_pending_connect(events, raw_err, display_err)
     events[#events + 1] = {
         type = "lan_connect_failed",
         reason = self.last_error,
+        silent = silent,
     }
 end
 
 function net_lan:poll()
     local events = {}
     local now = socket.gettime()
+    -- Protect 12s watchdog against local main-thread stalls (e.g., FL level load/unload texture GC)
+    if self.last_poll_ts > 0 then
+        local gap = now - self.last_poll_ts
+        if gap > 1.5 and self.last_recv_ts > 0 then
+            self.last_recv_ts = self.last_recv_ts + gap
+        end
+    end
+    self.last_poll_ts = now
+
+    -- Flush any async disconnect triggered earlier during send() outside poll()
+    if self.pending_disconnect_reason then
+        local r = self.pending_disconnect_reason
+        self.pending_disconnect_reason = nil
+        events[#events + 1] = { type = "peer_disconnected", reason = r }
+        return events
+    end
 
     -- 0a. Async DNS completion for client join
     if self.state == "resolving" then
@@ -429,8 +515,11 @@ function net_lan:poll()
                 self.state = "connected"
                 self.recv_buf = ""
                 self.send_queue = {}
+                self.voice_queue = {}
+                self.active_chunk = nil
                 self.send_offset = 1
                 self.last_ping_ts = now
+                self.last_recv_ts = now
                 self.last_error = nil
                 self:log("Connected to LAN/FRP host %s:%d (ip=%s)",
                     tostring(self.peer_ip), tonumber(self.port) or 0, tostring(self.connect_target_ip))
@@ -488,7 +577,7 @@ function net_lan:poll()
         end
     end
 
-    -- 3. Host TCP accept (only 1 guest in 2P Co-op, and never accept stray reconnect probes while mid-match)
+    -- 3. Host TCP accept (only 1 guest in 2P Co-op; enabled in lobby and during WAIT_RECONNECT)
     if self.role == "host" and self.server and not self.peer then
         local client = self.server:accept()
         if client then
@@ -504,56 +593,97 @@ function net_lan:poll()
                 self.state = "connected"
                 self.recv_buf = ""
                 self.send_queue = {}
+                self.voice_queue = {}
+                self.active_chunk = nil
                 self.send_offset = 1
+                self.last_ping_ts = now
+                self.last_recv_ts = now
                 self:log("Guest connected from %s", tostring(cip))
                 events[#events + 1] = { type = "peer_connected", ip = cip }
             end
         end
     end
 
-    -- 4. Flush outgoing TCP queue
+    -- 4. Flush outgoing TCP queue (emit peer_disconnected if send failed!)
     if self.peer and self.state == "connected" then
         self:flush_send()
+        if not self.peer or self.state ~= "connected" then
+            local r = self.pending_disconnect_reason or self.last_error or "send_failed"
+            self.pending_disconnect_reason = nil
+            events[#events + 1] = { type = "peer_disconnected", reason = r }
+            return events
+        end
     end
 
-    -- 5. Non-blocking TCP receive & line framing
+    -- 5. Non-blocking TCP receive (O(N) chunked concat + cursor framing + 12s dead-link watchdog)
     if self.peer and self.state == "connected" then
-        for _ = 1, 32 do
+        local chunks = nil
+        local closed_during_read = false
+        for _ = 1, 64 do
             if not self.peer then break end
-            local data, err, partial = self.peer:receive(8192)
+            local data, err, partial = self.peer:receive(16384)
             local chunk = data or partial
             if chunk and #chunk > 0 then
-                self.recv_buf = self.recv_buf .. chunk
+                self.last_recv_ts = now
+                if not chunks then
+                    chunks = (#self.recv_buf > 0) and { self.recv_buf, chunk } or { chunk }
+                else
+                    chunks[#chunks + 1] = chunk
+                end
             end
             if err == "closed" then
                 self:log("Peer disconnected (closed)")
                 self:handle_peer_disconnect("closed")
-                events[#events + 1] = { type = "peer_disconnected", reason = "closed" }
+                closed_during_read = true
                 break
             elseif err == "timeout" or not data then
                 break
             end
         end
+        if chunks then
+            self.recv_buf = (#chunks == 1) and chunks[1] or table.concat(chunks)
+        end
 
-        while true do
-            local nl = self.recv_buf:find("\n", 1, true)
-            if not nl then break end
-            local line = self.recv_buf:sub(1, nl - 1)
-            self.recv_buf = self.recv_buf:sub(nl + 1)
-            if #line > 0 then
-                local msg, derr = proto.decode(line)
-                if msg then
-                    if msg.t == "PING" then
-                        self:send({ t = "PONG", ts = msg.ts })
-                    elseif msg.t == "PONG" and type(msg.ts) == "number" then
-                        self.rtt_ms = math.floor((socket.gettime() - msg.ts) * 1000 + 0.5)
+        if #self.recv_buf > 0 then
+            local pos = 1
+            while true do
+                local nl = self.recv_buf:find("\n", pos, true)
+                if not nl then break end
+                local line = self.recv_buf:sub(pos, nl - 1)
+                pos = nl + 1
+                if #line > 0 then
+                    local msg, derr = proto.decode(line)
+                    if msg then
+                        if msg.t == "PING" then
+                            self:send({ t = "PONG", ts = msg.ts })
+                        elseif msg.t == "PONG" and type(msg.ts) == "number" then
+                            self.rtt_ms = math.floor((socket.gettime() - msg.ts) * 1000 + 0.5)
+                        else
+                            events[#events + 1] = { type = "msg", msg = msg }
+                        end
                     else
-                        events[#events + 1] = { type = "msg", msg = msg }
+                        self:log("Malformed msg: %s", tostring(derr))
                     end
-                else
-                    self:log("Malformed msg: %s", tostring(derr))
                 end
             end
+            if pos > 1 then
+                self.recv_buf = self.recv_buf:sub(pos)
+            end
+        end
+
+        if closed_during_read then
+            self.pending_disconnect_reason = nil
+            events[#events + 1] = { type = "peer_disconnected", reason = "closed" }
+            return events
+        end
+
+        -- 12s dead-link watchdog (detects silent NAT/SakuraFrp blackholes)
+        if self.peer and self.state == "connected" and self.last_recv_ts > 0 and (now - self.last_recv_ts) >= WATCHDOG_SEC then
+            self:log("Dead-link watchdog timeout (%.1fs without inbound bytes); closing socket", now - self.last_recv_ts)
+            self:handle_peer_disconnect("watchdog_timeout")
+            self.pending_disconnect_reason = nil
+            events[#events + 1] = { type = "peer_disconnected", reason = "watchdog_timeout" }
+            return events
         end
 
         -- Periodic RTT ping every 1.5s

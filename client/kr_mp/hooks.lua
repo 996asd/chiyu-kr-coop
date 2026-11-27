@@ -50,6 +50,7 @@ local hooks = {
     installed_gui = false,
     active_store = nil,
     sso_ref = nil,
+    sso_mutation_gen = 0,
     entity_ids = {},
     co_seq = setmetatable({}, { __mode = "k" }),
     co_counter = 0,
@@ -231,6 +232,9 @@ function hooks:init(boot, replay, overlay, coop, lockstep)
     self.overlay = overlay
     self.coop = coop
     self.lockstep = lockstep
+    if coop then
+        coop._raw_pairs = self.orig_pairs
+    end
     commands:set_mp(coop, lockstep)
 
     prng:install()

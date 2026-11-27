@@ -3,6 +3,7 @@
 local proto = require("kr_mp.proto")
 local catalog = require("kr_mp.catalog")
 local updater = require("kr_mp.updater")
+local lobby_prefs = require("kr_mp.lobby_prefs")
 local ui = require("kr_mp.ui_assets")
 local modals = require("kr_mp.lobby_draw_modals")
 
@@ -59,63 +60,112 @@ end
 
 local function draw_home_lan(ctx, y)
     local lobby, T, cx, cw, py, ph, fm, add_btn = ctx.lobby, ctx.T, ctx.cx, ctx.cw, ctx.py, ctx.ph, ctx.font_map, ctx.add_btn
+    local has_direct_rc = (lobby.saved_session ~= nil and lobby.saved_session.mode == "direct")
+    if has_direct_rc then
+        local s = lobby.saved_session
+        add_btn("reconnect_direct",
+            string.format("一键高速追帧重连上次樱花/局域网对局 (2P)  @  %s:%d", tostring(s.host), tonumber(s.port) or 17777),
+            cx, y, cw, 30, "battle", { small = true })
+        y = y + 36
+    end
+
     local card_w = math.floor((cw - 14) / 2)
-    local card_h = 164
+    local card_h = has_direct_rc and 152 or 166
 
     -- Left Contract: 1P Host
     ui.draw_parchment_card(cx, y, card_w, card_h, {
         top = { 236, 240, 232, 250 }, bot = { 228, 214, 178, 250 },
         border = T.p1_border, border_w = 2, thumbtack = true,
     })
-    ui.draw_pill(cx + 14, y + 14, 124, 20, "1P 房主 · 蓝方旗帜", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, fm.tiny_bold)
-    ui.text("设立双人合作战桌", cx + 14, y + 40, T.ink_text, fm.hero)
-    ui.text("开房自动开启局域网发现 (TCP 17777)；异地开黑用樱花映射指向此端口即可零服务器直连。",
-        cx + 14, y + 62, T.ink_sub, fm.tiny, card_w - 28, "left")
-    add_btn("host_lan", "创建房间并备战", cx + 14, y + 96, card_w - 28, 32, "battle", { small = false })
-    add_btn("join_local", "本机双开快速加入 (127.0.0.1)", cx + 14, y + 134, card_w - 28, 22, "parchment", { tiny = true })
+    ui.draw_pill(cx + 14, y + 12, 168, 20, "1P 房主 · 蓝方旗帜 (热续传)", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, fm.tiny_bold)
+    ui.text("设立樱花 / 局域网战桌", cx + 14, y + 37, T.ink_text, fm.hero)
+    ui.text("TCP 17777 零服务器直连；内置 180 秒樱花闪断热续传与 2P 闪退追帧重连。",
+        cx + 14, y + 58, T.ink_sub, fm.tiny, card_w - 28, "left")
+    add_btn("host_lan", "创建房间并备战", cx + 14, y + card_h - 66, card_w - 28, 32, "battle", { small = false })
+    add_btn("join_local", "本机双开快速加入 (127.0.0.1)", cx + 14, y + card_h - 28, card_w - 28, 21, "parchment", { tiny = true })
 
-    -- Right Contract: 2P Guest / SakuraFrp Smart Paste
+    -- Right Contract: 2P Guest / SakuraFrp Smart Paste + Carrier Switch
     local rx = cx + card_w + 14
     ui.draw_parchment_card(rx, y, card_w, card_h, {
         top = { 250, 238, 226, 250 }, bot = { 234, 212, 176, 250 },
         border = T.p2_border, border_w = 2, thumbtack = true,
     })
-    ui.draw_pill(rx + 14, y + 14, 124, 20, "2P 队友 · 红方驰援", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, fm.tiny_bold)
-    ui.text("粘贴樱花 / 局域网地址直连", rx + 14, y + 40, T.ink_text, fm.hero)
+    ui.draw_pill(rx + 14, y + 12, 146, 20, "2P 队友 · 樱花一键直连", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, fm.tiny_bold)
+    ui.text("粘贴樱花 / 局域网地址直连", rx + 14, y + 37, T.ink_text, fm.hero)
 
     local ip_disp = lobby.ip_input
     if #ip_disp > 32 then ip_disp = "..." .. ip_disp:sub(-29) end
     local ip_w = card_w - 28 - 64
-    add_btn("ip_box", ip_disp .. (lobby.focused_field == "ip" and "|" or ""), rx + 14, y + 66, ip_w, 28, "input", {
+    add_btn("ip_box", ip_disp .. (lobby.focused_field == "ip" and "|" or ""), rx + 14, y + 61, ip_w, 27, "input", {
         small = true, focused = (lobby.focused_field == "ip"),
     })
-    add_btn("paste_ip", "粘贴", rx + 14 + ip_w + 6, y + 66, 58, 28, "wood", { small = true })
-    ui.text("复制整行樱花日志后点「粘贴」(或 Ctrl+V) 自动提取地址！", rx + 14, y + 99, T.ink_muted, fm.tiny)
+    add_btn("paste_ip", "粘贴", rx + 14 + ip_w + 6, y + 61, 58, 27, "wood", { small = true })
+
+    if lobby_prefs.is_sakura_addr(lobby.ip_input) then
+        local cur_c = lobby_prefs.get_sakura_carrier(lobby.ip_input)
+        local cw3 = math.floor((card_w - 28 - 10) / 3)
+        local cy3 = y + 92
+        local carriers = {
+            { id = "default", lbl = "默认线" },
+            { id = "dx",      lbl = "电信(dx)" },
+            { id = "yd",      lbl = "移动(yd)" },
+        }
+        for ci, cinfo in ipairs(carriers) do
+            local act = (cur_c == cinfo.id)
+            add_btn("sakura_carrier", cinfo.lbl, rx + 14 + (ci - 1) * (cw3 + 5), cy3, cw3, 20,
+                act and "azure" or "parchment", { tiny = true, carrier = cinfo.id })
+        end
+    else
+        ui.text("复制整行樱花日志点「粘贴」(Ctrl+V) 自动提取并识别电信/移动线路！", rx + 14, y + 93, T.ink_muted, fm.tiny, card_w - 28, "left")
+    end
+
     local lan_connecting = (not lobby.transport:is_online()) and lobby.transport:is_connecting()
-    add_btn("join_ip", lan_connecting and "正在连接房主..." or "立即直连队友战桌", rx + 14, y + 120, card_w - 28, 34, "crimson", { small = false })
+    add_btn("join_ip", lan_connecting and "正在连接房主..." or "立即直连队友战桌", rx + 14, y + card_h - 42, card_w - 28, 33, "crimson", { small = false })
 
-    y = y + card_h + 12
+    y = y + card_h + 10
 
-    -- Bottom Dark-Oak Tavern Notice Board (LAN Auto-Discovery)
+    -- Bottom Dark-Oak Tavern Notice Board (Recent SakuraFrp Addresses + LAN Auto-Discovery)
     local tray_h = (py + ph - 22) - y
     ui.draw_armory_tray(cx, y, cw, tray_h, 9)
-    local rooms = lobby.transport:get_lan_rooms()
-    ui.draw_ping_dot(cx + 18, y + 18, 12, #rooms > 0)
-    ui.print_shadow(string.format("酒馆布告栏 · 自动扫描附近局域网战桌 (UDP 17778 · %d 个房间)", #rooms),
-        cx + 30, y + 11, T.gold_bright, nil, nil, nil, fm.small_bold)
-
-    if #rooms == 0 then
-        ui.text("暂未扫描到同 Wi-Fi 房间 · 同局域网请等待房主点「创建房间」；异地远程请直接使用右上樱花映射直连。",
-            cx + 22, y + math.floor(tray_h * 0.46), { 232, 206, 158, 220 }, fm.small, cw - 44, "center")
+    local rec = lobby.recent_addrs or {}
+    local list_top = y + 32
+    if #rec > 0 then
+        ui.print_shadow("最近樱花/直连：", cx + 14, y + 10, T.gold_bright, nil, nil, nil, fm.tiny_bold)
+        local rx_c = cx + 114
+        local max_chip_w = math.floor((cw - 128 - (#rec - 1) * 6) / #rec)
+        for ri = 1, #rec do
+            local addr = rec[ri]
+            local disp = (#addr > 26) and ("..." .. addr:sub(-23)) or addr
+            add_btn("use_recent_addr", disp, rx_c + (ri - 1) * (max_chip_w + 6), y + 7, max_chip_w, 22, "wood", {
+                tiny = true, addr = addr,
+            })
+        end
+        list_top = y + 58
+        local rooms = lobby.transport:get_lan_rooms()
+        ui.draw_ping_dot(cx + 18, y + 43, 12, #rooms > 0)
+        ui.print_shadow(string.format("附近局域网自动发现 (UDP 17778 · %d 个房间)", #rooms),
+            cx + 30, y + 36, { 238, 212, 162, 235 }, nil, nil, nil, fm.tiny_bold)
     else
-        local max_lan = math.max(1, math.floor((tray_h - 38) / 48))
+        local rooms = lobby.transport:get_lan_rooms()
+        ui.draw_ping_dot(cx + 18, y + 18, 12, #rooms > 0)
+        ui.print_shadow(string.format("酒馆布告栏 · 自动扫描附近局域网战桌 (UDP 17778 · %d 个房间)", #rooms),
+            cx + 30, y + 11, T.gold_bright, nil, nil, nil, fm.small_bold)
+    end
+
+    local rooms = lobby.transport:get_lan_rooms()
+    if #rooms == 0 then
+        local empty_y = list_top + math.max(8, math.floor((y + tray_h - list_top - 24) * 0.42))
+        ui.text("暂未扫描到同 Wi-Fi 房间 · 同局域网请等待房主开房；异地远程请直接使用右上樱花映射直连（内置热续传）。",
+            cx + 22, empty_y, { 232, 206, 158, 220 }, fm.small, cw - 44, "center")
+    else
+        local max_lan = math.max(1, math.floor((y + tray_h - list_top - 6) / 46))
         for idx = 1, math.min(#rooms, max_lan) do
             local r = rooms[idx]
-            local ry = y + 34 + (idx - 1) * 48
-            ui.draw_parchment_card(cx + 12, ry, cw - 24, 42, { radius = 6 })
-            ui.draw_stage_thumb(r.level_idx, cx + 18, ry + 4, 58, 34, { radius = 4, pad = 1, border = { 108, 72, 32, 235 } })
-            ui.text(string.format("%s  ·  %s", tostring(r.name), get_stage_clean_title(r.level_idx)), cx + 86, ry + 5, T.ink_text, fm.main_bold)
-            ui.text(string.format("%s:%d  ·  %d/2 勇士等待中", tostring(r.ip), tonumber(r.port) or 17777, tonumber(r.players) or 1), cx + 86, ry + 23, T.ink_sub, fm.tiny)
+            local ry = list_top + (idx - 1) * 46
+            ui.draw_parchment_card(cx + 12, ry, cw - 24, 41, { radius = 6 })
+            ui.draw_stage_thumb(r.level_idx, cx + 18, ry + 4, 56, 33, { radius = 4, pad = 1, border = { 108, 72, 32, 235 } })
+            ui.text(string.format("%s  ·  %s", tostring(r.name), get_stage_clean_title(r.level_idx)), cx + 84, ry + 5, T.ink_text, fm.main_bold)
+            ui.text(string.format("%s:%d  ·  %d/2 勇士等待中", tostring(r.ip), tonumber(r.port) or 17777, tonumber(r.players) or 1), cx + 84, ry + 23, T.ink_sub, fm.tiny)
             add_btn("join_lan_room", "揭榜加入", cx + cw - 110, ry + 6, 86, 28, "battle", { small = true, room = r })
         end
     end
@@ -125,7 +175,7 @@ local function draw_home_online(ctx, y)
     local lobby, T, cx, cw, py, ph, fm, add_btn = ctx.lobby, ctx.T, ctx.cx, ctx.cw, ctx.py, ctx.ph, ctx.font_map, ctx.add_btn
     local is_connecting = lobby.transport:is_online() and lobby.transport:is_connecting()
 
-    if lobby.saved_session then
+    if lobby.saved_session and lobby.saved_session.mode ~= "direct" then
         local s = lobby.saved_session
         add_btn("reconnect_last",
             string.format("一键高速追帧重连：房间 #%s (%dP)  @  %s", tostring(s.code), tonumber(s.pid) or 2, tostring(s.server)),
@@ -209,8 +259,8 @@ local function draw_home(ctx)
     local lobby, G, T, cx, cw, py, fm, add_btn = ctx.lobby, ctx.G, ctx.T, ctx.cx, ctx.cw, ctx.py, ctx.font_map, ctx.add_btn
     local y = py + 42
     local is_lan = (lobby.net_tab == "lan")
-    add_btn("tab_lan", "局域网 / 樱花直连", cx, y, 162, 28, is_lan and "wood" or "parchment", { small = true, active = is_lan })
-    add_btn("tab_online", "公网中继服 (追帧重连)", cx + 170, y, 178, 28, (not is_lan) and "wood" or "parchment", { small = true, active = not is_lan })
+    add_btn("tab_lan", "樱花映射 / 局域网直连", cx, y, 178, 28, is_lan and "wood" or "parchment", { small = true, active = is_lan })
+    add_btn("tab_online", "公网中继服 (多房大厅)", cx + 186, y, 166, 28, (not is_lan) and "wood" or "parchment", { small = true, active = not is_lan })
 
     local upd_lbl, upd_w, upd_style
     if updater.ota_applied then
@@ -433,17 +483,26 @@ local function draw_room(ctx)
     ui.draw_ping_dot(cx + 8, y + 12, rtt, lobby.peer_connected)
     ui.text(lobby.peer_connected and "同盟已集结 (2/2)" or "等待 2P 入阵 (1/2)", cx + 20, y + 5, T.ink_text, fm.small_bold)
 
-    local net_info
+    local net_info, net_style, net_fg
+    local port_drifted = is_host and (not lobby.transport:is_online()) and lobby.transport:is_port_drifted()
     if lobby.transport:is_online() then
-        net_info = string.format("公网 #%s · %dms", tostring(lobby.online_room_code or "----"), rtt)
+        net_info = string.format("#%s (点复制) · %dms", tostring(lobby.online_room_code or "----"), rtt)
+        net_style = "parchment"
+    elseif port_drifted then
+        net_info = string.format("警告!端口:%d!", lobby.transport:get_port())
+        net_style = "crimson"
+        net_fg = { 255, 244, 218, 255 }
     elseif is_host then
-        net_info = string.format("TCP:%d · %dms", lobby.transport:get_port(), rtt)
+        net_info = string.format("TCP:%d (复制) · %dms", lobby.transport:get_port(), rtt)
+        net_style = "parchment"
     else
-        net_info = string.format("直连主机 · %dms", rtt)
+        net_info = string.format("直连 (复制) · %dms", rtt)
+        net_style = "parchment"
     end
     local info_w = is_host and 166 or 154
-    ui.draw_pill(cx + 136, y + 2, info_w, 21, net_info,
-        { 74, 44, 18, 28 }, { 154, 114, 58, 160 }, T.ink_sub, fm.tiny)
+    add_btn("copy_net_info", net_info, cx + 136, y, info_w, 24, net_style, {
+        tiny = true, fg = net_fg or T.ink_sub,
+    })
 
     if lobby.voice then
         local v_ok, v_mode, v_talk = lobby.voice.supported, lobby.voice.mode, lobby.voice.local_talking

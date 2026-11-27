@@ -16,6 +16,7 @@ local overlay = {
     _last_voice_panel = nil,
     _last_toast_rect = nil,
     _wait_banner_until = 0,
+    _leave_confirm_until = 0,
     voice_panel_open = false,
 }
 
@@ -97,13 +98,21 @@ function overlay:is_point_over_hud(x, y)
 end
 
 function overlay:mousepressed(x, y, button)
-    if not self.visible or button ~= 1 then
+    if not self.visible or (button ~= 1 and button ~= 2) then
         return false
     end
     local s = self._ui_scale or 1
     local lx, ly = x / s, y / s
     for _, b in ipairs(self.buttons) do
         if lx >= b.x and lx <= b.x + b.w and ly >= b.y and ly <= b.y + b.h then
+            if button == 2 then
+                if b.id == "mp_send_gold" then
+                    ui.play_sfx("coin")
+                    if self.on_action then self.on_action("mp_send_gold", 200) end
+                    return true
+                end
+                return false
+            end
             self._consumed_down = true
             if b.id == "mp_voice_ptt" then
                 self._ptt_btn_down = true
@@ -120,8 +129,30 @@ function overlay:mousepressed(x, y, button)
                 return true
             elseif b.id == "mp_send_gold" then
                 ui.play_sfx("coin")
+                local shift = love and love.keyboard and love.keyboard.isDown
+                    and (love.keyboard.isDown("lshift") or love.keyboard.isDown("rshift"))
+                if self.on_action then self.on_action("mp_send_gold", shift and 200 or 50) end
+                return true
             elseif b.id == "mp_leave" then
+                local now = (love and love.timer and love.timer.getTime()) or 0
+                if now < (self._leave_confirm_until or 0) then
+                    self._leave_confirm_until = 0
+                    ui.play_sfx("close")
+                    if self.on_action then self.on_action("mp_leave") end
+                else
+                    self._leave_confirm_until = now + 3.0
+                    ui.play_sfx("click")
+                    self:show_toast("再点一次「确认?」将彻底断开退出（若仅需换关请点「战桌」）", 3.0)
+                end
+                return true
+            elseif b.id == "mp_abort_reconnect" then
+                self._leave_confirm_until = 0
                 ui.play_sfx("close")
+                if self.on_action then self.on_action("mp_leave") end
+                return true
+            elseif b.id == "mp_return_lobby" then
+                self._leave_confirm_until = 0
+                ui.play_sfx("tab")
             else
                 ui.play_sfx("click")
             end
@@ -136,7 +167,7 @@ function overlay:mousepressed(x, y, button)
             return true
         end
     end
-    if self.voice_panel_open then
+    if button == 1 and self.voice_panel_open then
         local vp = self._last_voice_panel
         if vp and lx >= vp.x and lx <= vp.x + vp.w and ly >= vp.y and ly <= vp.y + vp.h then
             self._consumed_down = true
@@ -233,11 +264,11 @@ function overlay:draw()
             self.voice_panel_open = false
         end
 
-        w = math.min(show_voice_btn and 588 or 488, vsw - 20)
-        x = math.max(10, math.floor((vsw - w) / 2))
-        if vsw >= 880 and x < 200 then x = 200 end
+        w = math.min(show_voice_btn and 634 or 538, vsw - 16)
+        x = math.max(8, math.floor((vsw - w) / 2))
+        if vsw >= 920 and x < 180 then x = 180 end
         y = 7
-        h = has_catchup_bar and 66 or (is_alert and 62 or 42)
+        h = has_catchup_bar and 66 or (is_alert and 64 or 42)
 
         -- Twin subtle iron hanging chains anchored to top window edge
         G.setColor(24, 22, 20, 235)
@@ -283,81 +314,88 @@ function overlay:draw()
         cx = cx + 33
 
         -- Recessed Coin Ledger trough
-        local gw = is_indep and 104 or 74
+        local gw = is_indep and 98 or 70
         G.setColor(24, 13, 6, 228)
         G.rectangle("fill", cx, cy + 1, gw, 23, 6, 6)
         G.setColor(148, 104, 48, 200)
         G.setLineWidth(1.2)
         G.rectangle("line", cx, cy + 1, gw, 23, 6, 6)
-        ui.draw_coin_icon(cx + 11, cy + 12.5, 5.2)
+        ui.draw_coin_icon(cx + 10, cy + 12.5, 5.0)
         local g_ty = cy + 1 + (23 - ui.font_h(font_map.small_bold)) * 0.5
         if is_indep then
-            ui.print_shadow(tostring(s.mp_g1 or 0), cx + 21, g_ty, T.p1_light, nil, nil, nil, font_map.small_bold)
-            ui.text("|", cx + 56, g_ty, { 240, 210, 155, 110 }, font_map.small)
-            ui.print_shadow(tostring(s.mp_g2 or 0), cx + 65, g_ty, T.p2_light, nil, nil, nil, font_map.small_bold)
+            ui.print_shadow(tostring(s.mp_g1 or 0), cx + 19, g_ty, T.p1_light, nil, nil, nil, font_map.small_bold)
+            ui.text("|", cx + 52, g_ty, { 240, 210, 155, 110 }, font_map.small)
+            ui.print_shadow(tostring(s.mp_g2 or 0), cx + 60, g_ty, T.p2_light, nil, nil, nil, font_map.small_bold)
         else
-            ui.print_shadow(tostring(s.mp_g1 or 0), cx + 22, g_ty, T.gold_bright, nil, nil, nil, font_map.small_bold)
+            ui.print_shadow(tostring(s.mp_g1 or 0), cx + 21, g_ty, T.gold_bright, nil, nil, nil, font_map.small_bold)
         end
-        cx = cx + gw + 6
+        cx = cx + gw + 5
 
         -- Tactile compact wood/emerald action buttons
         if is_indep then
-            add_btn("mp_send_gold", "转50", cx, cy, 42, 24, "wood", { tiny = true, fg = T.gold_bright })
-            cx = cx + 47
+            add_btn("mp_send_gold", "转50", cx, cy, 38, 24, "wood", { tiny = true, fg = T.gold_bright })
+            cx = cx + 42
         end
         local spd = s.mp_speed or 1
-        add_btn("mp_speed", string.format("%dx", spd), cx, cy, 32, 24, (spd == 2) and "battle" or "wood", { tiny = true })
-        cx = cx + 37
+        add_btn("mp_speed", string.format("%dx", spd), cx, cy, 28, 24, (spd == 2) and "battle" or "wood", { tiny = true })
+        cx = cx + 32
 
         local is_paused = (s.mp_phase == "PAUSED")
-        add_btn("mp_pause", is_paused and "继续" or "暂停", cx, cy, 40, 24, is_paused and "battle" or "wood", { tiny = true })
-        cx = cx + 45
+        add_btn("mp_pause", is_paused and "继续" or "暂停", cx, cy, 36, 24, is_paused and "battle" or "wood", { tiny = true })
+        cx = cx + 40
 
         if show_marks_btn then
             local m_on = (s.mp_tower_marks ~= false)
-            add_btn("mp_tower_marks", "塔标", cx, cy, 38, 24, "wood", {
+            add_btn("mp_tower_marks", "塔标", cx, cy, 34, 24, "wood", {
                 tiny = true,
                 fg = m_on and T.ok_bright or { 196, 174, 140, 150 },
             })
-            cx = cx + 43
+            cx = cx + 38
         end
 
         local voice_btn_cx = nil
         if show_voice_btn then
             local v_mode = s.mp_voice_mode or "ptt"
             local my_talk = (is_p1 and s.mp_voice_p1_talk) or ((not is_p1) and s.mp_voice_p2_talk)
-            -- Keep the HUD mic button calm (no harsh bright-green flashing on every breath)
             local v_style = (v_mode == "mute") and "crimson" or "wood"
             local v_fg = my_talk and T.ok_bright
                 or ((v_mode == "vad") and { 196, 246, 206, 255 } or ((v_mode == "mute") and { 255, 220, 216, 255 } or T.gold_bright))
-            voice_btn_cx = cx + 48
-            add_btn("mp_voice_mode", s.mp_voice_label or "按V麦", cx, cy, 54, 24, v_style, {
+            voice_btn_cx = cx + 44
+            add_btn("mp_voice_mode", s.mp_voice_label or "按V麦", cx, cy, 50, 24, v_style, {
                 tiny = true, fg = v_fg,
             })
-            cx = cx + 58
-            add_btn("mp_voice_panel", "调音", cx, cy, 34, 24, self.voice_panel_open and "azure" or "wood", {
+            cx = cx + 54
+            add_btn("mp_voice_panel", "调音", cx, cy, 32, 24, self.voice_panel_open and "azure" or "wood", {
                 tiny = true,
                 fg = self.voice_panel_open and { 242, 250, 255, 255 } or T.gold_bright,
             })
-            cx = cx + 38
+            cx = cx + 36
         end
 
-        add_btn("mp_leave", "退出", cx, cy, 38, 24, "crimson", { tiny = true })
-        cx = cx + 43
-        add_btn("hide", "隐", cx, cy, 24, 24, "wood", { tiny = true })
+        add_btn("mp_return_lobby", "战桌", cx, cy, 36, 24, "azure", { tiny = true })
+        cx = cx + 40
+        local leave_arm = now_hud < (self._leave_confirm_until or 0)
+        add_btn("mp_leave", leave_arm and "确认?" or "退出", cx, cy, 36, 24, "crimson", {
+            tiny = true,
+            fg = leave_arm and { 255, 248, 136, 255 } or nil,
+        })
+        cx = cx + 40
+        add_btn("hide", "隐", cx, cy, 22, 24, "wood", { tiny = true })
 
-        -- Right-anchored Emerald Latency Crystal
+        -- Right-anchored Emerald Latency + Live Delay Crystal (Host clicks to hot-switch 100/150/200/300ms!)
         local rtt = s.mp_rtt or 0
-        local pill_w = 56
-        local pill_x = x + w - 16 - pill_w
+        local d_ms = tonumber(s.mp_delay_ms) or 100
+        local pill_w = 78
+        local pill_x = x + w - 15 - pill_w
         G.setColor(22, 12, 5, 225)
         G.rectangle("fill", pill_x, cy + 1, pill_w, 23, 6, 6)
-        G.setColor(136, 94, 44, 195)
+        G.setColor(is_p1 and 188 or 136, is_p1 and 138 or 94, is_p1 and 62 or 44, 210)
         G.setLineWidth(1.2)
         G.rectangle("line", pill_x, cy + 1, pill_w, 23, 6, 6)
-        ui.draw_ping_dot(pill_x + 11, cy + 12.5, rtt, s.mp_phase ~= "DISCONNECTED" and s.mp_phase ~= "WAIT_RECONNECT")
+        ui.draw_ping_dot(pill_x + 9, cy + 12.5, rtt, s.mp_phase ~= "DISCONNECTED" and s.mp_phase ~= "WAIT_RECONNECT")
         local rtt_ty = cy + 1 + (23 - ui.font_h(font_map.tiny_bold)) * 0.5
-        ui.print_shadow(string.format("%dms", rtt), pill_x + 19, rtt_ty, T.ok_bright, nil, nil, nil, font_map.tiny_bold)
+        ui.print_shadow(string.format("%d·%d", rtt, d_ms), pill_x + 16, rtt_ty, T.ok_bright, pill_w - 18, "center", nil, font_map.tiny_bold)
+        add_btn("mp_cycle_delay", "", pill_x, cy, pill_w, 24, "wood", { no_draw = true })
 
         -- Alert / Catchup Row 2 (only shown when actually catching up or warning!)
         if has_catchup_bar then
@@ -376,9 +414,23 @@ function overlay:draw()
                 px_b, py_b + (ph_b - ui.font_h(font_map.tiny_bold)) * 0.5, { 255, 250, 230, 255 }, pw_b, "center", nil, font_map.tiny_bold)
         elseif is_alert then
             local phase_cn = PHASE_LABELS[s.mp_phase] or tostring(s.mp_phase)
-            local wt = show_wait_alert and "网络波动，正在等待队友指令..." or phase_cn
-            ui.print_shadow(string.format("%s · 帧 %d · 校验 #%s", wt, tick, hash_hex),
-                x + 16, y + 43, T.gold_bright, w - 32, "center", nil, font_map.tiny_bold)
+            if s.mp_phase == "WAIT_RECONNECT" then
+                local rem = tonumber(s.mp_reconnect_remain) or 0
+                local rmsg
+                if s.mp_direct_reconnect and not is_p1 then
+                    rmsg = string.format("樱花断线保护 · 每2秒自动热续传中 (剩余 %ds) · 帧 %d", rem, tick)
+                elseif rem > 0 then
+                    rmsg = string.format("等待队友热续传/重连 (剩余 %ds) · 帧 %d", rem, tick)
+                else
+                    rmsg = string.format("%s · 帧 %d · 校验 #%s", phase_cn, tick, hash_hex)
+                end
+                ui.print_shadow(rmsg, x + 16, y + 43, T.gold_bright, w - 98, "left", nil, font_map.tiny_bold)
+                add_btn("mp_abort_reconnect", "放弃等待", x + w - 80, y + 39, 64, 20, "crimson", { tiny = true })
+            else
+                local wt = show_wait_alert and "网络波动，正在等待队友指令..." or phase_cn
+                ui.print_shadow(string.format("%s · 帧 %d · 校验 #%s", wt, tick, hash_hex),
+                    x + 16, y + 43, T.gold_bright, w - 32, "center", nil, font_map.tiny_bold)
+            end
         end
 
         -- Hovering anywhere over the HUD bar gently reveals the Parchment Sync Telemetry Tooltip (PC desktop only)
@@ -505,12 +557,12 @@ function overlay:draw()
             end
         elseif hud_hover and not has_catchup_bar and not is_alert then
             local tip_y = y + h + 5
-            ui.draw_parchment_card(x + 24, tip_y, w - 48, 24, { radius = 6 })
-            local net_lbl = s.mp_online and ("公网 #" .. tostring(s.mp_room_code or "----")) or "局域网 2P"
+            ui.draw_parchment_card(x + 12, tip_y, w - 24, 24, { radius = 6 })
+            local net_lbl = s.mp_online and ("公网 #" .. tostring(s.mp_room_code or "----")) or "樱花/局域网"
             local phase_cn = PHASE_LABELS[s.mp_phase] or tostring(s.mp_phase)
-            ui.text(string.format("%s · %s · 校验√%d (#%s) · V按麦 · M闭麦 · Alt+左键打点",
-                net_lbl, phase_cn, s.mp_sync_ok or 0, hash_hex),
-                x + 28, tip_y + (24 - ui.font_h(font_map.tiny)) * 0.5, T.ink_text, font_map.tiny, w - 56, "center")
+            ui.text(string.format("%s · %s · √%d · 转50(右键转200) · 右侧点延迟切缓冲 · 战桌不退房",
+                net_lbl, phase_cn, s.mp_sync_ok or 0),
+                x + 16, tip_y + (24 - ui.font_h(font_map.tiny)) * 0.5, T.ink_text, font_map.tiny, w - 32, "center")
         elseif s.mp_voice_ok and (s.mp_voice_p1_talk or s.mp_voice_p2_talk) then
             local v_ind = s.mp_voice_style or "compact"
             local show1 = (s.mp_voice_p1_talk == true)
@@ -731,7 +783,8 @@ function overlay:draw_toast(lobby)
     if msg:find("失败", 1, true) or msg:find("拒绝", 1, true) or msg:find("超时", 1, true)
         or msg:find("异常", 1, true) or msg:find("断开", 1, true) or msg:find("未找到", 1, true)
         or msg:find("为空", 1, true) or msg:find("请先", 1, true) or msg:find("请等待", 1, true)
-        or msg:find("至少", 1, true) or msg:find("最多", 1, true) or msg:find("不匹配", 1, true) then
+        or msg:find("至少", 1, true) or msg:find("最多", 1, true) or msg:find("不匹配", 1, true)
+        or msg:find("警告", 1, true) or msg:find("被占用", 1, true) then
         accent = { 226, 74, 68, 255 }
         border_col = { 176, 54, 48, 255 }
     elseif msg:find("已连接", 1, true) or msg:find("已创建", 1, true) or msg:find("已加入", 1, true)

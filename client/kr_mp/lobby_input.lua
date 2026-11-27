@@ -3,6 +3,7 @@ local proto = require("kr_mp.proto")
 local fonts = require("kr_mp.fonts")
 local catalog = require("kr_mp.catalog")
 local updater = require("kr_mp.updater")
+local lobby_prefs = require("kr_mp.lobby_prefs")
 local ui = require("kr_mp.ui_assets")
 
 local M = {}
@@ -100,18 +101,56 @@ function BTN_HANDLERS.tab_online(lobby)
     lobby:switch_tab("online")
 end
 
--- LAN Home
+-- LAN / SakuraFrp Home
 function BTN_HANDLERS.host_lan(lobby) lobby:host_lan_room() end
 function BTN_HANDLERS.join_local(lobby) lobby:join_lan_room("127.0.0.1", proto.DEFAULT_TCP_PORT) end
 function BTN_HANDLERS.ip_box(lobby) lobby:set_focus("ip") end
 function BTN_HANDLERS.paste_ip(lobby) lobby:paste_into_field("ip") end
 function BTN_HANDLERS.join_ip(lobby)
     lobby.ip_input = proto.sanitize_addr(lobby.ip_input):sub(1, 80)
+    lobby_prefs.record_recent_addr(lobby, lobby.ip_input)
     lobby:save_prefs()
     lobby:join_lan_room(lobby.ip_input)
 end
+function BTN_HANDLERS.sakura_carrier(lobby, btn)
+    local next_addr = lobby_prefs.switch_sakura_carrier(lobby.ip_input, btn.carrier)
+    if next_addr then
+        lobby.ip_input = next_addr
+        lobby_prefs.record_recent_addr(lobby, next_addr)
+        lobby:save_prefs()
+        local names = { default = "默认线", dx = "电信专线 (dx.)", yd = "移动专线 (yd.)" }
+        lobby.overlay:show_toast("已切至樱花" .. (names[btn.carrier] or "默认线") .. "：" .. next_addr, 2.5)
+    end
+end
+function BTN_HANDLERS.use_recent_addr(lobby, btn)
+    if type(btn.addr) == "string" and #btn.addr > 0 then
+        lobby.ip_input = btn.addr
+        lobby_prefs.record_recent_addr(lobby, btn.addr)
+        lobby:save_prefs()
+        lobby:join_lan_room(btn.addr)
+    end
+end
+function BTN_HANDLERS.reconnect_direct(lobby) lobby:reconnect_direct_session(lobby.saved_session) end
 function BTN_HANDLERS.join_lan_room(lobby, btn)
     if btn.room then lobby:join_lan_room(btn.room.ip, btn.room.port) end
+end
+function BTN_HANDLERS.copy_net_info(lobby)
+    if lobby.transport:is_online() then
+        local code = tostring(lobby.online_room_code or "")
+        if #code > 0 then
+            lobby:copy_to_clipboard(code, "已复制房间码：" .. code .. "，发给好友即可进房！")
+        end
+    elseif lobby.role == "host" then
+        local port = lobby.transport:get_port()
+        lobby:copy_to_clipboard("127.0.0.1:" .. tostring(port),
+            string.format("已复制本机端口 127.0.0.1:%d（樱花隧道本地端口请设为 %d）", port, port))
+    else
+        local addr = tostring(lobby.last_direct_host or lobby.ip_input or "127.0.0.1")
+        if lobby.last_direct_port and not addr:find(":", 1, true) then
+            addr = addr .. ":" .. tostring(lobby.last_direct_port)
+        end
+        lobby:copy_to_clipboard(addr, "已复制房主地址：" .. addr)
+    end
 end
 
 -- Online Home
@@ -164,31 +203,35 @@ end
 function BTN_HANDLERS.diff_cycle(lobby)
     if lobby.role ~= "host" then return end
     lobby.room.level_difficulty = (lobby.room.level_difficulty % 4) + 1
+    lobby:save_prefs()
     lobby:broadcast_room_state()
 end
 
 function BTN_HANDLERS.econ_toggle(lobby)
     if lobby.role ~= "host" then return end
     lobby.room.econ_mode = (lobby.room.econ_mode == "independent") and "shared" or "independent"
+    lobby:save_prefs()
     lobby:broadcast_room_state()
 end
 
 function BTN_HANDLERS.tower_toggle(lobby)
     if lobby.role ~= "host" then return end
     lobby.room.tower_mode = (lobby.room.tower_mode == "owned") and "open" or "owned"
+    lobby:save_prefs()
     lobby:broadcast_room_state()
 end
 
 function BTN_HANDLERS.delay_cycle(lobby)
     if lobby.role ~= "host" then return end
     local cur = lobby.normalize_delay_turns(lobby.room.input_delay_turns)
-    lobby.room.input_delay_turns = (cur == 2) and 4 or ((cur == 4) and 6 or 2)
+    lobby.room.input_delay_turns = (cur == 2) and 3 or ((cur == 3) and 4 or ((cur == 4) and 6 or 2))
     lobby:save_prefs()
     lobby:broadcast_room_state()
     local tips = {
         [2] = "已切至【局域网 100ms 缓冲】：同 Wi-Fi / 低延迟最跟手",
+        [3] = "已切至【低抖动 150ms 缓冲】：适合同省低延迟樱花节点",
         [4] = "已切至【樱花映射 200ms 缓冲】：免费 FRP / 跨省联机更丝滑不卡顿！",
-        [6] = "已切至【高延迟抗抖 300ms 缓冲】：适合高抖动跨网 / 热点联机",
+        [6] = "已切至【高延迟抗抖 300ms 缓冲】：适合晚高峰波动 / 热点联机",
     }
     lobby.overlay:show_toast(tips[lobby.room.input_delay_turns], 2.4)
 end
@@ -336,6 +379,7 @@ function BTN_HANDLERS.pick_stage(lobby, btn)
     if btn.level_idx and lobby.role == "host" then
         lobby.room.level_idx = btn.level_idx
         lobby.sub_modal = nil
+        lobby:save_prefs()
         lobby:broadcast_room_state()
     end
 end
@@ -349,11 +393,13 @@ function BTN_HANDLERS.pick_hero(lobby, btn)
     if lobby.sub_modal == "hero1" and lobby.role == "host" then
         lobby.room.heroes[1] = btn.hero_idx
         lobby.sub_modal = nil
+        lobby:save_prefs()
         lobby:broadcast_room_state()
     elseif lobby.sub_modal == "hero2" then
         lobby.room.heroes[2] = btn.hero_idx
         lobby.sub_modal = nil
         if lobby.role == "host" then
+            lobby:save_prefs()
             lobby:broadcast_room_state()
         elseif lobby.role == "client" then
             lobby.transport:send({ t = "SET_GUEST", hero_idx = btn.hero_idx, ready = lobby.local_ready })
@@ -372,6 +418,7 @@ function BTN_HANDLERS.pick_tower(lobby, btn)
     if not ok and msg then
         lobby.overlay:show_toast(msg, 2.5)
     else
+        lobby:save_prefs()
         lobby:broadcast_room_state()
     end
 end
@@ -379,6 +426,7 @@ end
 function BTN_HANDLERS.towers_default(lobby)
     if lobby.role ~= "host" then return end
     lobby.room.towers = lobby.copy_array(catalog.DEFAULT_TOWERS)
+    lobby:save_prefs()
     lobby:broadcast_room_state()
     lobby.overlay:show_toast("已恢复默认 5 代 12 座防御塔！", 2.0)
 end

@@ -870,6 +870,17 @@ local function world_to_screen(wx, wy, rox, roy, gs, ref_h)
     return sx, sy
 end
 
+-- Precomputed 19-point lower pedestal crescent (zero per-frame trig & zero table GC)
+local ARC_SEGS = 18
+local ARC_COS, ARC_SIN = {}, {}
+for i = 0, ARC_SEGS do
+    local a = math.pi * (0.14 + 0.72 * (i / ARC_SEGS))
+    ARC_COS[i + 1] = math.cos(a)
+    ARC_SIN[i + 1] = math.sin(a)
+end
+local ARC_PTS = {}
+local RAW_PAIRS = pairs
+
 function coop:draw_world_overlays()
     if not self.active or not game or not game.store or not game.store.entities or not love.graphics then
         return
@@ -901,7 +912,8 @@ function coop:draw_world_overlays()
     if self.show_tower_marks and self.tower_mode == "owned" then
         local mini_font = fonts.get(10.5 * bs, "bold") or badge_font
         local mfh = mini_font and mini_font:getHeight() or math.floor(11 * bs)
-        for _, e in pairs(game.store.entities) do
+        local iter_pairs = self._raw_pairs or RAW_PAIRS
+        for _, e in iter_pairs(game.store.entities) do
             if e and e.tower and e._mp_owner and e.pos and not e._kr_mp_local then
                 local sx, sy = world_to_screen(e.pos.x, e.pos.y, rox, roy, scale, ref_h)
                 if sx and sx >= -90 and sx <= sw_scr + 90 and sy >= -90 and sy <= sh_scr + 90 then
@@ -911,15 +923,10 @@ function coop:draw_world_overlays()
                     local rx = 31 * scale
                     local ry = 13 * scale
 
-                    -- Build smooth front-bottom arc points (strictly hugging tower stone pedestal lip)
-                    local pts = {}
-                    local segs = 18
-                    local a0 = math.pi * 0.14
-                    local a1 = math.pi * 0.86
-                    for i = 0, segs do
-                        local a = a0 + (a1 - a0) * (i / segs)
-                        pts[#pts + 1] = cx + math.cos(a) * rx
-                        pts[#pts + 1] = cy + math.sin(a) * ry
+                    -- Reuse precomputed unit-circle crescent points (zero GC per frame)
+                    for i = 1, ARC_SEGS + 1 do
+                        ARC_PTS[i * 2 - 1] = cx + ARC_COS[i] * rx
+                        ARC_PTS[i * 2] = cy + ARC_SIN[i] * ry
                     end
 
                     -- Soft outer ground glow
@@ -929,7 +936,7 @@ function coop:draw_world_overlays()
                     else
                         G.setColor(255, 78, 78, 60)
                     end
-                    G.line(pts)
+                    G.line(ARC_PTS)
 
                     -- Crisp refined inner pedestal rim
                     G.setLineWidth(1.6 * bs)
@@ -938,7 +945,7 @@ function coop:draw_world_overlays()
                     else
                         G.setColor(255, 110, 105, 215)
                     end
-                    G.line(pts)
+                    G.line(ARC_PTS)
 
                     -- Compact rounded glass mini pill nestled cleanly at the front tip of the pedestal
                     local pw = math.floor(23 * bs + 0.5)

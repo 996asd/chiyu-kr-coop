@@ -895,7 +895,7 @@ function voice:init(boot, transport)
     end
 
     -- Keep automated M1/M2/smoke tests headless & deterministic
-    if os.getenv("KR_MP_AUTO_COOP") or os.getenv("KR_MP_AUTO_M2") or os.getenv("KR_MP_SMOKE_TEST") == "1" then
+    if os.getenv("KR_MP_AUTO_COOP") or os.getenv("KR_MP_AUTO_M2") or os.getenv("KR_MP_AUTO_SAKURA") or os.getenv("KR_MP_SMOKE_TEST") == "1" then
         self.disabled_for_test = true
         self.supported = false
         return

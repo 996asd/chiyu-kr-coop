@@ -70,9 +70,27 @@ function transport:get_lan_rooms()
     return {}
 end
 
-function transport:join_lan(ip, port)
+function transport:join_lan(ip, port, silent_fail)
     self:switch_mode("lan")
-    return self.lan_backend:connect(ip, port)
+    return self.lan_backend:connect(ip, port, silent_fail)
+end
+
+function transport:is_port_drifted()
+    return self.mode == "lan" and self.lan_backend ~= nil and self.lan_backend.port_drifted == true
+end
+
+function transport:get_requested_port()
+    if self.mode == "lan" and self.lan_backend then
+        return self.lan_backend.requested_port or 17777
+    end
+    return self:get_port()
+end
+
+function transport:drop_peer_socket(reason, silent_event)
+    if self.mode == "lan" and self.lan_backend and self.lan_backend.drop_peer_socket then
+        return self.lan_backend:drop_peer_socket(reason, silent_event)
+    end
+    return false
 end
 
 -- === Online Relay Mode Methods (M2) ===
@@ -143,8 +161,11 @@ function transport:get_last_error()
 end
 
 function transport:get_send_queue_len()
-    if self.backend and type(self.backend.send_queue) == "table" then
-        return #self.backend.send_queue
+    if self.backend then
+        local n = (type(self.backend.send_queue) == "table" and #self.backend.send_queue or 0)
+            + (type(self.backend.voice_queue) == "table" and #self.backend.voice_queue or 0)
+            + (self.backend.active_chunk and 1 or 0)
+        return n
     end
     return 0
 end

@@ -5,6 +5,8 @@ local proto = require("kr_mp.proto")
 local net_online = {}
 net_online.__index = net_online
 
+local WATCHDOG_SEC = tonumber(os.getenv("KR_MP_WATCHDOG_SEC")) or 12.0
+
 local DNS_WORKER_CODE = [[
 local channel_name, seq, host = ...
 local ch = love.thread.getChannel(channel_name)
@@ -38,9 +40,15 @@ function net_online.new(boot)
     self.port = proto.DEFAULT_ONLINE_PORT
     self.recv_buf = ""
     self.send_queue = {}
+    self.voice_queue = {}
+    self.active_chunk = nil
     self.send_offset = 1
+    self.voice_dropped = 0
     self.last_error = nil
     self.last_ping_ts = 0
+    self.last_recv_ts = 0
+    self.last_poll_ts = 0
+    self.pending_disconnect_reason = nil
     self.rtt_ms = 0
     return self
 end
@@ -72,7 +80,11 @@ function net_online:close()
     self.connect_target_ip = nil
     self.recv_buf = ""
     self.send_queue = {}
+    self.voice_queue = {}
+    self.active_chunk = nil
     self.send_offset = 1
+    self.last_recv_ts = 0
+    self.pending_disconnect_reason = nil
 end
 
 function net_online:format_connect_error(target_host, target_port, cerr)
@@ -104,8 +116,12 @@ function net_online:begin_tcp_connect(connect_ip, target_host, target_port)
         self.state = "connected"
         self.recv_buf = ""
         self.send_queue = {}
+        self.voice_queue = {}
+        self.active_chunk = nil
         self.send_offset = 1
-        self.last_ping_ts = socket.gettime()
+        local now = socket.gettime()
+        self.last_ping_ts = now
+        self.last_recv_ts = now
         self.last_error = nil
         self:log("Connected to Online Relay Server %s:%d (ip=%s)", target_host, target_port, connect_ip)
         return true, "connected"
@@ -182,9 +198,22 @@ function net_online:get_server_addr()
     return string.format("%s:%d", tostring(self.host or proto.DEFAULT_ONLINE_HOST), tonumber(self.port) or proto.DEFAULT_ONLINE_PORT)
 end
 
+function net_online:is_lockstep_waiting()
+    return self.boot ~= nil and self.boot.lockstep ~= nil and self.boot.lockstep.waiting_for_peer == true
+end
+
 function net_online:send(msg)
     if not self.sock or self.state ~= "connected" then
         return false
+    end
+    if msg and msg.t == "VOICE" then
+        if #self.send_queue > 2 or #self.voice_queue >= 2 or self:is_lockstep_waiting() then
+            self.voice_dropped = (self.voice_dropped or 0) + 1
+            return false
+        end
+        self.voice_queue[#self.voice_queue + 1] = proto.encode(msg)
+        self:flush_send()
+        return true
     end
     local raw = proto.encode(msg)
     self.send_queue[#self.send_queue + 1] = raw
@@ -194,11 +223,24 @@ end
 
 function net_online:flush_send()
     if not self.sock then return end
-    while #self.send_queue > 0 do
-        local chunk = self.send_queue[1]
-        local sent, err, partial = self.sock:send(chunk, self.send_offset)
+    while self.active_chunk or #self.send_queue > 0 or #self.voice_queue > 0 do
+        if not self.active_chunk then
+            if #self.send_queue > 0 then
+                self.active_chunk = table.remove(self.send_queue, 1)
+                self.send_offset = 1
+            elseif #self.voice_queue > 0 then
+                if self:is_lockstep_waiting() then
+                    self.voice_dropped = (self.voice_dropped or 0) + #self.voice_queue
+                    self.voice_queue = {}
+                    break
+                end
+                self.active_chunk = table.remove(self.voice_queue, 1)
+                self.send_offset = 1
+            end
+        end
+        local sent, err, partial = self.sock:send(self.active_chunk, self.send_offset)
         if sent then
-            table.remove(self.send_queue, 1)
+            self.active_chunk = nil
             self.send_offset = 1
         elseif err == "timeout" then
             if partial and partial >= self.send_offset then
@@ -214,15 +256,22 @@ function net_online:flush_send()
 end
 
 function net_online:handle_disconnect(reason)
+    local was_connected = (self.sock ~= nil or self.state == "connected")
     if self.sock then
         pcall(self.sock.close, self.sock)
         self.sock = nil
     end
     self.recv_buf = ""
     self.send_queue = {}
+    self.voice_queue = {}
+    self.active_chunk = nil
     self.send_offset = 1
+    self.last_recv_ts = 0
     self.state = "closed"
     self.last_error = "Server disconnected: " .. tostring(reason)
+    if was_connected then
+        self.pending_disconnect_reason = tostring(reason or "closed")
+    end
 end
 
 function net_online:fail_pending_connect(events, raw_err, display_err)
@@ -248,6 +297,22 @@ end
 function net_online:poll()
     local events = {}
     local now = socket.gettime()
+    -- Protect 12s watchdog against local main-thread stalls (e.g., FL level load/unload texture GC)
+    if self.last_poll_ts > 0 then
+        local gap = now - self.last_poll_ts
+        if gap > 1.5 and self.last_recv_ts > 0 then
+            self.last_recv_ts = self.last_recv_ts + gap
+        end
+    end
+    self.last_poll_ts = now
+
+    -- Flush any async disconnect triggered earlier during send() outside poll()
+    if self.pending_disconnect_reason then
+        local r = self.pending_disconnect_reason
+        self.pending_disconnect_reason = nil
+        events[#events + 1] = { type = "server_disconnected", reason = r }
+        return events
+    end
 
     -- 0a. Async DNS completion
     if self.state == "resolving" then
@@ -305,8 +370,11 @@ function net_online:poll()
                 self.state = "connected"
                 self.recv_buf = ""
                 self.send_queue = {}
+                self.voice_queue = {}
+                self.active_chunk = nil
                 self.send_offset = 1
                 self.last_ping_ts = now
+                self.last_recv_ts = now
                 self.last_error = nil
                 self:log("Connected to Online Relay Server %s:%d (ip=%s)",
                     tostring(self.host), tonumber(self.port) or 0, tostring(self.connect_target_ip))
@@ -338,51 +406,84 @@ function net_online:poll()
     -- 1. Flush outgoing TCP queue
     self:flush_send()
     if not self.sock or self.state ~= "connected" then
-        events[#events + 1] = { type = "server_disconnected", reason = self.last_error or "send_failed" }
+        local r = self.pending_disconnect_reason or self.last_error or "send_failed"
+        self.pending_disconnect_reason = nil
+        events[#events + 1] = { type = "server_disconnected", reason = r }
         return events
     end
 
-    -- 2. Non-blocking TCP receive (drain large RECONNECT_STATE bursts smoothly)
+    -- 2. Non-blocking TCP receive (O(N) chunked concat for large RECONNECT_STATE bursts)
+    local chunks = nil
+    local closed_during_read = false
     for _ = 1, 64 do
         if not self.sock then break end
         local data, err, partial = self.sock:receive(16384)
         local chunk = data or partial
         if chunk and #chunk > 0 then
-            self.recv_buf = self.recv_buf .. chunk
+            self.last_recv_ts = now
+            if not chunks then
+                chunks = (#self.recv_buf > 0) and { self.recv_buf, chunk } or { chunk }
+            else
+                chunks[#chunks + 1] = chunk
+            end
         end
         if err == "closed" then
             self:log("Online server connection closed")
             self:handle_disconnect("closed")
-            events[#events + 1] = { type = "server_disconnected", reason = "closed" }
+            closed_during_read = true
             break
         elseif err == "timeout" or not data then
             break
         end
     end
+    if chunks then
+        self.recv_buf = (#chunks == 1) and chunks[1] or table.concat(chunks)
+    end
 
-    -- 3. Newline-delimited JSON framing
-    while true do
-        local nl = self.recv_buf:find("\n", 1, true)
-        if not nl then break end
-        local line = self.recv_buf:sub(1, nl - 1)
-        self.recv_buf = self.recv_buf:sub(nl + 1)
-        if #line > 0 then
-            local msg, derr = proto.decode(line)
-            if msg then
-                if msg.t == "PING" then
-                    self:send({ t = "PONG", ts = msg.ts })
-                elseif msg.t == "PONG" and type(msg.ts) == "number" then
-                    self.rtt_ms = math.floor((socket.gettime() - msg.ts) * 1000 + 0.5)
+    -- 3. Newline-delimited JSON framing (cursor-based O(N))
+    if #self.recv_buf > 0 then
+        local pos = 1
+        while true do
+            local nl = self.recv_buf:find("\n", pos, true)
+            if not nl then break end
+            local line = self.recv_buf:sub(pos, nl - 1)
+            pos = nl + 1
+            if #line > 0 then
+                local msg, derr = proto.decode(line)
+                if msg then
+                    if msg.t == "PING" then
+                        self:send({ t = "PONG", ts = msg.ts })
+                    elseif msg.t == "PONG" and type(msg.ts) == "number" then
+                        self.rtt_ms = math.floor((socket.gettime() - msg.ts) * 1000 + 0.5)
+                    else
+                        events[#events + 1] = { type = "msg", msg = msg }
+                    end
                 else
-                    events[#events + 1] = { type = "msg", msg = msg }
+                    self:log("Malformed server msg: %s", tostring(derr))
                 end
-            else
-                self:log("Malformed server msg: %s", tostring(derr))
             end
+        end
+        if pos > 1 then
+            self.recv_buf = self.recv_buf:sub(pos)
         end
     end
 
-    -- 4. Periodic RTT & keepalive ping every 1.5s
+    if closed_during_read then
+        self.pending_disconnect_reason = nil
+        events[#events + 1] = { type = "server_disconnected", reason = "closed" }
+        return events
+    end
+
+    -- 4. 12s dead-link watchdog
+    if self.sock and self.state == "connected" and self.last_recv_ts > 0 and (now - self.last_recv_ts) >= WATCHDOG_SEC then
+        self:log("Dead-link watchdog timeout (%.1fs without inbound bytes); closing server socket", now - self.last_recv_ts)
+        self:handle_disconnect("watchdog_timeout")
+        self.pending_disconnect_reason = nil
+        events[#events + 1] = { type = "server_disconnected", reason = "watchdog_timeout" }
+        return events
+    end
+
+    -- 5. Periodic RTT & keepalive ping every 1.5s
     if self.sock and self.state == "connected" and now - self.last_ping_ts >= 1.5 then
         self.last_ping_ts = now
         self:send({ t = "PING", ts = now })

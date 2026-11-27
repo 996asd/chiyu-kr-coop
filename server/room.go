@@ -288,8 +288,46 @@ func (h *Hub) HandleMessage(c *Client, msg *IncomingMsg) {
 		h.onVoiceLocked(c, msg)
 	case "DESYNC_DIAG":
 		h.onDesyncDiagLocked(c, msg)
+	case "RETURN_LOBBY":
+		h.onReturnLobbyLocked(c, msg)
 	default:
 		c.Send(map[string]any{"t": "ERROR", "msg": "Unknown message type: " + msg.Type})
+	}
+}
+
+func (h *Hub) onReturnLobbyLocked(c *Client, msg *IncomingMsg) {
+	if c.roomCode == "" || c.pid < 1 || c.pid > 2 {
+		return
+	}
+	r, ok := h.rooms[c.roomCode]
+	if !ok {
+		return
+	}
+	r.Status = "lobby"
+	r.MatchCfgRaw = nil
+	r.Turns = nil
+	r.HighestCompleteTurn = 0
+	r.Paused = false
+	r.GameSpeed = 1
+	r.UpdatedAt = time.Now()
+	for pid := 1; pid <= 2; pid++ {
+		if r.Seats[pid] != nil {
+			r.Seats[pid].Loaded = false
+			r.Seats[pid].CatchingUp = false
+			r.Seats[pid].LastSentTurn = 0
+			r.Seats[pid].Ready = true
+		}
+	}
+	log.Printf("[ROOM %s] P%d triggered RETURN_LOBBY -> keeping TCP alive back in war table", r.Code, c.pid)
+	pkt := map[string]any{
+		"t":    "RETURN_LOBBY",
+		"pid":  c.pid,
+		"room": r.RoomJSON,
+	}
+	for pid := 1; pid <= 2; pid++ {
+		if r.Seats[pid] != nil && r.Seats[pid].Connected && r.Seats[pid].Client != nil {
+			r.Seats[pid].Client.Send(pkt)
+		}
 	}
 }
 

@@ -159,7 +159,7 @@ local function install_coop_menu_guards(hooks, game_gui)
         return function(self_gui, ...)
             if hooks:is_mp_active() then
                 if hooks.overlay then
-                    hooks.overlay:show_toast("联机模式无法单人重开，请双方点顶部「退出」返回大厅重开！", 3.5)
+                    hooks.overlay:show_toast("联机模式无法单人重开，请点顶部「战桌」不断线返回备战换关或重开！", 3.5)
                 end
                 return
             end
@@ -170,7 +170,9 @@ local function install_coop_menu_guards(hooks, game_gui)
     hooks.wrap_once(game_gui, "go_to_map", "coop_menu", function(orig_go_map)
         return function(self_gui, ...)
             if hooks:is_mp_active() and hooks.boot and hooks.boot.on_hud_action then
-                pcall(hooks.boot.on_hud_action, hooks.boot, "mp_leave")
+                local connected = hooks.boot.transport and hooks.boot.transport:is_connected()
+                pcall(hooks.boot.on_hud_action, hooks.boot, connected and "mp_return_lobby" or "mp_leave")
+                return
             end
             return orig_go_map(self_gui, ...)
         end

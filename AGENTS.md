@@ -56,8 +56,9 @@ kr-mp-mod/
 │       ├── catalog.lua         # FL 8.2.0 完整中文目录（201 关 + 105 英雄 + 59 座防御塔）
 │       ├── fonts.lua           # 复用内置 HarmonyOS_Sans_SC.ttf 的字号缓存器
 │       ├── ui_assets.lua       # 皇家战桌铁皮羊皮纸/木纹/蜡封/缩略图/声波等复用 UI 组件库
-│       ├── lobby_ui.lua        # 联机大厅核心状态机、偏好与重连会话持久化、局域网/公网房间通信与消息分发
-│       ├── lobby_input.lua     # 大厅键盘/鼠标/剪贴板输入与表驱动按钮分发（BTN_HANDLERS）
+│       ├── lobby_ui.lua        # 联机大厅核心状态机、局域网/樱花/公网房间通信、热续传与不断线返回战桌
+│       ├── lobby_prefs.lua     # 偏好与上次房间配置持久化、直连/公网重连会话、樱花电信/移动线路切换与剪贴板工具
+│       ├── lobby_input.lua     # 大厅键盘/鼠标输入与表驱动按钮分发（BTN_HANDLERS）
 │       ├── lobby_draw.lua      # 皇家战桌首页与备战房间主渲染器
 │       ├── lobby_draw_modals.lua # 新手教程 / 201 关 / 105 英雄 / 59 选 12 塔 / 语音调音弹窗渲染器
 │       ├── autotest.lua        # M1/M2 多进程自动化联机回归测试驱动（与正式 UI 完全解耦）

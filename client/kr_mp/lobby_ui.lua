@@ -8,12 +8,14 @@ local proto = require("kr_mp.proto")
 local fonts = require("kr_mp.fonts")
 local catalog = require("kr_mp.catalog")
 local updater = require("kr_mp.updater")
+local lobby_prefs = require("kr_mp.lobby_prefs")
 local lobby_input = require("kr_mp.lobby_input")
 local lobby_draw = require("kr_mp.lobby_draw")
 local autotest = require("kr_mp.autotest")
 
 local DELAY_LABELS = {
     [2] = "缓冲:局域网100ms",
+    [3] = "缓冲:低抖150ms",
     [4] = "缓冲:樱花200ms",
     [6] = "缓冲:抗抖300ms",
 }
@@ -22,6 +24,7 @@ local function normalize_delay_turns(v)
     local n = tonumber(v) or proto.INPUT_DELAY_TURNS
     if n >= 6 then return 6 end
     if n >= 4 then return 4 end
+    if n >= 3 then return 3 end
     return 2
 end
 
@@ -75,12 +78,13 @@ local lobby = {
     -- Input fields & focus
     focused_field = nil, -- nil | "ip" | "server" | "code" | "pw"
     ip_input = "127.0.0.1",
+    recent_addrs = {},
     server_input = "127.0.0.1:17780",
     code_input = "",
     pw_input = "",
     room_public = true,
 
-    -- Online server connection & room state
+    -- Online server & SakuraFrp direct reconnect state
     server_connected = false,
     server_ver = nil,
     server_voice_ok = true,
@@ -90,6 +94,9 @@ local lobby = {
     saved_session = nil,
     pending_online_action = nil,
     pending_lan_join = nil,
+    last_direct_host = nil,
+    last_direct_port = nil,
+    direct_auto_retry = nil,
 
     -- Responsive UI transform cache for exact mouse hit-testing
     _ui_scale = 1,
@@ -124,153 +131,16 @@ local lobby = {
     font_tiny = nil,
 }
 
--- === Preferences, Clipboard & Reconnect Session Persistence ===
+-- === Preferences, Clipboard & Reconnect Session Persistence (delegated to lobby_prefs.lua) ===
 
-local function get_prefs_path()
-    return proto.path_join(proto.get_writable_dir(), "kr_mp_prefs.json")
-end
-
-function lobby:load_prefs()
-    if autotest:is_active() or os.getenv("KR_MP_AUTO_COOP") or os.getenv("KR_MP_AUTO_M2") then return end
-    local f = io.open(get_prefs_path(), "r")
-    if not f then return end
-    local raw = f:read("*a")
-    f:close()
-    local obj = proto.decode(raw)
-    if type(obj) ~= "table" then return end
-    if type(obj.ip_input) == "string" and #obj.ip_input > 0 then
-        self.ip_input = obj.ip_input:sub(1, 80)
-    end
-    if type(obj.server_input) == "string" and #obj.server_input > 0 and not os.getenv("KR_MP_SERVER") then
-        self.server_input = obj.server_input:sub(1, 80)
-    end
-    if obj.input_delay_turns ~= nil then
-        self.room.input_delay_turns = normalize_delay_turns(obj.input_delay_turns)
-    end
-    if obj.show_tower_marks ~= nil and self.coop then
-        self.coop.show_tower_marks = (obj.show_tower_marks ~= false)
-    end
-    if self.voice then
-        if type(obj.voice_mode) == "string" then self.voice:set_mode(obj.voice_mode) end
-        if tonumber(obj.voice_mic_gain) then self.voice:set_mic_gain(tonumber(obj.voice_mic_gain)) end
-        if tonumber(obj.voice_peer_volume) then self.voice:set_peer_volume(tonumber(obj.voice_peer_volume)) end
-        if obj.voice_peer_muted ~= nil then self.voice.peer_muted = (obj.voice_peer_muted == true) end
-        if type(obj.voice_indicator_style) == "string" then self.voice:set_indicator_style(obj.voice_indicator_style) end
-    end
-    if obj.seen_guide ~= nil then
-        self.seen_guide = (obj.seen_guide == true)
-    end
-end
-
-function lobby:save_prefs()
-    if autotest:is_active() or os.getenv("KR_MP_AUTO_COOP") or os.getenv("KR_MP_AUTO_M2") then return end
-    local prefs = {
-        ip_input = self.ip_input,
-        server_input = self.server_input,
-        input_delay_turns = normalize_delay_turns(self.room and self.room.input_delay_turns),
-        show_tower_marks = (self.coop == nil) or (self.coop.show_tower_marks ~= false),
-        voice_mode = self.voice and self.voice.mode or "ptt",
-        voice_mic_gain = self.voice and self.voice.mic_gain or 1.0,
-        voice_peer_volume = self.voice and self.voice.peer_volume or 1.0,
-        voice_peer_muted = self.voice and (self.voice.peer_muted == true) or false,
-        voice_indicator_style = self.voice and self.voice.indicator_style or "compact",
-        seen_guide = (self.seen_guide == true),
-    }
-    local f = io.open(get_prefs_path(), "w")
-    if f then
-        f:write(proto.encode(prefs))
-        f:flush()
-        f:close()
-    end
-end
-
-function lobby:paste_into_field(field_name)
-    if not love or not love.system or not love.system.getClipboardText then
-        self.overlay:show_toast("当前环境不支持读取剪贴板，请手动输入。", 2.5)
-        return false
-    end
-    local clip = love.system.getClipboardText()
-    if type(clip) ~= "string" or #clip == 0 then
-        self.overlay:show_toast("剪贴板为空！请先复制樱花映射或服务器地址。", 2.5)
-        return false
-    end
-    if field_name == "ip" then
-        local clean = proto.sanitize_addr(clip):sub(1, 80)
-        if #clean > 0 then
-            self.ip_input = clean
-            self:save_prefs()
-            self.overlay:show_toast("已粘贴直连/映射地址：" .. clean, 3.0)
-            return true
-        end
-    elseif field_name == "server" then
-        local clean = proto.sanitize_addr(clip):sub(1, 80)
-        if #clean > 0 then
-            self.server_input = clean
-            self:save_prefs()
-            self.overlay:show_toast("已粘贴服务器/映射地址：" .. clean, 3.0)
-            return true
-        end
-    elseif field_name == "code" then
-        local clean = clip:upper():gsub("[^%dA-Z]", ""):sub(1, 6)
-        if #clean > 0 then self.code_input = clean; return true end
-    elseif field_name == "pw" then
-        local clean = clip:gsub("[^%w%-%_@#]", ""):sub(1, 16)
-        if #clean > 0 then self.pw_input = clean; return true end
-    end
-    self.overlay:show_toast("剪贴板里未识别到有效地址，请重新复制。", 2.8)
-    return false
-end
-
-local function get_session_path()
-    local env_p = os.getenv("KR_MP_SESSION_FILE")
-    if env_p and env_p ~= "" then return env_p end
-    local log_file = os.getenv("KR_MP_LOG_FILE")
-    if log_file then
-        local log_dir = log_file:match("^(.*)[/\\][^/\\]+$")
-        if log_dir then return proto.path_join(log_dir, "last_session.json") end
-    end
-    return proto.path_join(proto.get_writable_dir(), "kr_mp_last_session.json")
-end
-
-function lobby:load_saved_session()
-    local f = io.open(get_session_path(), "r")
-    if not f then
-        self.saved_session = nil
-        return nil
-    end
-    local raw = f:read("*a")
-    f:close()
-    local obj = proto.decode(raw)
-    if obj and obj.code and obj.token and obj.server and obj.pid then
-        self.saved_session = obj
-        return obj
-    end
-    self.saved_session = nil
-    return nil
-end
-
-function lobby:save_session(code, pid, token)
-    if not code or not token then return end
-    local sess = {
-        server = self.transport:get_server_addr() or self.server_input,
-        code = code,
-        pid = pid,
-        token = token,
-        level_idx = self.room and self.room.level_idx or 101,
-    }
-    self.saved_session = sess
-    local f = io.open(get_session_path(), "w")
-    if f then
-        f:write(proto.encode(sess))
-        f:flush()
-        f:close()
-    end
-end
-
-function lobby:clear_saved_session()
-    self.saved_session = nil
-    pcall(os.remove, get_session_path())
-end
+function lobby:load_prefs() return lobby_prefs.load_prefs(self) end
+function lobby:save_prefs() return lobby_prefs.save_prefs(self) end
+function lobby:paste_into_field(field_name) return lobby_prefs.paste_into_field(self, field_name) end
+function lobby:copy_to_clipboard(text, toast_msg) return lobby_prefs.copy_to_clipboard(self, text, toast_msg) end
+function lobby:load_saved_session() return lobby_prefs.load_saved_session(self) end
+function lobby:save_session(code, pid, token) return lobby_prefs.save_online_session(self, code, pid, token) end
+function lobby:save_direct_session(host, port, match_id, level_idx) return lobby_prefs.save_direct_session(self, host, port, match_id, level_idx) end
+function lobby:clear_saved_session() return lobby_prefs.clear_saved_session(self) end
 
 -- === Lifecycle & Navigation ===
 
@@ -394,15 +264,57 @@ function lobby:host_lan_room()
     self.peer_name = "等待 2P 加入..."
     self.view = "room"
     self.sub_modal = nil
-    self.overlay:show_toast("局域网房间已创建（端口 " .. tostring(res) .. "），等待 2P 加入...", 2.0)
+    self.direct_auto_retry = nil
+    if self.transport:is_port_drifted() then
+        local req = self.transport:get_requested_port()
+        self.overlay:show_toast(string.format(
+            "警告：端口 %d 被占用，已自动改用端口 %s！樱花隧道指向 %d 将无法连入，请关闭占用程序或改隧道端口！",
+            req, tostring(res), req), 10.0)
+    else
+        self.overlay:show_toast("樱花/局域网战桌已创建（TCP " .. tostring(res) .. " · 内置热续传），等待 2P 加入...", 2.5)
+    end
     return true
 end
 
 function lobby:on_lan_connected(target_ip, target_port)
     local info = self.pending_lan_join
     self.pending_lan_join = nil
-    target_ip = target_ip or (info and info.ip) or "127.0.0.1"
-    target_port = tonumber(target_port) or (info and info.port) or proto.DEFAULT_TCP_PORT
+    target_ip = target_ip or (info and info.ip) or self.last_direct_host or "127.0.0.1"
+    target_port = tonumber(target_port) or (info and info.port) or self.last_direct_port or proto.DEFAULT_TCP_PORT
+    self.last_direct_host = target_ip
+    self.last_direct_port = target_port
+
+    -- Tier 1: Mid-match 0.2s Zero-Reload Hot Resume
+    if self.coop and self.coop:is_active() and self.lockstep and self.lockstep:is_active()
+        and self.lockstep.phase == "WAIT_RECONNECT" then
+        self.boot:log("[LOBBY] Direct Hot-Resume TCP reconnected -> sending HOT_RESUME_REQ")
+        self.transport:send(self.lockstep:build_hot_resume_req())
+        return
+    end
+
+    -- Tier 2: Fresh Launch Cold Reconnect to Direct Host
+    if info and info.cold_reconnect then
+        local sess = info.cold_reconnect
+        self.role = "client"
+        self.local_pid = 2
+        self.online_room_code = nil
+        self.online_token = nil
+        self.peer_connected = true
+        self.peer_name = "房主 (" .. tostring(target_ip) .. ")"
+        self.boot:log("[LOBBY] Direct Cold-Reconnect TCP connected -> sending COLD_RECONNECT match_id=%s", tostring(sess.match_id))
+        self.transport:send({
+            t = "COLD_RECONNECT",
+            match_id = sess.match_id,
+            pid = 2,
+            proto = proto.PROTOCOL_VER,
+            mod_ver = proto.MOD_VERSION,
+            fl_ver = tostring(KR_FL_VERSION or "8.2.0"),
+            script_hash = proto.compute_script_hash(),
+            tick_len = TICK_LENGTH or (1 / 60),
+        })
+        self.overlay:show_toast("已重新接通房主，正在拉取历史战局高速追帧...", 4.0)
+        return
+    end
 
     self.role = "client"
     self.local_pid = 2
@@ -413,6 +325,8 @@ function lobby:on_lan_connected(target_ip, target_port)
     self.peer_name = "房主 (" .. tostring(target_ip) .. ")"
     self.view = "room"
     self.sub_modal = nil
+    lobby_prefs.record_recent_addr(self, tostring(target_ip) .. ":" .. tostring(target_port))
+    self:save_prefs()
 
     self.transport:send({
         t = "HELLO",
@@ -423,7 +337,28 @@ function lobby:on_lan_connected(target_ip, target_port)
         tick_len = TICK_LENGTH or (1 / 60),
         name = "Player 2",
     })
-    self.overlay:show_toast("已连接到局域网房主 " .. tostring(target_ip) .. ":" .. tostring(target_port), 2.0)
+    self.overlay:show_toast("已连接到房主 " .. tostring(target_ip) .. ":" .. tostring(target_port), 2.0)
+end
+
+function lobby:reconnect_direct_session(sess)
+    sess = sess or self.saved_session or self:load_saved_session()
+    if not sess or sess.mode ~= "direct" or not sess.host or not sess.match_id then
+        self.overlay:show_toast("未找到可重连的樱花/局域网直连记录！", 3)
+        return false
+    end
+    self.pending_lan_join = { ip = sess.host, port = tonumber(sess.port) or proto.DEFAULT_TCP_PORT, cold_reconnect = sess }
+    local ok, st = self.transport:join_lan(sess.host, sess.port, false)
+    if not ok then
+        self.pending_lan_join = nil
+        self.overlay:show_toast("重连房主失败：" .. tostring(st), 4.0)
+        return false
+    end
+    if st == "connected" then
+        self:on_lan_connected(sess.host, sess.port)
+    else
+        self.overlay:show_toast("正在重连房主 " .. tostring(sess.host) .. ":" .. tostring(sess.port) .. "...", 3.0)
+    end
+    return true
 end
 
 function lobby:join_lan_room(ip, port)
@@ -612,6 +547,7 @@ function lobby:reconnect_online_session(sess)
 end
 
 function lobby:leave_room()
+    self.direct_auto_retry = nil
     if self.transport:is_online() and self.transport:is_connected() then
         self.transport:send({ t = "LEAVE_ROOM" })
     end
@@ -631,13 +567,56 @@ function lobby:leave_room()
     if self.net_tab == "lan" then
         self.transport:close()
         if self.open then self.transport:start_lan_scan() end
-        self.overlay:show_toast("已退出局域网房间。", 1.8)
+        self.overlay:show_toast("已退出樱花/局域网房间。", 1.8)
     else
         if self.server_connected and self.transport:is_connected() then
             self:refresh_online_rooms()
         end
         self.overlay:show_toast("已退出公网房间。", 1.8)
     end
+end
+
+function lobby:return_to_lobby()
+    if not self.transport or not self.transport:is_connected() then
+        self:leave_room()
+        self.open = true
+        return false
+    end
+    self.transport:send({ t = "RETURN_LOBBY", pid = self.local_pid })
+    if not self.transport:is_online() then
+        self:on_return_lobby(self.local_pid)
+    end
+    return true
+end
+
+function lobby:on_return_lobby(by_pid, room_data)
+    self.direct_auto_retry = nil
+    if self.overlay then self.overlay.voice_panel_open = false end
+    if self.coop and self.coop:is_active() then
+        self.coop:leave_match()
+    end
+    if not self.transport:is_online() then
+        self:clear_saved_session()
+    end
+    if room_data then
+        self.room = room_data
+        ensure_room_defaults(self.room)
+    end
+    if main and main.handler and main.handler.active_item == game then
+        main.handler.next_item_name = "slots"
+        main.handler.next_item_args = {}
+    end
+    self.peer_connected = true
+    self.local_ready = true
+    self.peer_ready = true
+    self.view = "room"
+    self.sub_modal = nil
+    self.open = true
+    if self.role == "host" and not self.transport:is_online() then
+        self:broadcast_room_state()
+    end
+    self.boot:log("[LOBBY] Returned to War Table without disconnecting (by P%d)", tonumber(by_pid) or 0)
+    self.overlay:show_toast(string.format("%dP 返回战桌（连接保持不断），可直接换关或再次出征！", tonumber(by_pid) or 0), 3.0)
 end
 
 function lobby:host_start_match()
@@ -652,6 +631,7 @@ function lobby:host_start_match()
     end
 
     local seed = (os.time() % 900000) + 100000
+    local match_id = string.format("%06d-%06d", os.time() % 1000000, math.random(100000, 999999))
     local slot_snap = self.coop:build_host_slot_snapshot(self.room.heroes, self.room.towers)
     local delay_turns = normalize_delay_turns(self.room.input_delay_turns)
     local measured_rtt = (self.transport and self.transport:get_rtt_ms()) or 0
@@ -666,7 +646,9 @@ function lobby:host_start_match()
             self.overlay:show_toast(string.format("检测到跨网延迟 (%dms)，已自动启用【樱花200ms】防卡顿缓冲！", measured_rtt), 2.8)
         end
     end
+    self:save_prefs()
     local cfg = {
+        match_id = match_id,
         level_idx = self.room.level_idx,
         level_mode = self.room.level_mode or 1,
         level_difficulty = self.room.level_difficulty or 2,
@@ -796,21 +778,76 @@ end
 
 function MSG_HANDLERS.RECONNECT_STATE(self, msg)
     if not msg.cfg then return end
-    self.online_room_code = msg.code
-    self.online_token = msg.token
     self.local_pid = tonumber(msg.pid) or self.local_pid
     self.role = (self.local_pid == 1) and "host" or "client"
     self.peer_connected = true
-    self:save_session(msg.code, self.local_pid, msg.token)
-    self.boot:log("[LOBBY] Received RECONNECT_STATE room=%s pid=%d target_turn=%s",
-        tostring(msg.code), self.local_pid, tostring(msg.target_turn))
+    self.direct_auto_retry = nil
+    if msg.direct then
+        if self.last_direct_host and msg.match_id then
+            self:save_direct_session(self.last_direct_host, self.last_direct_port or proto.DEFAULT_TCP_PORT, msg.match_id, msg.cfg.level_idx)
+        end
+        self.boot:log("[LOBBY] Received direct RECONNECT_STATE match_id=%s pid=%d target_turn=%s",
+            tostring(msg.match_id), self.local_pid, tostring(msg.target_turn))
+    else
+        self.online_room_code = msg.code
+        self.online_token = msg.token
+        self:save_session(msg.code, self.local_pid, msg.token)
+        self.boot:log("[LOBBY] Received RECONNECT_STATE room=%s pid=%d target_turn=%s",
+            tostring(msg.code), self.local_pid, tostring(msg.target_turn))
+    end
     self.open = false
     self.sub_modal = nil
     self.coop:prepare_match(self.local_pid, msg.cfg, msg)
 end
 
+function MSG_HANDLERS.HOT_RESUME_REQ(self, msg)
+    if self.role ~= "host" or self.transport:is_online() then return end
+    if self.lockstep and self.lockstep:handle_hot_resume_req(msg) then
+        self.peer_connected = true
+        self.peer_ready = true
+        if autotest.on_hot_resumed then autotest:on_hot_resumed() end
+    else
+        self.transport:send({ t = "ERROR", msg = "房主当前对局已结束或局号不匹配，无法热续传。" })
+        self.transport:drop_peer_socket("hot_resume_mismatch", true)
+    end
+end
+
+function MSG_HANDLERS.HOT_RESUME_OK(self, msg)
+    if self.role ~= "client" or self.transport:is_online() then return end
+    if self.lockstep and self.lockstep:handle_hot_resume_ok(msg) then
+        self.peer_connected = true
+        self.direct_auto_retry = nil
+        if autotest.on_hot_resumed then autotest:on_hot_resumed() end
+    end
+end
+
+function MSG_HANDLERS.COLD_RECONNECT(self, msg)
+    if self.role ~= "host" or self.transport:is_online() then return end
+    local my_hash = proto.compute_script_hash()
+    if msg.script_hash and msg.script_hash ~= my_hash then
+        self.transport:send({ t = "ERROR", msg = "重连失败：核心脚本哈希不一致！" })
+        self.transport:drop_peer_socket("cold_reconnect_hash_mismatch", true)
+        return
+    end
+    if self.lockstep and self.lockstep:handle_cold_reconnect_req(msg) then
+        self.peer_connected = true
+    else
+        self.transport:send({ t = "ERROR", msg = "直连追帧重连失败：房主对局已结束或局号不匹配。" })
+        self.transport:drop_peer_socket("cold_reconnect_reject", true)
+    end
+end
+
+function MSG_HANDLERS.RETURN_LOBBY(self, msg)
+    self:on_return_lobby(msg.pid, msg.room)
+end
+
 function MSG_HANDLERS.HELLO(self, msg)
     if self.role ~= "host" or self.transport:is_online() then return end
+    if self.coop and self.coop:is_active() then
+        self.transport:send({ t = "ERROR", msg = "房主正在对局等待原队友重连，请稍候再试！" })
+        self.transport:drop_peer_socket("busy_in_match", true)
+        return
+    end
     local my_fl = tostring(KR_FL_VERSION or "8.2.0")
     local my_hash = proto.compute_script_hash()
     if msg.proto ~= proto.PROTOCOL_VER or msg.fl_ver ~= my_fl then
@@ -872,10 +909,12 @@ end
 
 function MSG_HANDLERS.START_MATCH(self, msg)
     if not msg.cfg then return end
-    self.boot:log("[LOBBY] Received START_MATCH (pid=%d, level=%d, seed=%d)",
-        self.local_pid, msg.cfg.level_idx or 0, msg.cfg.seed or 0)
+    self.boot:log("[LOBBY] Received START_MATCH (pid=%d, level=%d, seed=%d, match_id=%s)",
+        self.local_pid, msg.cfg.level_idx or 0, msg.cfg.seed or 0, tostring(msg.cfg.match_id))
     if msg.code and self.online_token then
         self:save_session(msg.code, self.local_pid, self.online_token)
+    elseif not self.transport:is_online() and self.local_pid == 2 and self.last_direct_host and msg.cfg.match_id then
+        self:save_direct_session(self.last_direct_host, self.last_direct_port or proto.DEFAULT_TCP_PORT, msg.cfg.match_id, msg.cfg.level_idx)
     end
     self.open = false
     self.sub_modal = nil
@@ -890,7 +929,8 @@ end
 function lobby:on_message(msg)
     if not msg or not msg.t then return end
     if self.lockstep and self.lockstep:on_message(msg) then
-        if msg.t == "PEER_RECONNECTED" then
+        if msg.t == "PEER_RECONNECTED" or (msg.t == "RECONNECT_DONE" and self.local_pid == 1 and not self.transport:is_online()) then
+            self.peer_connected = true
             autotest:on_peer_reconnected()
         end
         return
@@ -901,9 +941,33 @@ end
 
 function lobby:update(dt)
     updater:update(dt)
-    if self.transport and self.transport.lan_backend then
-        self.transport.lan_backend.accept_enabled = not (self.coop and self.coop:is_active())
+    local now = (love and love.timer and love.timer.getTime()) or os.clock()
+    if self.lockstep and self.lockstep.update_timers then
+        self.lockstep:update_timers(now)
     end
+    if self.transport and self.transport.lan_backend then
+        local in_match = (self.coop and self.coop:is_active()) == true
+        local waiting_rc = (self.lockstep ~= nil and self.lockstep.phase == "WAIT_RECONNECT")
+        self.transport.lan_backend.accept_enabled = (not in_match) or waiting_rc
+    end
+
+    -- Direct / SakuraFrp 2P silent background auto-retry every 2s during WAIT_RECONNECT
+    if self.direct_auto_retry and self.lockstep and self.lockstep:is_active()
+        and self.lockstep.phase == "WAIT_RECONNECT" and not self.transport:is_online() then
+        if not self.transport:is_connected() and not self.transport:is_connecting() and now >= self.direct_auto_retry.next_try_ts then
+            self.direct_auto_retry.attempt = self.direct_auto_retry.attempt + 1
+            self.direct_auto_retry.next_try_ts = now + 2.0
+            self.boot:log("[LOBBY] Direct Hot-Resume auto-retry #%d -> %s:%d",
+                self.direct_auto_retry.attempt, tostring(self.direct_auto_retry.host), tonumber(self.direct_auto_retry.port) or 17777)
+            local ok, st = self.transport:join_lan(self.direct_auto_retry.host, self.direct_auto_retry.port, true)
+            if ok and st == "connected" then
+                self:on_lan_connected(self.direct_auto_retry.host, self.direct_auto_retry.port)
+            end
+        end
+    elseif self.direct_auto_retry and (not self.lockstep or self.lockstep.phase ~= "WAIT_RECONNECT") then
+        self.direct_auto_retry = nil
+    end
+
     local events = self.transport:poll()
     for i = 1, #events do
         local ev = events[i]
@@ -914,14 +978,30 @@ function lobby:update(dt)
             self:on_lan_connected(ev.ip, ev.port)
         elseif ev.type == "lan_connect_failed" then
             self.pending_lan_join = nil
-            self.overlay:show_toast("连接局域网房主失败：" .. tostring(ev.reason), 4)
+            if not ev.silent then
+                self.overlay:show_toast("连接房主失败：" .. tostring(ev.reason), 4)
+            end
             autotest:on_lan_connect_failed()
         elseif ev.type == "peer_disconnected" then
             self.peer_connected = false
             self.peer_ready = false
             self.peer_name = "已断开"
             if self.lockstep and self.lockstep:is_active() then
-                self.lockstep:on_peer_disconnected(ev.reason, false)
+                local ph = self.lockstep.phase
+                local can_hot = (ph == "RUNNING" or ph == "PAUSED" or ph == "WAIT_RECONNECT")
+                self.lockstep:on_peer_disconnected(ev.reason, can_hot, 180, true)
+                if can_hot and self.local_pid == 2 and self.last_direct_host then
+                    if self.direct_auto_retry then
+                        self.direct_auto_retry.next_try_ts = now + 2.0
+                    else
+                        self.direct_auto_retry = {
+                            host = self.last_direct_host,
+                            port = self.last_direct_port or proto.DEFAULT_TCP_PORT,
+                            next_try_ts = now + 1.0,
+                            attempt = 0,
+                        }
+                    end
+                end
             else
                 self.overlay:show_toast("队友已断开连接。", 3.5)
             end

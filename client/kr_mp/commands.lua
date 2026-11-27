@@ -360,6 +360,12 @@ function HANDLERS.SYNC_PAUSE(ctx)
     end
 end
 
+function HANDLERS.SYNC_DELAY(ctx, cmd)
+    if ctx.cmds.lockstep and ctx.cmds.lockstep:is_active() then
+        ctx.cmds.lockstep:on_sync_delay_exec(cmd.delay, ctx.pid)
+    end
+end
+
 function commands:execute(cmd, game_ref, boot_ref)
     local store = game_ref and game_ref.store
     if not store then return end
