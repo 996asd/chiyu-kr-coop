@@ -9,6 +9,8 @@ local ui = require("kr_mp.ui_assets")
 local M = {}
 
 local INPUT_BOX_IDS = {
+    sakura_ip_box = true,
+    lan_ip_box = true,
     ip_box = true,
     server_box = true,
     code_box = true,
@@ -17,7 +19,7 @@ local INPUT_BOX_IDS = {
 }
 
 local TAB_SFX_IDS = {
-    tab_lan = true, tab_online = true,
+    tab_sakura = true, tab_lan = true, tab_online = true,
     stage_pack = true, hero_pack = true, tower_pack = true,
     open_stages = true, open_hero1 = true, open_hero2 = true, open_towers = true,
     open_guide = true, guide_tab = true, open_sakura = true,
@@ -92,6 +94,11 @@ function BTN_HANDLERS.guide_next(lobby)
     lobby.guide_tab = math.min(4, (lobby.guide_tab or 1) + 1)
 end
 
+function BTN_HANDLERS.tab_sakura(lobby)
+    if lobby.overlay then lobby.overlay:clear_toast() end
+    lobby:switch_tab("sakura")
+end
+
 function BTN_HANDLERS.tab_lan(lobby)
     if lobby.overlay then lobby.overlay:clear_toast() end
     lobby:switch_tab("lan")
@@ -102,20 +109,39 @@ function BTN_HANDLERS.tab_online(lobby)
     lobby:switch_tab("online")
 end
 
--- LAN / SakuraFrp Home
+-- SakuraFrp & LAN Home
 function BTN_HANDLERS.host_lan(lobby) lobby:host_lan_room() end
 function BTN_HANDLERS.join_local(lobby) lobby:join_lan_room("127.0.0.1", proto.DEFAULT_TCP_PORT) end
-function BTN_HANDLERS.ip_box(lobby) lobby:set_focus("ip") end
-function BTN_HANDLERS.paste_ip(lobby) lobby:paste_into_field("ip") end
-function BTN_HANDLERS.join_ip(lobby)
-    lobby.ip_input = proto.sanitize_addr(lobby.ip_input):sub(1, 96)
-    lobby_prefs.record_recent_addr(lobby, lobby.ip_input)
+function BTN_HANDLERS.sakura_ip_box(lobby) lobby:set_focus("sakura_ip") end
+function BTN_HANDLERS.paste_sakura_ip(lobby) lobby:paste_into_field("sakura_ip") end
+function BTN_HANDLERS.join_sakura_ip(lobby)
+    local clean = proto.sanitize_addr(lobby.sakura_ip_input or ""):sub(1, 96)
+    lobby.sakura_ip_input = clean
+    lobby.ip_input = clean
+    if #clean == 0 then
+        lobby.overlay:show_toast("请先粘贴房主的樱花映射地址（如 frp-xxx.com:12345）！", 3.0)
+        return
+    end
+    lobby_prefs.record_recent_addr(lobby, clean)
     lobby:save_prefs()
-    lobby:join_lan_room(lobby.ip_input)
+    lobby:join_lan_room(clean)
 end
+function BTN_HANDLERS.lan_ip_box(lobby) lobby:set_focus("lan_ip") end
+function BTN_HANDLERS.paste_lan_ip(lobby) lobby:paste_into_field("lan_ip") end
+function BTN_HANDLERS.join_lan_ip(lobby)
+    local clean = proto.sanitize_addr(lobby.lan_ip_input or ""):sub(1, 80)
+    if #clean == 0 then clean = "127.0.0.1" end
+    lobby.lan_ip_input = clean
+    lobby:save_prefs()
+    lobby:join_lan_room(clean)
+end
+function BTN_HANDLERS.ip_box(lobby) lobby:set_focus("sakura_ip") end
+function BTN_HANDLERS.paste_ip(lobby) lobby:paste_into_field("sakura_ip") end
+function BTN_HANDLERS.join_ip(lobby) BTN_HANDLERS.join_sakura_ip(lobby) end
 function BTN_HANDLERS.sakura_carrier(lobby, btn)
-    local next_addr = lobby_prefs.switch_sakura_carrier(lobby.ip_input, btn.carrier)
+    local next_addr = lobby_prefs.switch_sakura_carrier(lobby.sakura_ip_input or "", btn.carrier)
     if next_addr then
+        lobby.sakura_ip_input = next_addr
         lobby.ip_input = next_addr
         lobby_prefs.record_recent_addr(lobby, next_addr)
         lobby:save_prefs()
@@ -126,7 +152,7 @@ function BTN_HANDLERS.sakura_carrier(lobby, btn)
 end
 function BTN_HANDLERS.sakura_probe(lobby)
     if lobby.sakura then
-        lobby.sakura:start_carrier_probe(lobby.ip_input)
+        lobby.sakura:start_carrier_probe(lobby.sakura_ip_input or "")
     end
 end
 function BTN_HANDLERS.toggle_privacy(lobby)
@@ -231,6 +257,7 @@ function BTN_HANDLERS.sakura_create_tunnel(lobby, btn)
 end
 function BTN_HANDLERS.use_recent_addr(lobby, btn)
     if type(btn.addr) == "string" and #btn.addr > 0 then
+        lobby.sakura_ip_input = btn.addr
         lobby.ip_input = btn.addr
         lobby_prefs.record_recent_addr(lobby, btn.addr)
         lobby:save_prefs()
@@ -584,9 +611,14 @@ function M.textinput(lobby, t)
     local clean_t = t:gsub("：", ":")
     for i = 1, #clean_t do
         local c = clean_t:sub(i, i)
-        if f == "ip" then
-            if c:match("^[%d%.:a-zA-Z%-|]$") and #lobby.ip_input < 96 then
-                lobby.ip_input = lobby.ip_input .. c
+        if f == "sakura_ip" or f == "ip" then
+            if c:match("^[%d%.:a-zA-Z%-|]$") and #(lobby.sakura_ip_input or "") < 96 then
+                lobby.sakura_ip_input = (lobby.sakura_ip_input or "") .. c
+                lobby.ip_input = lobby.sakura_ip_input
+            end
+        elseif f == "lan_ip" then
+            if c:match("^[%d%.:a-zA-Z%-]$") and #(lobby.lan_ip_input or "") < 80 then
+                lobby.lan_ip_input = (lobby.lan_ip_input or "") .. c
             end
         elseif f == "sakura_token" then
             if lobby.sakura and c:match("^[%w%-%_]$") and #(lobby.sakura.token or "") < 96 then
@@ -634,7 +666,11 @@ function M.keypressed(lobby, key)
             lobby:paste_into_field(f)
             return true
         elseif key == "backspace" then
-            if f == "ip" then lobby.ip_input = lobby.ip_input:sub(1, -2)
+            if f == "sakura_ip" or f == "ip" then
+                lobby.sakura_ip_input = (lobby.sakura_ip_input or ""):sub(1, -2)
+                lobby.ip_input = lobby.sakura_ip_input
+            elseif f == "lan_ip" then
+                lobby.lan_ip_input = (lobby.lan_ip_input or ""):sub(1, -2)
             elseif f == "sakura_token" and lobby.sakura then lobby.sakura.token = (lobby.sakura.token or ""):sub(1, -2)
             elseif f == "server" then lobby.server_input = lobby.server_input:sub(1, -2)
             elseif f == "code" then lobby.code_input = lobby.code_input:sub(1, -2)
@@ -643,10 +679,10 @@ function M.keypressed(lobby, key)
             return true
         elseif key == "return" or key == "kpenter" then
             lobby:set_focus(nil)
-            if f == "ip" then
-                lobby.ip_input = proto.sanitize_addr(lobby.ip_input):sub(1, 96)
-                lobby:save_prefs()
-                lobby:join_lan_room(lobby.ip_input)
+            if f == "sakura_ip" or f == "ip" then
+                BTN_HANDLERS.join_sakura_ip(lobby)
+            elseif f == "lan_ip" then
+                BTN_HANDLERS.join_lan_ip(lobby)
             elseif f == "sakura_token" and lobby.sakura then
                 lobby:save_prefs()
                 lobby.sakura:refresh_api()

@@ -67,9 +67,9 @@ local lobby = {
     privacy_mask = false,
 
     open = false,
-    net_tab = "lan", -- "lan" | "online"
-    view = "home",   -- "home" | "room"
-    sub_modal = nil, -- nil | "guide" | "stages" | "hero1" | "hero2" | "towers" | "voice"
+    net_tab = "sakura", -- "sakura" | "lan" | "online"
+    view = "home",      -- "home" | "room"
+    sub_modal = nil,    -- nil | "guide" | "sakura" | "stages" | "hero1" | "hero2" | "towers" | "voice"
     guide_tab = 1,
     seen_guide = false,
     stage_pack_idx = 1,
@@ -78,8 +78,10 @@ local lobby = {
     tower_pack_idx = 1,
 
     -- Input fields & focus
-    focused_field = nil, -- nil | "ip" | "server" | "code" | "pw"
-    ip_input = "127.0.0.1",
+    focused_field = nil, -- nil | "sakura_ip" | "lan_ip" | "server" | "code" | "pw" | "sakura_token"
+    sakura_ip_input = "",
+    lan_ip_input = "127.0.0.1",
+    ip_input = "",
     recent_addrs = {},
     server_input = "127.0.0.1:17780",
     code_input = "",
@@ -155,7 +157,10 @@ function lobby:init(boot, transport, lockstep, coop, overlay)
 
     local srv_env = os.getenv("KR_MP_SERVER")
     if srv_env and srv_env ~= "" then self.server_input = srv_env end
-    if os.getenv("KR_MP_DEFAULT_TAB") == "online" then self.net_tab = "online" end
+    local def_tab = os.getenv("KR_MP_DEFAULT_TAB")
+    if def_tab == "online" or def_tab == "lan" or def_tab == "sakura" then
+        self.net_tab = def_tab
+    end
 
     self.font_title = fonts.get(17)
     self.font = fonts.get(13)
@@ -168,7 +173,11 @@ function lobby:init(boot, transport, lockstep, coop, overlay)
 
     if os.getenv("KR_MP_OPEN_LOBBY") == "1" then
         self.open = true
-        if self.net_tab == "lan" then self.transport:start_lan_scan() end
+        if self.net_tab == "lan" then
+            self.transport:start_lan_scan()
+        elseif self.net_tab == "sakura" and self.sakura then
+            self.sakura:scan_local(true)
+        end
         if not updater.checked_once then updater:start_check(false) end
     end
 
@@ -211,11 +220,22 @@ function lobby:switch_tab(tab)
     self.sub_modal = nil
     self.pending_online_action = nil
     self.pending_lan_join = nil
+    local prev = self.net_tab
     self.net_tab = tab
-    if tab == "lan" then
-        self.transport:close()
-        self.server_connected = false
-        self.transport:switch_mode("lan")
+    if tab == "sakura" then
+        if prev == "online" then
+            self.transport:close()
+            self.server_connected = false
+            self.transport:switch_mode("lan")
+        end
+        self.transport:stop_lan_scan()
+        if self.sakura then self.sakura:scan_local(true) end
+    elseif tab == "lan" then
+        if prev == "online" then
+            self.transport:close()
+            self.server_connected = false
+            self.transport:switch_mode("lan")
+        end
         self.transport:start_lan_scan()
     else
         self.transport:stop_lan_scan()
@@ -372,9 +392,19 @@ function lobby:reconnect_direct_session(sess)
 end
 
 function lobby:join_lan_room(ip, port)
-    local raw_addr = ip or self.ip_input or "127.0.0.1"
-    local primary, fallback = proto.split_fallback_addr(raw_addr)
-    local target_ip = (primary ~= "") and primary or "127.0.0.1"
+    local raw_addr = ip
+    if not raw_addr or #tostring(raw_addr) == 0 then
+        raw_addr = (self.net_tab == "sakura") and self.sakura_ip_input or self.lan_ip_input
+    end
+    local primary, fallback = proto.split_fallback_addr(raw_addr or "")
+    if primary == "" then
+        if self.net_tab == "sakura" and not ip then
+            self.overlay:show_toast("请先粘贴房主的樱花映射地址（如 frp-xxx.com:12345）！", 3.0)
+            return false
+        end
+        primary = "127.0.0.1"
+    end
+    local target_ip = primary
     local target_port = tonumber(port) or tonumber(os.getenv("KR_MP_PORT")) or proto.DEFAULT_TCP_PORT
     local parsed_ip, parsed_port = target_ip:match("^([^:]+):(%d+)$")
     if parsed_ip and parsed_port then
@@ -581,10 +611,14 @@ function lobby:leave_room()
     self.view = "home"
     self.sub_modal = nil
 
-    if self.net_tab == "lan" then
+    if self.net_tab == "sakura" or self.net_tab == "lan" then
         self.transport:close()
-        if self.open then self.transport:start_lan_scan() end
-        self.overlay:show_toast("已退出樱花/局域网房间。", 1.8)
+        if self.open and self.net_tab == "lan" then
+            self.transport:start_lan_scan()
+        elseif self.open and self.net_tab == "sakura" and self.sakura then
+            self.sakura:scan_local(true)
+        end
+        self.overlay:show_toast(self.net_tab == "sakura" and "已退出樱花联机房间。" or "已退出局域网房间。", 1.8)
     else
         if self.server_connected and self.transport:is_connected() then
             self:refresh_online_rooms()

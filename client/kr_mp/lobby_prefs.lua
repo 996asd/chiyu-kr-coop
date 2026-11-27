@@ -74,16 +74,29 @@ function M.switch_sakura_carrier(addr, carrier)
     return fallback and (next_p .. "|" .. fallback) or next_p
 end
 
+local function is_private_lan_addr(addr)
+    local clean = proto.split_fallback_addr(addr or "")
+    local host = clean:match("^([^:]+)") or clean
+    if host == "" or host == "localhost" or host == "127.0.0.1" then return true end
+    if host:match("^192%.168%.") or host:match("^10%.") or host:match("^172%.1[6-9]%.")
+        or host:match("^172%.2%d%.") or host:match("^172%.3[01]%.") then
+        return true
+    end
+    return false
+end
+
+M.is_private_lan_addr = is_private_lan_addr
+
 function M.record_recent_addr(lobby, raw_addr)
-    local clean = proto.sanitize_addr(raw_addr or ""):sub(1, 80)
-    if clean == "" or clean == "127.0.0.1" or clean:match("^127%.0%.0%.1:") then
+    local clean = proto.sanitize_addr(raw_addr or ""):sub(1, 96)
+    if clean == "" or is_private_lan_addr(clean) then
         return
     end
     local list = lobby.recent_addrs or {}
     local next_list = { clean }
     for i = 1, #list do
         local item = list[i]
-        if type(item) == "string" and item ~= "" and item ~= clean and #next_list < 3 then
+        if type(item) == "string" and item ~= "" and item ~= clean and not is_private_lan_addr(item) and #next_list < 3 then
             next_list[#next_list + 1] = item
         end
     end
@@ -101,17 +114,27 @@ function M.load_prefs(lobby)
     local obj = proto.decode(raw)
     if type(obj) ~= "table" then return end
 
-    if type(obj.ip_input) == "string" and #obj.ip_input > 0 then
-        lobby.ip_input = obj.ip_input:sub(1, 80)
+    if type(obj.sakura_ip_input) == "string" then
+        lobby.sakura_ip_input = obj.sakura_ip_input:sub(1, 96)
+    elseif type(obj.ip_input) == "string" and #obj.ip_input > 0 and not is_private_lan_addr(obj.ip_input) then
+        -- Seamless migration from pre-split v2.3.0 prefs
+        lobby.sakura_ip_input = obj.ip_input:sub(1, 96)
     end
+    if type(obj.lan_ip_input) == "string" and #obj.lan_ip_input > 0 then
+        lobby.lan_ip_input = obj.lan_ip_input:sub(1, 80)
+    elseif type(obj.ip_input) == "string" and #obj.ip_input > 0 and is_private_lan_addr(obj.ip_input) then
+        lobby.lan_ip_input = obj.ip_input:sub(1, 80)
+    end
+    lobby.ip_input = lobby.sakura_ip_input
     if type(obj.server_input) == "string" and #obj.server_input > 0 and not os.getenv("KR_MP_SERVER") then
         lobby.server_input = obj.server_input:sub(1, 80)
     end
     if type(obj.recent_addrs) == "table" then
         local rec = {}
         for i = 1, math.min(#obj.recent_addrs, 3) do
-            if type(obj.recent_addrs[i]) == "string" and #obj.recent_addrs[i] > 0 then
-                rec[#rec + 1] = obj.recent_addrs[i]:sub(1, 80)
+            local item = obj.recent_addrs[i]
+            if type(item) == "string" and #item > 0 and not is_private_lan_addr(item) then
+                rec[#rec + 1] = item:sub(1, 96)
             end
         end
         lobby.recent_addrs = rec
@@ -183,7 +206,9 @@ function M.save_prefs(lobby)
     end
     local r = lobby.room or {}
     local prefs = {
-        ip_input = lobby.ip_input,
+        sakura_ip_input = lobby.sakura_ip_input or "",
+        lan_ip_input = lobby.lan_ip_input or "127.0.0.1",
+        ip_input = lobby.sakura_ip_input or lobby.lan_ip_input or "",
         server_input = lobby.server_input,
         recent_addrs = lobby.recent_addrs or {},
         input_delay_turns = lobby.normalize_delay_turns(r.input_delay_turns),
@@ -234,14 +259,23 @@ function M.paste_into_field(lobby, field_name)
         lobby.overlay:show_toast("剪贴板为空！请先复制樱花映射或服务器地址。", 2.5)
         return false
     end
-    if field_name == "ip" then
+    if field_name == "sakura_ip" or field_name == "ip" then
         local clean = proto.sanitize_addr(clip):sub(1, 96)
         if #clean > 0 then
+            lobby.sakura_ip_input = clean
             lobby.ip_input = clean
             M.record_recent_addr(lobby, clean)
             M.save_prefs(lobby)
             local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(clean) or clean
-            lobby.overlay:show_toast("已粘贴直连/映射地址：" .. shown, 3.0)
+            lobby.overlay:show_toast("已粘贴樱花联机地址：" .. shown, 3.0)
+            return true
+        end
+    elseif field_name == "lan_ip" then
+        local clean = proto.sanitize_addr(clip):sub(1, 80)
+        if #clean > 0 then
+            lobby.lan_ip_input = clean
+            M.save_prefs(lobby)
+            lobby.overlay:show_toast("已粘贴局域网主机 IP：" .. clean, 2.5)
             return true
         end
     elseif field_name == "server" then

@@ -990,6 +990,7 @@ function sakura:update(dt, lobby)
                 if res.ok then
                     self.probe_result = res
                     if res.best_addr and lobby then
+                        lobby.sakura_ip_input = res.best_addr
                         lobby.ip_input = res.best_addr
                         lobby_prefs.record_recent_addr(lobby, res.best_addr)
                         lobby:save_prefs()
