@@ -510,7 +510,7 @@ function BTN_HANDLERS.leave_room(lobby) lobby:leave_room() end
 function BTN_HANDLERS.start_match(lobby) lobby:host_start_match() end
 
 function BTN_HANDLERS.open_stages(lobby)
-    if lobby.role ~= "host" then return end
+    if lobby.role ~= "host" and lobby.role ~= "client" then return end
     if lobby.overlay then lobby.overlay:clear_toast() end
     lobby.sub_modal = "stages"
 end
@@ -529,14 +529,24 @@ function BTN_HANDLERS.open_towers(lobby)
     lobby.ensure_room_defaults(lobby.room)
     lobby.sub_modal = "towers"
 end
-local function send_guest_update(lobby)
+local function send_guest_update(lobby, extra)
+    if lobby.is_room_link_alive and not lobby:is_room_link_alive() then
+        if lobby.overlay then lobby.overlay:show_toast("与房间连接已断开，改动未能同步（请等待重连或重进房间）！", 3.5) end
+        return false
+    end
     lobby.ensure_room_defaults(lobby.room)
-    lobby.transport:send({
+    local pkt = {
         t = "SET_GUEST",
         hero_idx = lobby.room.heroes and lobby.room.heroes[2] or (catalog.DEFAULT_HERO_2 or 54),
         reinf = lobby.room.reinforcements and lobby.room.reinforcements[2] or loadout.DEFAULT_REINF,
         ready = lobby.local_ready,
-    })
+    }
+    if extra and extra.level_idx then pkt.level_idx = extra.level_idx end
+    local ok = lobby.transport:send(pkt)
+    if not ok and lobby.overlay then
+        lobby.overlay:show_toast("同步房间设置失败：网络连接已中断！", 3.5)
+    end
+    return ok == true
 end
 function BTN_HANDLERS.open_powers(lobby)
     if lobby.overlay then lobby.overlay:clear_toast() end
@@ -681,63 +691,18 @@ function BTN_HANDLERS.open_voice_mixer(lobby)
     end
 end
 
-function BTN_HANDLERS.voice_set_mode(lobby, btn)
-    if lobby.voice and btn.mode then
-        lobby.voice:set_mode(btn.mode)
-        lobby:save_prefs()
-    end
-end
-
-function BTN_HANDLERS.voice_mic_step(lobby, btn)
-    if lobby.voice and btn.delta then
-        lobby.voice:step_mic_gain(btn.delta)
-        lobby:save_prefs()
-    end
-end
-
-function BTN_HANDLERS.voice_mic_set(lobby, btn)
-    if lobby.voice and tonumber(btn.val) then
-        lobby.voice:set_mic_gain(tonumber(btn.val))
-        lobby:save_prefs()
-    end
-end
-
-function BTN_HANDLERS.voice_peer_step(lobby, btn)
-    if lobby.voice and btn.delta then
-        lobby.voice:step_peer_volume(btn.delta)
-        lobby:save_prefs()
-    end
-end
-
-function BTN_HANDLERS.voice_peer_set(lobby, btn)
-    if lobby.voice and tonumber(btn.val) then
-        lobby.voice:set_peer_volume(tonumber(btn.val))
-        lobby:save_prefs()
-    end
-end
-
-function BTN_HANDLERS.voice_peer_mute(lobby)
-    if lobby.voice then
-        lobby.voice:toggle_peer_mute()
-        lobby:save_prefs()
-    end
-end
-
+function BTN_HANDLERS.voice_set_mode(lobby, btn) if lobby.voice and btn.mode then lobby.voice:set_mode(btn.mode); lobby:save_prefs() end end
+function BTN_HANDLERS.voice_mic_step(lobby, btn) if lobby.voice and btn.delta then lobby.voice:step_mic_gain(btn.delta); lobby:save_prefs() end end
+function BTN_HANDLERS.voice_mic_set(lobby, btn) if lobby.voice and tonumber(btn.val) then lobby.voice:set_mic_gain(tonumber(btn.val)); lobby:save_prefs() end end
+function BTN_HANDLERS.voice_peer_step(lobby, btn) if lobby.voice and btn.delta then lobby.voice:step_peer_volume(btn.delta); lobby:save_prefs() end end
+function BTN_HANDLERS.voice_peer_set(lobby, btn) if lobby.voice and tonumber(btn.val) then lobby.voice:set_peer_volume(tonumber(btn.val)); lobby:save_prefs() end end
+function BTN_HANDLERS.voice_peer_mute(lobby) if lobby.voice then lobby.voice:toggle_peer_mute(); lobby:save_prefs() end end
 function BTN_HANDLERS.voice_self_test(lobby)
     if not lobby.voice then return end
     local testing = lobby.voice:toggle_self_test()
-    lobby.overlay:show_toast(
-        testing and "试麦已开启：现在说话可实时听见自己回放（请戴耳机，再点关闭）" or "已关闭本地试麦回放。",
-        2.4
-    )
+    lobby.overlay:show_toast(testing and "试麦已开启：现在说话可实时听见自己回放（请戴耳机，再点关闭）" or "已关闭本地试麦回放。", 2.4)
 end
-
-function BTN_HANDLERS.voice_style_set(lobby, btn)
-    if lobby.voice and btn.style_id then
-        lobby.voice:set_indicator_style(btn.style_id)
-        lobby:save_prefs()
-    end
-end
+function BTN_HANDLERS.voice_style_set(lobby, btn) if lobby.voice and btn.style_id then lobby.voice:set_indicator_style(btn.style_id); lobby:save_prefs() end end
 
 function BTN_HANDLERS.voice_aux(lobby)
     if not lobby.voice then return end
@@ -789,11 +754,28 @@ function BTN_HANDLERS.stage_page_next(lobby)
 end
 
 function BTN_HANDLERS.pick_stage(lobby, btn)
-    if btn.level_idx and lobby.role == "host" then
+    if not btn.level_idx then return end
+    if lobby.role == "host" then
         lobby.room.level_idx = btn.level_idx
         lobby.sub_modal = nil
         lobby:save_prefs()
-        lobby:broadcast_room_state()
+        if lobby:broadcast_room_state() ~= false then
+            lobby.overlay:show_toast("已切换关卡：" .. catalog.get_stage_label(btn.level_idx), 2.0)
+        end
+    elseif lobby.role == "client" then
+        if lobby.transport and lobby.transport:is_online() and lobby.server_guest_stage_ok ~= true then
+            lobby.overlay:show_toast(
+                "当前公网中继服为旧版 (v" .. tostring(lobby.server_ver or "旧") .. ")，暂不支持 2P 换关；请房主重启更新服务端或由房主切关！", 4.5)
+            return
+        end
+        local prev_lvl = lobby.room.level_idx
+        lobby.room.level_idx = btn.level_idx
+        lobby.sub_modal = nil
+        if send_guest_update(lobby, { level_idx = btn.level_idx }) then
+            lobby.overlay:show_toast("已切换关卡：" .. catalog.get_stage_label(btn.level_idx) .. "（已同步房主）", 2.2)
+        else
+            lobby.room.level_idx = prev_lvl
+        end
     end
 end
 

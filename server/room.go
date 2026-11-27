@@ -15,7 +15,10 @@ import (
 	"time"
 )
 
-const roomCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+const (
+	roomCodeAlphabet           = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	defaultLobbyReconnectGrace = 30 * time.Second
+)
 
 type Seat struct {
 	Pid          int
@@ -68,17 +71,18 @@ type Room struct {
 }
 
 type Hub struct {
-	mu             sync.Mutex
-	rooms          map[string]*Room
-	clients        map[*Client]bool
-	ipConns        map[string]int
-	nextClientID   int64
-	maxRooms       int
-	maxConns       int
-	maxPerIP       int
-	maxRoomsPerIP  int
-	reconnectGrace time.Duration
-	startedAt      time.Time
+	mu                  sync.Mutex
+	rooms               map[string]*Room
+	clients             map[*Client]bool
+	ipConns             map[string]int
+	nextClientID        int64
+	maxRooms            int
+	maxConns            int
+	maxPerIP            int
+	maxRoomsPerIP       int
+	reconnectGrace      time.Duration
+	lobbyReconnectGrace time.Duration
+	startedAt           time.Time
 }
 
 func NewHub(maxRooms int, reconnectGrace time.Duration) *Hub {
@@ -99,15 +103,16 @@ func NewHubWithLimits(maxRooms, maxConns, maxPerIP, maxRoomsPerIP int, reconnect
 		maxRoomsPerIP = 4
 	}
 	return &Hub{
-		rooms:          make(map[string]*Room),
-		clients:        make(map[*Client]bool),
-		ipConns:        make(map[string]int),
-		maxRooms:       maxRooms,
-		maxConns:       maxConns,
-		maxPerIP:       maxPerIP,
-		maxRoomsPerIP:  maxRoomsPerIP,
-		reconnectGrace: reconnectGrace,
-		startedAt:      time.Now(),
+		rooms:               make(map[string]*Room),
+		clients:             make(map[*Client]bool),
+		ipConns:             make(map[string]int),
+		maxRooms:            maxRooms,
+		maxConns:            maxConns,
+		maxPerIP:            maxPerIP,
+		maxRoomsPerIP:       maxRoomsPerIP,
+		reconnectGrace:      reconnectGrace,
+		lobbyReconnectGrace: defaultLobbyReconnectGrace,
+		startedAt:           time.Now(),
 	}
 }
 
@@ -233,9 +238,38 @@ func (h *Hub) cleanupExpiredRooms() {
 		p2Conn := r.Seats[2] != nil && r.Seats[2].Connected
 
 		if r.Status == "lobby" {
-			if !p1Conn && !p2Conn && now.Sub(r.UpdatedAt) > 10*time.Second {
+			lobbyGrace := h.lobbyReconnectGrace
+			if lobbyGrace <= 0 {
+				lobbyGrace = defaultLobbyReconnectGrace
+			}
+			if !p1Conn && !p2Conn && now.Sub(r.UpdatedAt) > lobbyGrace {
 				delete(h.rooms, code)
 				log.Printf("[HUB] Cleaned empty lobby room %s", code)
+				continue
+			}
+			if !p1Conn && r.Seats[1] != nil && !r.Seats[1].Disconnected.IsZero() && now.Sub(r.Seats[1].Disconnected) > lobbyGrace {
+				log.Printf("[HUB] Lobby room %s host reconnect grace expired; closing room", code)
+				if r.Seats[2] != nil && r.Seats[2].Connected && r.Seats[2].Client != nil {
+					r.Seats[2].Client.Send(map[string]any{
+						"t":      "ROOM_CLOSED",
+						"reason": "Host disconnected",
+					})
+					r.Seats[2].Client.roomCode = ""
+					r.Seats[2].Client.pid = 0
+				}
+				delete(h.rooms, code)
+				continue
+			}
+			if !p2Conn && r.Seats[2] != nil && !r.Seats[2].Disconnected.IsZero() && now.Sub(r.Seats[2].Disconnected) > lobbyGrace {
+				log.Printf("[HUB] Lobby room %s P2 reconnect grace expired; releasing P2 seat", code)
+				r.Seats[2] = nil
+				if r.Seats[1] != nil && r.Seats[1].Connected && r.Seats[1].Client != nil {
+					r.Seats[1].Client.Send(map[string]any{
+						"t":   "PEER_LEFT",
+						"pid": 2,
+					})
+					h.broadcastRoomStateLocked(r)
+				}
 			}
 			continue
 		}
@@ -387,14 +421,24 @@ func (h *Hub) onReturnLobbyLocked(c *Client, msg *IncomingMsg) {
 		}
 	}
 	log.Printf("[ROOM %s] P%d triggered RETURN_LOBBY -> keeping TCP alive back in war table", r.Code, c.pid)
-	pkt := map[string]any{
-		"t":    "RETURN_LOBBY",
-		"pid":  c.pid,
-		"room": r.RoomJSON,
-	}
+	p1Conn := r.Seats[1] != nil && r.Seats[1].Connected
+	p2Conn := r.Seats[2] != nil && r.Seats[2].Connected
+	p2Ready := p2Conn && r.Seats[2].Ready
 	for pid := 1; pid <= 2; pid++ {
 		if r.Seats[pid] != nil && r.Seats[pid].Connected && r.Seats[pid].Client != nil {
-			r.Seats[pid].Client.Send(pkt)
+			otherConn := p2Conn
+			otherReady := p2Ready
+			if pid == 2 {
+				otherConn = p1Conn
+				otherReady = p1Conn
+			}
+			r.Seats[pid].Client.Send(map[string]any{
+				"t":              "RETURN_LOBBY",
+				"pid":            c.pid,
+				"room":           r.RoomJSON,
+				"peer_connected": otherConn,
+				"peer_ready":     otherReady,
+			})
 		}
 	}
 }
@@ -466,12 +510,14 @@ func (h *Hub) onHelloLocked(c *Client, msg *IncomingMsg) {
 	}
 
 	c.Send(map[string]any{
-		"t":          "SERVER_HELLO",
-		"server_ver": ServerVersion,
-		"proto":      ProtocolVer,
-		"voice_ok":   true,
-		"client_id":  c.id,
-		"rooms":      h.buildRoomListLocked(),
+		"t":                  "SERVER_HELLO",
+		"server_ver":         ServerVersion,
+		"proto":              ProtocolVer,
+		"voice_ok":           true,
+		"guest_stage_ok":     true,
+		"lobby_reconnect_ok": true,
+		"client_id":          c.id,
+		"rooms":              h.buildRoomListLocked(),
 	})
 }
 
@@ -742,8 +788,9 @@ func (h *Hub) onJoinRoomLocked(c *Client, msg *IncomingMsg) {
 }
 
 func (h *Hub) broadcastRoomStateLocked(r *Room) {
-	peerConn := r.Seats[2] != nil && r.Seats[2].Connected
-	peerReady := r.Seats[2] != nil && r.Seats[2].Ready
+	p1Conn := r.Seats[1] != nil && r.Seats[1].Connected
+	p2Conn := r.Seats[2] != nil && r.Seats[2].Connected
+	p2Ready := p2Conn && r.Seats[2].Ready
 	hostName := "Player 1"
 	guestName := "Waiting for P2..."
 	if r.Seats[1] != nil {
@@ -752,18 +799,25 @@ func (h *Hub) broadcastRoomStateLocked(r *Room) {
 	if r.Seats[2] != nil && r.Seats[2].Connected {
 		guestName = r.Seats[2].Name
 	}
-	pkt := map[string]any{
-		"t":              "ROOM_STATE",
-		"code":           r.Code,
-		"room":           r.RoomJSON,
-		"peer_connected": peerConn,
-		"peer_ready":     peerReady,
-		"host_name":      hostName,
-		"guest_name":     guestName,
-	}
 	for pid := 1; pid <= 2; pid++ {
 		if r.Seats[pid] != nil && r.Seats[pid].Connected && r.Seats[pid].Client != nil {
-			r.Seats[pid].Client.Send(pkt)
+			otherConn := p2Conn
+			otherReady := p2Ready
+			if pid == 2 {
+				otherConn = p1Conn
+				otherReady = p1Conn
+			}
+			r.Seats[pid].Client.Send(map[string]any{
+				"t":              "ROOM_STATE",
+				"code":           r.Code,
+				"room":           r.RoomJSON,
+				"peer_connected": otherConn,
+				"peer_ready":     otherReady,
+				"host_connected": p1Conn,
+				"guest_connected": p2Conn,
+				"host_name":      hostName,
+				"guest_name":     guestName,
+			})
 		}
 	}
 }
@@ -792,8 +846,8 @@ func (h *Hub) onSetGuestLocked(c *Client, msg *IncomingMsg) {
 	if msg.Ready != nil {
 		r.Seats[2].Ready = *msg.Ready
 	}
-	if msg.HeroIdx != nil || msg.Reinf != "" {
-		// Patch heroes[1] (P2 hero) and/or reinforcements[1] (P2 reinforcement) in RoomJSON safely
+	if msg.HeroIdx != nil || msg.Reinf != "" || msg.LevelIdx != nil {
+		// Patch heroes[1] (P2 hero), reinforcements[1] (P2 reinforcement), and/or level_idx in RoomJSON safely
 		var roomMap map[string]any
 		if err := json.Unmarshal(r.RoomJSON, &roomMap); err == nil {
 			if msg.HeroIdx != nil {
@@ -822,6 +876,9 @@ func (h *Hub) onSetGuestLocked(c *Client, msg *IncomingMsg) {
 					}
 					roomMap["reinforcements"] = []string{r1, reinfVal}
 				}
+			}
+			if msg.LevelIdx != nil && *msg.LevelIdx >= 1 && *msg.LevelIdx <= 999 {
+				roomMap["level_idx"] = *msg.LevelIdx
 			}
 			if b, err := json.Marshal(roomMap); err == nil {
 				r.RoomJSON = b
@@ -1045,10 +1102,10 @@ func (h *Hub) handleDisconnectLocked(c *Client, explicitLeave bool) {
 	otherPid := 3 - pid
 	other := r.Seats[otherPid]
 
-	// Case 1: In lobby OR explicit LEAVE_ROOM -> clean teardown (no reconnect window)
-	if r.Status == "lobby" || explicitLeave {
-		if pid == 1 || explicitLeave {
-			log.Printf("[ROOM %s] P%d left (status=%s explicit=%v) -> closing room", code, pid, r.Status, explicitLeave)
+	// Case 1: Explicit LEAVE_ROOM -> immediate clean teardown (no reconnect window)
+	if explicitLeave {
+		if pid == 1 || r.Status != "lobby" {
+			log.Printf("[ROOM %s] P%d left (status=%s explicit=true) -> closing room", code, pid, r.Status)
 			if other != nil && other.Connected && other.Client != nil {
 				other.Client.Send(map[string]any{
 					"t":      "ROOM_CLOSED",
@@ -1059,8 +1116,8 @@ func (h *Hub) handleDisconnectLocked(c *Client, explicitLeave bool) {
 			}
 			delete(h.rooms, code)
 		} else {
-			// Guest left while in lobby -> keep Host room open
-			log.Printf("[ROOM %s] P2 left lobby; keeping room open for Host", code)
+			// Guest explicitly left lobby -> keep Host room open
+			log.Printf("[ROOM %s] P2 explicitly left lobby; keeping room open for Host", code)
 			r.Seats[2] = nil
 			if other != nil && other.Connected && other.Client != nil {
 				other.Client.Send(map[string]any{
@@ -1073,7 +1130,19 @@ func (h *Hub) handleDisconnectLocked(c *Client, explicitLeave bool) {
 		return
 	}
 
-	// Case 2: Unexpected mid-match TCP drop -> hold match in waiting_reconnect for fast-forward catch-up!
+	// Case 2: Unexpected TCP drop while in lobby (e.g. SakuraFrp blip or post-match stall)
+	// Hold the seat for lobbyReconnectGrace (30s) so the client can seamlessly auto-rejoin via RECONNECT.
+	if r.Status == "lobby" {
+		lobbyGrace := h.lobbyReconnectGrace
+		if lobbyGrace <= 0 {
+			lobbyGrace = defaultLobbyReconnectGrace
+		}
+		log.Printf("[ROOM %s] P%d TCP dropped in lobby; holding seat for %v", code, pid, lobbyGrace)
+		h.broadcastRoomStateLocked(r)
+		return
+	}
+
+	// Case 3: Unexpected mid-match TCP drop -> hold match in waiting_reconnect for fast-forward catch-up!
 	r.Status = "waiting_reconnect"
 	log.Printf("[ROOM %s] P%d dropped mid-match (highestCompleteTurn=%d); holding seat for %v",
 		code, pid, r.HighestCompleteTurn, h.reconnectGrace)
@@ -1099,7 +1168,8 @@ func (h *Hub) onReconnectLocked(c *Client, msg *IncomingMsg) {
 		c.Send(map[string]any{"t": "ERROR", "msg": "Reconnect failed: room " + code + " not found or expired."})
 		return
 	}
-	if len(r.MatchCfgRaw) == 0 {
+	isLobbyReconnect := (r.Status == "lobby" && len(r.MatchCfgRaw) == 0)
+	if !isLobbyReconnect && len(r.MatchCfgRaw) == 0 {
 		c.Send(map[string]any{"t": "ERROR", "msg": "Reconnect failed: match has not started."})
 		return
 	}
@@ -1133,12 +1203,48 @@ func (h *Hub) onReconnectLocked(c *Client, msg *IncomingMsg) {
 
 	seat.Client = c
 	seat.Connected = true
-	seat.CatchingUp = true
-	seat.Loaded = true
 	seat.Disconnected = time.Time{}
 	c.roomCode = code
 	c.pid = pid
 	r.UpdatedAt = time.Now()
+
+	if isLobbyReconnect {
+		seat.CatchingUp = false
+		seat.Loaded = false
+		p1Conn := r.Seats[1] != nil && r.Seats[1].Connected
+		p2Conn := r.Seats[2] != nil && r.Seats[2].Connected
+		otherConn := p2Conn
+		otherReady := p2Conn && r.Seats[2].Ready
+		if pid == 2 {
+			otherConn = p1Conn
+			otherReady = p1Conn
+		}
+		hostName := "Player 1"
+		guestName := "Waiting for P2..."
+		if r.Seats[1] != nil {
+			hostName = r.Seats[1].Name
+		}
+		if r.Seats[2] != nil && r.Seats[2].Connected {
+			guestName = r.Seats[2].Name
+		}
+		log.Printf("[ROOM %s] P%d lobby RECONNECT accepted! peer_connected=%v", code, pid, otherConn)
+		c.Send(map[string]any{
+			"t":              "ROOM_REJOINED",
+			"code":           code,
+			"pid":            pid,
+			"token":          seat.Token,
+			"room":           r.RoomJSON,
+			"host_name":      hostName,
+			"guest_name":     guestName,
+			"peer_connected": otherConn,
+			"peer_ready":     otherReady,
+		})
+		h.broadcastRoomStateLocked(r)
+		return
+	}
+
+	seat.CatchingUp = true
+	seat.Loaded = true
 
 	targetTurn := r.HighestCompleteTurn
 

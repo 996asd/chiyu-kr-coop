@@ -101,6 +101,12 @@ local lobby = {
     server_connect_silent = false,
     server_ver = nil,
     server_voice_ok = true,
+    server_guest_stage_ok = false,
+    server_lobby_reconnect_ok = false,
+    online_reconnecting_room = false,
+    online_reconnect_attempt = 0,
+    online_reconnect_next_ts = 0,
+    _pending_lobby_reconnect = false,
     online_rooms = {},
     online_room_code = nil,
     online_token = nil,
@@ -265,12 +271,46 @@ end
 
 -- === LAN Mode Actions ===
 
+function lobby:is_room_link_alive()
+    if not self.transport then return false end
+    if self.transport:is_online() then
+        return self.server_connected == true and self.transport:is_connected() and (not self.online_reconnecting_room)
+    end
+    return self.transport:is_connected()
+end
+
+function lobby:exit_dead_online_room(reason_toast)
+    self.online_reconnecting_room = false
+    self.online_reconnect_attempt = 0
+    self._pending_lobby_reconnect = false
+    self:clear_saved_session()
+    self.role = "none"
+    self.peer_connected = false
+    self.peer_ready = false
+    self.local_ready = false
+    self.online_room_code = nil
+    self.online_token = nil
+    self.view = "home"
+    self.sub_modal = nil
+    if self.server_connected and self.transport and self.transport:is_connected() then
+        self:refresh_online_rooms()
+    end
+    if reason_toast and self.overlay then
+        self.overlay:show_toast(reason_toast, 5.0)
+    end
+end
+
 function lobby:broadcast_room_state()
-    if self.role ~= "host" then return end
+    if self.role ~= "host" then return false end
     ensure_room_defaults(self.room)
     if self.transport:is_online() then
-        self.transport:send({ t = "UPDATE_ROOM", room = self.room })
-        return
+        if not self:is_room_link_alive() then
+            if self.overlay then
+                self.overlay:show_toast("与公网服务器连接已断开，房间修改尚未同步（请等待重连或重开房间）！", 3.5)
+            end
+            return false
+        end
+        return self.transport:send({ t = "UPDATE_ROOM", room = self.room }) == true
     end
     self.transport:update_advert({
         name = self.room.name,
@@ -278,8 +318,9 @@ function lobby:broadcast_room_state()
         players = self.peer_connected and 2 or 1,
     })
     if self.peer_connected then
-        self.transport:send({ t = "ROOM_STATE", room = self.room, peer_ready = self.peer_ready })
+        return self.transport:send({ t = "ROOM_STATE", room = self.room, peer_ready = self.peer_ready }) == true
     end
+    return true
 end
 
 function lobby:host_lan_room()
@@ -481,7 +522,10 @@ function lobby:flush_pending_online_action()
     elseif act.kind == "join_room" then
         self:send_join_online_room(act.code, act.password)
     elseif act.kind == "reconnect" and act.sess then
-        self:send_reconnect_online(act.sess)
+        self:send_reconnect_online(act.sess, false)
+    elseif act.kind == "reconnect_lobby" and act.sess then
+        self._pending_lobby_reconnect = true
+        self:send_reconnect_online(act.sess, true)
     end
 end
 
@@ -587,7 +631,7 @@ function lobby:join_online_room(code, password)
     return true
 end
 
-function lobby:send_reconnect_online(sess)
+function lobby:send_reconnect_online(sess, silent)
     self.online_room_code = sess.code
     self.online_token = sess.token
     self.local_pid = tonumber(sess.pid) or 2
@@ -604,7 +648,9 @@ function lobby:send_reconnect_online(sess)
         script_hash = proto.compute_script_hash(),
         tick_len = TICK_LENGTH or (1 / 60),
     })
-    self.overlay:show_toast("正在向房间 #" .. tostring(sess.code) .. " 发起断线重连...", 4)
+    if not silent and self.overlay then
+        self.overlay:show_toast("正在向房间 #" .. tostring(sess.code) .. " 发起断线重连...", 4)
+    end
 end
 
 function lobby:reconnect_online_session(sess)
@@ -623,6 +669,9 @@ end
 
 function lobby:leave_room()
     self.direct_auto_retry = nil
+    self.online_reconnecting_room = false
+    self.online_reconnect_attempt = 0
+    self._pending_lobby_reconnect = false
     if self.transport:is_online() and self.transport:is_connected() then
         self.transport:send({ t = "LEAVE_ROOM" })
     end
@@ -668,8 +717,10 @@ function lobby:return_to_lobby()
     return true
 end
 
-function lobby:on_return_lobby(by_pid, room_data)
+function lobby:on_return_lobby(by_pid, room_data, msg)
     self.direct_auto_retry = nil
+    self.online_reconnecting_room = false
+    self._pending_lobby_reconnect = false
     if self.overlay then self.overlay.voice_panel_open = false end
     if self.coop and self.coop:is_active() then
         self.coop:leave_match()
@@ -685,21 +736,34 @@ function lobby:on_return_lobby(by_pid, room_data)
         main.handler.next_item_name = "slots"
         main.handler.next_item_args = {}
     end
-    self.peer_connected = true
+    local peer_ok = true
+    if msg and msg.peer_connected ~= nil then
+        peer_ok = (msg.peer_connected == true)
+    end
+    local rdy_ok = peer_ok
+    if msg and msg.peer_ready ~= nil then
+        rdy_ok = peer_ok and (msg.peer_ready == true)
+    end
+    self.peer_connected = peer_ok
     self.local_ready = true
-    self.peer_ready = true
+    self.peer_ready = rdy_ok
     self.view = "room"
     self.sub_modal = nil
     self.open = true
     if self.role == "host" and not self.transport:is_online() then
         self:broadcast_room_state()
     end
-    self.boot:log("[LOBBY] Returned to War Table without disconnecting (by P%d)", tonumber(by_pid) or 0)
+    self.boot:log("[LOBBY] Returned to War Table without disconnecting (by P%d, peer=%s)", tonumber(by_pid) or 0, tostring(peer_ok))
     self.overlay:show_toast(string.format("%dP 返回战桌（连接保持不断），可直接换关或再次出征！", tonumber(by_pid) or 0), 3.0)
 end
 
 function lobby:host_start_match()
-    if self.role ~= "host" or not self.peer_connected then
+    if self.role ~= "host" then return false end
+    if self.transport:is_online() and not self:is_room_link_alive() then
+        self.overlay:show_toast("与公网服务器连接已断开，无法发车！请等待自动重连或关闭重开房间。", 4.0)
+        return false
+    end
+    if not self.peer_connected then
         self.overlay:show_toast("请等待 2P 队友加入后再开局！", 3)
         return false
     end
@@ -747,7 +811,11 @@ function lobby:host_start_match()
 
     self.boot:log("[LOBBY] Host launching 2P Co-op match (online=%s, level=%d, seed=%d, delay=%d, econ=%s, tower=%s, deck=%d)",
         tostring(self.transport:is_online()), cfg.level_idx, cfg.seed, cfg.input_delay_turns, cfg.econ_mode, cfg.tower_mode, #cfg.towers)
-    self.transport:send({ t = "START_MATCH", cfg = cfg })
+    local sent_ok = self.transport:send({ t = "START_MATCH", cfg = cfg })
+    if not sent_ok then
+        self.overlay:show_toast("发送开局指令失败：网络连接已断开！请等待重连或退出重开房间。", 4.0)
+        return false
+    end
 
     if not self.transport:is_online() then
         self.open = false
@@ -759,16 +827,24 @@ end
 
 function lobby:toggle_ready(force_ready)
     if self.view ~= "room" or self.role ~= "client" then return false end
-    if not self.transport or not self.transport:is_connected() then return false end
+    if not self:is_room_link_alive() then
+        self.overlay:show_toast("与房间连接已断开，请等待自动重连或退出重新进房！", 3.5)
+        return false
+    end
     local next_state = (type(force_ready) == "boolean") and force_ready or (not self.local_ready)
     if self.local_ready == next_state then return self.local_ready end
     self.local_ready = next_state
-    self.transport:send({
+    local sent_ok = self.transport:send({
         t = "SET_GUEST",
         ready = self.local_ready,
         hero_idx = self.room and self.room.heroes and self.room.heroes[2] or (catalog.DEFAULT_HERO_2 or 54),
         reinf = self.room and self.room.reinforcements and self.room.reinforcements[2] or loadout.DEFAULT_REINF,
     })
+    if not sent_ok then
+        self.local_ready = not next_state
+        self.overlay:show_toast("同步准备状态失败：网络连接已中断！", 3.5)
+        return false
+    end
     return self.local_ready
 end
 
@@ -786,10 +862,12 @@ function MSG_HANDLERS.SERVER_HELLO(self, msg)
     self.server_connect_silent = false
     self.server_ver = msg.server_ver
     self.server_voice_ok = (msg.voice_ok == true)
+    self.server_guest_stage_ok = (msg.guest_stage_ok == true)
+    self.server_lobby_reconnect_ok = (msg.lobby_reconnect_ok == true)
     self.online_rooms = msg.rooms or {}
     updater:note_server_version(msg.server_ver)
-    self.boot:log("[LOBBY] Server hello OK (ver=%s, voice_ok=%s, rooms=%d)",
-        tostring(msg.server_ver), tostring(self.server_voice_ok), #self.online_rooms)
+    self.boot:log("[LOBBY] Server hello OK (ver=%s, voice_ok=%s, guest_stage=%s, rooms=%d)",
+        tostring(msg.server_ver), tostring(self.server_voice_ok), tostring(self.server_guest_stage_ok), #self.online_rooms)
     self:flush_pending_online_action()
 end
 
@@ -848,7 +926,30 @@ function MSG_HANDLERS.PEER_LEFT(self)
     self.overlay:show_toast("2P 队友离开了房间。", 3.5)
 end
 
+function MSG_HANDLERS.ROOM_REJOINED(self, msg)
+    self.online_reconnecting_room = false
+    self.online_reconnect_attempt = 0
+    self._pending_lobby_reconnect = false
+    self.local_pid = tonumber(msg.pid) or self.local_pid
+    self.role = (self.local_pid == 1) and "host" or "client"
+    self.online_room_code = msg.code or self.online_room_code
+    self.online_token = msg.token or self.online_token
+    if msg.room then self.room = msg.room; ensure_room_defaults(self.room) end
+    self.peer_connected = (msg.peer_connected == true)
+    self.peer_ready = (msg.peer_ready == true)
+    if self.role == "host" and msg.guest_name then self.peer_name = msg.guest_name
+    elseif self.role == "client" and msg.host_name then self.peer_name = msg.host_name end
+    self.view = "room"
+    self:save_session(self.online_room_code, self.local_pid, self.online_token)
+    self.boot:log("[LOBBY] Auto-rejoined online room #%s as P%d (peer=%s)",
+        tostring(self.online_room_code), self.local_pid, tostring(self.peer_connected))
+    self.overlay:show_toast("公网房间 #" .. tostring(self.online_room_code) .. " 已自动重连恢复 √", 2.8)
+end
+
 function MSG_HANDLERS.ROOM_CLOSED(self, msg)
+    self.online_reconnecting_room = false
+    self.online_reconnect_attempt = 0
+    self._pending_lobby_reconnect = false
     self:clear_saved_session()
     if self.coop and self.coop:is_active() then self.coop:leave_match() end
     self.role = "none"
@@ -924,7 +1025,7 @@ function MSG_HANDLERS.COLD_RECONNECT(self, msg)
 end
 
 function MSG_HANDLERS.RETURN_LOBBY(self, msg)
-    self:on_return_lobby(msg.pid, msg.room)
+    self:on_return_lobby(msg.pid, msg.room, msg)
 end
 
 function MSG_HANDLERS.HELLO(self, msg)
@@ -974,6 +1075,7 @@ function MSG_HANDLERS.WELCOME(self, msg)
 end
 
 function MSG_HANDLERS.ROOM_STATE(self, msg)
+    local prev_lvl = self.room and self.room.level_idx
     if msg.room then self.room = msg.room; ensure_room_defaults(self.room) end
     if msg.peer_connected ~= nil then self.peer_connected = msg.peer_connected end
     if msg.peer_ready ~= nil then self.peer_ready = msg.peer_ready end
@@ -981,6 +1083,14 @@ function MSG_HANDLERS.ROOM_STATE(self, msg)
         self.peer_name = msg.guest_name
     elseif self.role == "client" and msg.host_name then
         self.peer_name = msg.host_name
+    end
+    if prev_lvl and self.room and self.room.level_idx and prev_lvl ~= self.room.level_idx and self.view == "room" then
+        if self.role == "host" then
+            self:save_prefs()
+            self.overlay:show_toast("2P 队友已切换关卡：" .. catalog.get_stage_label(self.room.level_idx), 2.5)
+        elseif self.role == "client" then
+            self.overlay:show_toast("房主已切换关卡：" .. catalog.get_stage_label(self.room.level_idx), 2.2)
+        end
     end
 end
 
@@ -993,6 +1103,15 @@ function MSG_HANDLERS.SET_GUEST(self, msg)
     end
     if type(msg.reinf) == "string" and #msg.reinf > 0 then
         self.room.reinforcements[2] = loadout.normalize_reinf(msg.reinf)
+    end
+    local req_lvl = tonumber(msg.level_idx)
+    if req_lvl then
+        req_lvl = math.floor(req_lvl)
+        if req_lvl >= 1 and req_lvl <= 999 and req_lvl ~= self.room.level_idx then
+            self.room.level_idx = req_lvl
+            self:save_prefs()
+            self.overlay:show_toast("2P 队友已切换关卡：" .. catalog.get_stage_label(req_lvl), 2.5)
+        end
     end
     self:broadcast_room_state()
 end
@@ -1013,6 +1132,11 @@ end
 
 function MSG_HANDLERS.ERROR(self, msg)
     self.boot:log("[LOBBY] Server/Host ERROR: %s", tostring(msg.msg))
+    if self._pending_lobby_reconnect then
+        self._pending_lobby_reconnect = false
+        self:exit_dead_online_room("公网房间已失效（" .. tostring(msg.msg) .. "），已返回公网大厅，请重新建房或进房！")
+        return
+    end
     self.overlay:show_toast("提示：" .. tostring(msg.msg), 5)
 end
 
@@ -1069,6 +1193,35 @@ function lobby:update(dt)
         end
     elseif self.direct_auto_retry and (not self.lockstep or self.lockstep.phase ~= "WAIT_RECONNECT") then
         self.direct_auto_retry = nil
+    end
+
+    -- Online Lobby Auto-Reconnect (recovers seamlessly from transient SakuraFrp/NAT drops in War Table)
+    if self.online_reconnecting_room and self.view == "room" and self.transport and self.transport:is_online()
+        and not (self.coop and self.coop:is_active()) then
+        if not self.server_connected and not self.server_handshaking and not self.transport:is_connecting()
+            and now >= (self.online_reconnect_next_ts or 0) then
+            self.online_reconnect_attempt = (self.online_reconnect_attempt or 0) + 1
+            if self.online_reconnect_attempt > 4 then
+                self:exit_dead_online_room("公网房间自动重连失败，已返回公网大厅（请检查网络/服务器后重新建房）！")
+            else
+                self.online_reconnect_next_ts = now + 2.5
+                self.boot:log("[LOBBY] Auto-reconnecting online lobby room #%s (attempt %d/4)...",
+                    tostring(self.online_room_code), self.online_reconnect_attempt)
+                self.pending_online_action = {
+                    kind = "reconnect_lobby",
+                    sess = {
+                        server = self.server_input,
+                        code = self.online_room_code,
+                        pid = self.local_pid,
+                        token = self.online_token,
+                    },
+                }
+                self:connect_online_server(self.server_input, true)
+            end
+        end
+    elseif self.online_reconnecting_room and self.view ~= "room" then
+        self.online_reconnecting_room = false
+        self._pending_lobby_reconnect = false
     end
 
     local events = self.transport:poll()
@@ -1138,12 +1291,24 @@ function lobby:update(dt)
             self.pending_online_action = nil
             if self.lockstep and self.lockstep:is_active() then
                 self.lockstep:on_peer_disconnected("与公网中继服断开连接", false)
+            elseif self.view == "room" and not self.online_reconnecting_room then
+                self.peer_connected = false
+                self.peer_ready = false
+                if self.online_room_code and self.online_token then
+                    self.online_reconnecting_room = true
+                    self.online_reconnect_attempt = 0
+                    self.online_reconnect_next_ts = now + 0.5
+                    self.boot:log("[LOBBY] Online server disconnected in room #%s -> starting auto-reconnect", tostring(self.online_room_code))
+                    self.overlay:show_toast("公网连接波动已断开，正在自动重连房间 #" .. tostring(self.online_room_code) .. "...", 4.0)
+                else
+                    self:exit_dead_online_room("与公网服务器断开连接，已返回公网大厅。")
+                end
             elseif was_handshaking and not was_connected then
                 if not was_silent then
                     self.overlay:show_toast("未检测到公网中继服 (kr-mp-server)！樱花 17777 直连请切回「樱花联机」页；自建公网服请先启动 启动公网中继服.bat (17780)。", 6.5)
                 end
                 autotest:on_server_connect_failed()
-            elseif was_connected then
+            elseif was_connected and not self.online_reconnecting_room then
                 self.overlay:show_toast("与公网服务器断开连接。", 4)
             end
         elseif ev.type == "msg" then

@@ -80,11 +80,11 @@ local function draw_guide_tab2(ctx, y)
         border = T.p2_border, border_w = 2.0, thumbtack = true, radius = 8,
     })
     ui.draw_pill(rx + 12, y + 11, 134, 20, "2P 红方协防（队友）", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, fm.tiny_bold)
-    ui.text("· 操控【2 号英雄】和右侧专属英雄大招。", rx + 12, y + 38, T.ink_text, fm.small)
-    ui.text("· 同样拥有【独立冷却援军】，随便放不冲突！", rx + 12, y + 60, T.ink_text, fm.small)
-    ui.text("· 进房后点「更换 2P 英雄」，可在 105 位全系列", rx + 12, y + 83, T.ink_sub, fm.tiny)
-    ui.text("  英雄中任选自己喜欢的搭档（含 6 代新英雄）。", rx + 12, y + 100, T.ink_sub, fm.tiny)
-    ui.text("· 选好英雄确认「已就绪」，等房主一键发车！", rx + 12, y + 120, T.p2_border, fm.tiny_bold)
+    ui.text("· 操控【2 号英雄】和 3 号槽己方专属大招。", rx + 12, y + 38, T.ink_text, fm.small)
+    ui.text("· 拥有【独立冷却 2P 援军】，9 档自由选择不冲突！", rx + 12, y + 60, T.ink_text, fm.small)
+    ui.text("· 进房后可点「切换地图」选关，点「更换 2P 英雄」", rx + 12, y + 83, T.ink_sub, fm.tiny)
+    ui.text("  在 105 位全系列英雄中任选搭档（含 6 代英雄）。", rx + 12, y + 100, T.ink_sub, fm.tiny)
+    ui.text("· 选好关卡/英雄/援军确认就绪，等房主一键发车！", rx + 12, y + 120, T.p2_border, fm.tiny_bold)
 
     local ry2, rh2 = y + top_h + 10, 176
     local rw3 = math.floor((cw - 20) / 3)

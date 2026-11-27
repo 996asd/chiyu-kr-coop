@@ -13,7 +13,7 @@ local server_host = {
     DEFAULT_PORT = proto.DEFAULT_ONLINE_PORT or 17780,
     DEFAULT_HTTP_PORT = 17781,
     VPS_DEPLOY_CMD = "curl -fsSL https://gitee.com/chiyu-studio/chiyu-kr-coop/raw/main/tools/deploy_server.sh | sudo bash",
-    BUILTIN_WIN_SHA256 = "97E36BC3E798E4A3C2B50D833714E94A96069C398B425434A960DB784B57A18D",
+    BUILTIN_WIN_SHA256 = "0DF4F249BA3616429C5793603D917C871ED00A71C14FACC0EF2ABFCAFEC96091",
 
     boot = nil,
     overlay = nil,
@@ -393,7 +393,7 @@ end
 
 ch:push({ seq = seq, stage = "meta", done = 0, total = 0 })
 
-local ver = tostring(fallback_ver or "2.4.0")
+local ver = tostring(fallback_ver or "2.4.1")
 local expect_sha = ""
 local expect_size = 0
 for _, vurl in ipairs({

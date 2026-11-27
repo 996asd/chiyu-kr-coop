@@ -599,10 +599,8 @@ local function draw_room_center_column(ctx, mid_x, y, mid_w, is_host)
     ui.draw_vgrad_rect(mp_x + 1, mp_y + mp_h - 52, mp_w - 2, 51, { 24, 12, 4, 0 }, { 22, 10, 4, 235 }, 4)
     local pks = PACK_TAG_STYLES[get_stage_pack_info(lobby.room.level_idx)] or PACK_TAG_STYLES.kr5
     ui.draw_pill(mp_x + 7, mp_y + 7, 68, 19, pks.era, pks.bg, pks.border, pks.fg, fm.tiny_bold)
-    if is_host then
-        add_btn("open_stages", string.format("切换地图 (%d关)", catalog.TOTAL_STAGES or 201),
-            mp_x + mp_w - 114, mp_y + 6, 108, 22, "wood", { tiny = true })
-    end
+    add_btn("open_stages", string.format("切换地图 (%d关)", catalog.TOTAL_STAGES or 201),
+        mp_x + mp_w - 114, mp_y + 6, 108, 22, "wood", { tiny = true })
     local df_info = DIFF_STYLES[lobby.room.level_difficulty] or DIFF_STYLES[2]
     ui.print_shadow("出征战役目标", mp_x + 10, mp_y + mp_h - 40, { 255, 224, 152, 245 }, nil, nil, nil, fm.tiny)
     ui.print_shadow(get_stage_clean_title(lobby.room.level_idx), mp_x + 10, mp_y + mp_h - 23, { 255, 248, 224, 255 }, nil, nil, nil, fm.hero)
@@ -703,8 +701,20 @@ local function draw_room(ctx)
 
     -- Row 1: Top Status, Voice Strip, Delay & Tower Marks
     local y = py + 40
-    ui.draw_ping_dot(cx + 8, y + 12, rtt, lobby.peer_connected)
-    ui.text(lobby.peer_connected and "同盟已集结 (2/2)" or "等待 2P 入阵 (1/2)", cx + 20, y + 5, T.ink_text, fm.small_bold)
+    local link_ok = (lobby.is_room_link_alive == nil) or lobby:is_room_link_alive()
+    local status_txt, status_col
+    if lobby.online_reconnecting_room then
+        status_txt = string.format("公网重连中 (%d/4)", math.max(1, tonumber(lobby.online_reconnect_attempt) or 1))
+        status_col = { 176, 62, 24, 255 }
+    elseif lobby.transport:is_online() and not link_ok then
+        status_txt = "公网已断开"
+        status_col = { 166, 36, 36, 255 }
+    else
+        status_txt = lobby.peer_connected and "同盟已集结 (2/2)" or "等待 2P 入阵 (1/2)"
+        status_col = T.ink_text
+    end
+    ui.draw_ping_dot(cx + 8, y + 12, rtt, link_ok and lobby.peer_connected)
+    ui.text(status_txt, cx + 20, y + 5, status_col, fm.small_bold)
 
     local net_info, net_style, net_fg
     local port_drifted = is_host and (not lobby.transport:is_online()) and lobby.transport:is_port_drifted()
@@ -801,14 +811,19 @@ local function draw_room(ctx)
 
     -- Row 4: Start / Ready CTA + Leave Button
     local cta_h, close_w = 42, 122
+    local disc_lbl = lobby.transport:is_online() and "公网连接断开 · 重连中..." or "已与房主断开连接"
     if is_host then
-        local can_start = lobby.peer_connected
-        add_btn("start_match", can_start and "出征守关！" or "等待 2P 队友加入...",
+        local can_start = link_ok and lobby.peer_connected
+        local start_lbl = (lobby.transport:is_online() and not link_ok) and disc_lbl
+            or (lobby.peer_connected and "出征守关！" or "等待 2P 队友加入...")
+        add_btn("start_match", start_lbl,
             cx, y, cw - close_w - 12, cta_h, "battle", { large = true, disabled = not can_start, radius = 9 })
         add_btn("leave_room", "关闭房间", cx + cw - close_w, y, close_w, cta_h, "crimson", { radius = 9 })
     else
-        add_btn("toggle_ready", lobby.local_ready and "已就绪 · 等待房主开局" or "点击准备就绪！",
-            cx, y, cw - close_w - 12, cta_h, "battle", { large = true, radius = 9 })
+        local ready_lbl = (not link_ok) and disc_lbl
+            or (lobby.local_ready and "已就绪 · 等待房主开局" or "点击准备就绪！")
+        add_btn("toggle_ready", ready_lbl,
+            cx, y, cw - close_w - 12, cta_h, "battle", { large = true, disabled = not link_ok, radius = 9 })
         add_btn("leave_room", "离开房间", cx + cw - close_w, y, close_w, cta_h, "crimson", { radius = 9 })
     end
 end

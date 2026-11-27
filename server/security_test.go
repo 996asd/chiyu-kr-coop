@@ -127,7 +127,8 @@ func TestSetGuestReinfPatch(t *testing.T) {
 		t.Fatalf("guest failed to join room")
 	}
 	h2 := 65
-	hub.HandleMessage(guest, &IncomingMsg{Type: "SET_GUEST", HeroIdx: &h2, Reinf: "reinforcement_g5_royal"})
+	lvl := 142
+	hub.HandleMessage(guest, &IncomingMsg{Type: "SET_GUEST", HeroIdx: &h2, Reinf: "reinforcement_g5_royal", LevelIdx: &lvl})
 
 	r := hub.rooms[host.roomCode]
 	var roomMap map[string]any
@@ -141,5 +142,94 @@ func TestSetGuestReinfPatch(t *testing.T) {
 	heroes, ok := roomMap["heroes"].([]any)
 	if !ok || len(heroes) != 2 || int(heroes[1].(float64)) != 65 {
 		t.Fatalf("unexpected heroes after SET_GUEST: %#v", roomMap["heroes"])
+	}
+	if int(roomMap["level_idx"].(float64)) != 142 || r.Meta.LevelIdx != 142 {
+		t.Fatalf("unexpected level_idx after guest stage pick: map=%v meta=%d", roomMap["level_idx"], r.Meta.LevelIdx)
+	}
+}
+
+func TestLobbyReconnectAndExplicitLeave(t *testing.T) {
+	hub := NewHubWithLimits(50, 100, 10, 4, 60*time.Second)
+	hub.lobbyReconnectGrace = 2 * time.Second
+	mkClient := func(ip string) *Client {
+		c := &Client{remoteIP: ip, hub: hub, sendCh: make(chan []byte, 32), done: make(chan struct{})}
+		hub.TryRegisterClient(c)
+		return c
+	}
+	drainLast := func(c *Client) map[string]any {
+		var last []byte
+		for {
+			select {
+			case b := <-c.sendCh:
+				last = b
+			default:
+				if len(last) == 0 {
+					return nil
+				}
+				var m map[string]any
+				_ = json.Unmarshal(last, &m)
+				return m
+			}
+		}
+	}
+
+	host := mkClient("127.0.0.1")
+	guest := mkClient("127.0.0.1")
+	hub.HandleMessage(host, &IncomingMsg{
+		Type: "CREATE_ROOM",
+		Name: "ReconnectLobby",
+		Room: json.RawMessage(`{"name":"ReconnectLobby","level_idx":101,"heroes":[53,54]}`),
+	})
+	code := host.roomCode
+	r := hub.rooms[code]
+	hostToken := r.Seats[1].Token
+	hub.HandleMessage(guest, &IncomingMsg{Type: "JOIN_ROOM", Code: code})
+	drainLast(host)
+	drainLast(guest)
+
+	// Unexpected TCP drop by Host in lobby must hold the room and notify P2 peer_connected=false
+	hub.UnregisterClient(host)
+	if hub.rooms[code] == nil {
+		t.Fatalf("room %s should be held during lobby reconnect grace", code)
+	}
+	gMsg := drainLast(guest)
+	if gMsg == nil || gMsg["t"] != "ROOM_STATE" || gMsg["peer_connected"] != false {
+		t.Fatalf("expected ROOM_STATE peer_connected=false for guest, got %#v", gMsg)
+	}
+
+	// Host reconnects cleanly into lobby with saved token
+	host2 := mkClient("127.0.0.1")
+	hub.HandleMessage(host2, &IncomingMsg{Type: "RECONNECT", Code: code, Pid: 1, Token: hostToken})
+	if host2.roomCode != code || host2.pid != 1 {
+		t.Fatalf("host2 failed to rejoin lobby room: code=%s pid=%d", host2.roomCode, host2.pid)
+	}
+	var sawRejoined bool
+	for {
+		select {
+		case b := <-host2.sendCh:
+			var m map[string]any
+			_ = json.Unmarshal(b, &m)
+			if m["t"] == "ROOM_REJOINED" && m["peer_connected"] == true {
+				sawRejoined = true
+			}
+		default:
+			goto doneRead
+		}
+	}
+doneRead:
+	if !sawRejoined {
+		t.Fatalf("host2 did not receive ROOM_REJOINED with peer_connected=true")
+	}
+
+	// Explicit LEAVE_ROOM by guest keeps Host room open
+	hub.HandleMessage(guest, &IncomingMsg{Type: "LEAVE_ROOM"})
+	if hub.rooms[code] == nil || r.Seats[2] != nil {
+		t.Fatalf("guest explicit LEAVE_ROOM should keep host room open and clear P2 seat")
+	}
+
+	// Explicit LEAVE_ROOM by host closes room immediately
+	hub.HandleMessage(host2, &IncomingMsg{Type: "LEAVE_ROOM"})
+	if hub.rooms[code] != nil {
+		t.Fatalf("host explicit LEAVE_ROOM should close room immediately")
 	}
 }

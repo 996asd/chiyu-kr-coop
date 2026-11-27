@@ -497,6 +497,44 @@ local function install_misc_determinism_hooks(hooks)
             end
         end)
     end
+    -- Fast batch game unload: FL 8.2.0's 'slots' screen has show_loading=false, so returning
+    -- from 'game' -> 'slots' calls director:unload_item(game, nil) synchronously, which triggers
+    -- ~130 full purge_atlas() + collectgarbage() cycles (~13-14s main-thread freeze that also
+    -- starves online TCP heartbeats). Deferring purge/GC to a single pass at the end cuts
+    -- War Table return from ~14s to <0.4s with identical resource cleanup.
+    local dir = director or package.loaded["director"]
+    if type(dir) == "table" then
+        hooks.wrap_once(dir, "unload_item", "fast_unload", function(orig_unload)
+            return function(self_d, item, async)
+                if not async and type(item) == "table" and item.item_name == "game" then
+                    local ok_idb, I_db = pcall(require, "klove.image_db")
+                    local ok_sdb, S_db = pcall(require, "sound_db")
+                    local orig_ua = ok_idb and type(I_db) == "table" and I_db.unload_atlas or nil
+                    local orig_ug = ok_sdb and type(S_db) == "table" and S_db.unload_group or nil
+                    if orig_ua then
+                        I_db.unload_atlas = function(self_i, name, ref_scale)
+                            return orig_ua(self_i, name, ref_scale, true)
+                        end
+                    end
+                    if orig_ug then
+                        S_db.unload_group = function(self_s, name)
+                            return orig_ug(self_s, name, true)
+                        end
+                    end
+                    local ok_u, res_u = pcall(orig_unload, self_d, item, async)
+                    if orig_ua then I_db.unload_atlas = orig_ua end
+                    if orig_ug then S_db.unload_group = orig_ug end
+                    if ok_idb and type(I_db) == "table" and I_db.purge_atlas then
+                        pcall(I_db.purge_atlas, I_db)
+                    end
+                    collectgarbage()
+                    if not ok_u then error(res_u) end
+                    return res_u
+                end
+                return orig_unload(self_d, item, async)
+            end
+        end)
+    end
 end
 
 function M.install(hooks)
