@@ -530,9 +530,10 @@ function autotest:step_auto_sakura(lobby, dt)
         end
     elseif self.stage == "MATCH_ACTIVE" then
         if not lobby.lockstep or not lobby.lockstep:is_active() then
-            if self.stage == "MATCH_ACTIVE" and lobby.view == "room" and lobby.transport:is_connected() and self.sent_ticks._wait_return_lobby then
-                lobby.boot:log("AUTO_SAKURA_PASSED role=%s pid=%d return_lobby_alive=true", role, lobby.local_pid)
-                love.event.quit()
+            if role == "guest_cold_reconnect" and lobby.view == "room" then
+                lobby.lockstep:close_hash_log()
+                self.stage = "VERIFY_RETURN_LOBBY"
+                self.timer = 0
             end
             return
         end

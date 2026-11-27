@@ -34,6 +34,9 @@ function net_lan.new(boot)
     self.connect_target_host = nil
     self.connect_target_port = nil
     self.connect_target_ip = nil
+    self.connect_fallback_addr = nil
+    self.connected_at_ts = 0
+    self.ever_received_app_msg = false
     self.dns_channel = (love and love.thread and love.thread.getChannel)
         and love.thread.getChannel("kr_mp_lan_dns") or nil
     self.connect_silent = false
@@ -100,6 +103,9 @@ function net_lan:close()
     self.connect_target_host = nil
     self.connect_target_port = nil
     self.connect_target_ip = nil
+    self.connect_fallback_addr = nil
+    self.connected_at_ts = 0
+    self.ever_received_app_msg = false
     self.recv_buf = ""
     self.send_queue = {}
     self.voice_queue = {}
@@ -210,11 +216,20 @@ end
 
 function net_lan:format_connect_error(target_ip, target_port, cerr)
     local hint = (cerr == "timeout")
-        and "连接超时（请确认房主已开房且樱花映射 TCP 隧道已开启）"
+        and "连接超时（请确认房主樱花隧道已开启、未拥堵，或点「三线测速」切更快线路）"
         or ((cerr == "connection refused" or cerr == "refused")
             and "连接被拒绝（请确认房主已点创建房间且映射本地端口为 17777）"
             or tostring(cerr))
     return string.format("连接 %s:%d 失败：%s", target_ip, target_port, hint)
+end
+
+function net_lan:format_dns_error(host)
+    local h = tostring(host or "")
+    local lower = h:lower()
+    if lower:match("^dx%.") or lower:match("^yd%.") or lower:match("^lt%.") then
+        return string.format("域名解析失败 (%s)：该节点可能不支持 dx./yd. 专线前缀，请切回「默认线」或点「三线测速」", h)
+    end
+    return string.format("域名解析失败 (%s)：请检查樱花映射地址是否复制完整", h)
 end
 
 function net_lan:begin_tcp_connect(connect_ip, target_ip, target_port)
@@ -243,6 +258,8 @@ function net_lan:begin_tcp_connect(connect_ip, target_ip, target_port)
         self.active_chunk = nil
         self.send_offset = 1
         local now = socket.gettime()
+        self.connected_at_ts = now
+        self.ever_received_app_msg = false
         self.last_ping_ts = now
         self.last_recv_ts = now
         self.last_error = nil
@@ -252,12 +269,13 @@ function net_lan:begin_tcp_connect(connect_ip, target_ip, target_port)
 
     if cerr == "timeout" or cerr == "Operation already in progress" or cerr == "already in progress" then
         local now = socket.gettime()
+        local timeout_sec = self.connect_fallback_addr and 2.6 or 5.0
         self.connecting_sock = c
         self.connect_target_host = target_ip
         self.connect_target_port = target_port
         self.connect_target_ip = connect_ip
         self.connect_started_ts = now
-        self.connect_deadline = now + 5.0
+        self.connect_deadline = now + timeout_sec
         self.connect_saw_peer = (c:getpeername() ~= nil)
         self.role = "client"
         self.state = "connecting"
@@ -273,24 +291,7 @@ function net_lan:begin_tcp_connect(connect_ip, target_ip, target_port)
     return false, self.last_error
 end
 
--- Non-blocking connect: returns (true, "connected"|"connecting"|"resolving") or (false, err_msg)
-function net_lan:connect(ip, port, silent_fail)
-    local had_scan = (self.udp_scan ~= nil)
-    self:close()
-    if had_scan then
-        self:start_scan()
-    end
-
-    local clean = proto.sanitize_addr(ip or "")
-    local target_ip = (clean ~= "") and clean or "127.0.0.1"
-    local target_port = tonumber(port) or proto.DEFAULT_TCP_PORT
-    local p_host, p_port = target_ip:match("^([^:]+):(%d+)$")
-    if p_host and p_port then
-        target_ip = p_host
-        target_port = tonumber(p_port)
-    end
-
-    self.connect_silent = (silent_fail == true)
+function net_lan:start_connect_target(target_ip, target_port)
     self.connect_target_host = target_ip
     self.connect_target_port = target_port
 
@@ -307,7 +308,7 @@ function net_lan:connect(ip, port, silent_fail)
             self.role = "client"
             self.state = "resolving"
             self.connect_started_ts = socket.gettime()
-            self.connect_deadline = self.connect_started_ts + 5.0
+            self.connect_deadline = self.connect_started_ts + (self.connect_fallback_addr and 2.8 or 5.0)
             self.last_error = nil
             th:start("kr_mp_lan_dns", seq, target_ip)
             return true, "resolving"
@@ -316,12 +317,41 @@ function net_lan:connect(ip, port, silent_fail)
 
     local resolved, derr = socket.dns.toip(target_ip)
     if not resolved then
-        self.last_error = string.format("域名解析失败 (%s)：请检查樱花映射地址是否复制完整", target_ip)
+        self.last_error = self:format_dns_error(target_ip)
         self:log("DNS resolve failed for %s: %s", target_ip, tostring(derr))
         return false, self.last_error
     end
     self:log("Resolved FRP/host %s -> %s", target_ip, resolved)
     return self:begin_tcp_connect(resolved, target_ip, target_port)
+end
+
+-- Non-blocking connect: supports single "host:port" OR P2P-first dual "p2p_ip:port|relay_host:port"
+function net_lan:connect(ip, port, silent_fail)
+    local had_scan = (self.udp_scan ~= nil)
+    self:close()
+    if had_scan then
+        self:start_scan()
+    end
+
+    local primary, fallback = proto.split_fallback_addr(ip or "")
+    local target_ip = (primary ~= "") and primary or "127.0.0.1"
+    local target_port = tonumber(port) or proto.DEFAULT_TCP_PORT
+    local p_host, p_port = target_ip:match("^([^:]+):(%d+)$")
+    if p_host and p_port then
+        target_ip = p_host
+        target_port = tonumber(p_port)
+    end
+
+    self.connect_silent = (silent_fail == true)
+    self.connect_fallback_addr = fallback
+    local ok, st = self:start_connect_target(target_ip, target_port)
+    if not ok and self.connect_fallback_addr then
+        local fb = self.connect_fallback_addr
+        self.connect_fallback_addr = nil
+        local fb_h, fb_p = fb:match("^([^:]+):(%d+)$")
+        return self:start_connect_target(fb_h or fb, tonumber(fb_p) or proto.DEFAULT_TCP_PORT)
+    end
+    return ok, st
 end
 
 function net_lan:is_lockstep_waiting()
@@ -425,6 +455,25 @@ function net_lan:fail_pending_connect(events, raw_err, display_err)
         pcall(self.connecting_sock.close, self.connecting_sock)
         self.connecting_sock = nil
     end
+    -- Seamless P2P Port-Export -> SakuraFrp Relay automatic fallback
+    if self.connect_fallback_addr then
+        local fb = self.connect_fallback_addr
+        self.connect_fallback_addr = nil
+        self.connect_saw_peer = false
+        self:log("Primary P2P %s:%d failed (%s); auto-falling back to SakuraFrp relay %s",
+            tostring(host), tonumber(port) or 0, tostring(raw_err), tostring(fb))
+        local fb_h, fb_p = fb:match("^([^:]+):(%d+)$")
+        local ok, st = self:start_connect_target(fb_h or fb, tonumber(fb_p) or proto.DEFAULT_TCP_PORT)
+        if ok then
+            if not silent then
+                events[#events + 1] = { type = "lan_fallback", target = fb }
+            end
+            if st == "connected" then
+                events[#events + 1] = { type = "lan_connected", ip = self.peer_ip, port = self.port }
+            end
+            return
+        end
+    end
     self.state = "idle"
     self.role = "none"
     self.connect_saw_peer = false
@@ -465,7 +514,7 @@ function net_lan:poll()
                 if not res then break end
                 if res.seq == self.connect_seq then
                     if not res.ip then
-                        local msg = string.format("域名解析失败 (%s)：请检查樱花映射地址是否复制完整", tostring(self.connect_target_host))
+                        local msg = self:format_dns_error(self.connect_target_host)
                         self:fail_pending_connect(events, res.err or "dns_failed", msg)
                         break
                     end
@@ -518,6 +567,8 @@ function net_lan:poll()
                 self.voice_queue = {}
                 self.active_chunk = nil
                 self.send_offset = 1
+                self.connected_at_ts = now
+                self.ever_received_app_msg = false
                 self.last_ping_ts = now
                 self.last_recv_ts = now
                 self.last_error = nil
@@ -596,6 +647,8 @@ function net_lan:poll()
                 self.voice_queue = {}
                 self.active_chunk = nil
                 self.send_offset = 1
+                self.connected_at_ts = now
+                self.ever_received_app_msg = false
                 self.last_ping_ts = now
                 self.last_recv_ts = now
                 self:log("Guest connected from %s", tostring(cip))
@@ -632,9 +685,12 @@ function net_lan:poll()
                 end
             end
             if err == "closed" then
-                self:log("Peer disconnected (closed)")
-                self:handle_peer_disconnect("closed")
-                closed_during_read = true
+                local early_eof = (self.role == "client" and not self.ever_received_app_msg
+                    and self.connected_at_ts > 0 and (now - self.connected_at_ts) < 1.8)
+                local reason = early_eof and "early_eof_refused" or "closed"
+                self:log("Peer disconnected (%s)", reason)
+                self:handle_peer_disconnect(reason)
+                closed_during_read = reason
                 break
             elseif err == "timeout" or not data then
                 break
@@ -654,6 +710,7 @@ function net_lan:poll()
                 if #line > 0 then
                     local msg, derr = proto.decode(line)
                     if msg then
+                        self.ever_received_app_msg = true
                         if msg.t == "PING" then
                             self:send({ t = "PONG", ts = msg.ts })
                         elseif msg.t == "PONG" and type(msg.ts) == "number" then
@@ -673,7 +730,7 @@ function net_lan:poll()
 
         if closed_during_read then
             self.pending_disconnect_reason = nil
-            events[#events + 1] = { type = "peer_disconnected", reason = "closed" }
+            events[#events + 1] = { type = "peer_disconnected", reason = closed_during_read }
             return events
         end
 

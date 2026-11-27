@@ -63,6 +63,8 @@ local lobby = {
     coop = nil,
     overlay = nil,
     voice = nil,
+    sakura = nil,
+    privacy_mask = false,
 
     open = false,
     net_tab = "lan", -- "lan" | "online"
@@ -191,6 +193,7 @@ function lobby:toggle()
     if not self.open then self:set_focus(nil) end
     if self.open and self.view == "home" then
         self:load_saved_session()
+        if self.sakura then self.sakura:scan_local(true) end
         if not updater.checked_once then updater:start_check(false) end
         if self.net_tab == "lan" then
             self.transport:start_lan_scan()
@@ -271,7 +274,14 @@ function lobby:host_lan_room()
             "警告：端口 %d 被占用，已自动改用端口 %s！樱花隧道指向 %d 将无法连入，请关闭占用程序或改隧道端口！",
             req, tostring(res), req), 10.0)
     else
-        self.overlay:show_toast("樱花/局域网战桌已创建（TCP " .. tostring(res) .. " · 内置热续传），等待 2P 加入...", 2.5)
+        if self.sakura then self.sakura:scan_local(true) end
+        local sk_disp = self.sakura and self.sakura:get_host_share_addr(tonumber(res) or port) or nil
+        if sk_disp then
+            local shown = self.privacy_mask and self.sakura.mask_addr(sk_disp) or sk_disp
+            self.overlay:show_toast("战桌已就绪！检测到本机樱花 " .. shown .. "，点上方绿条一键复制给队友！", 3.6)
+        else
+            self.overlay:show_toast("樱花/局域网战桌已创建（TCP " .. tostring(res) .. " · 内置热续传），等待 2P 加入...", 2.5)
+        end
     end
     return true
 end
@@ -362,7 +372,9 @@ function lobby:reconnect_direct_session(sess)
 end
 
 function lobby:join_lan_room(ip, port)
-    local target_ip = ip or self.ip_input or "127.0.0.1"
+    local raw_addr = ip or self.ip_input or "127.0.0.1"
+    local primary, fallback = proto.split_fallback_addr(raw_addr)
+    local target_ip = (primary ~= "") and primary or "127.0.0.1"
     local target_port = tonumber(port) or tonumber(os.getenv("KR_MP_PORT")) or proto.DEFAULT_TCP_PORT
     local parsed_ip, parsed_port = target_ip:match("^([^:]+):(%d+)$")
     if parsed_ip and parsed_port then
@@ -370,18 +382,23 @@ function lobby:join_lan_room(ip, port)
         target_port = tonumber(parsed_port)
     end
 
-    self.pending_lan_join = { ip = target_ip, port = target_port }
-    local ok, status_or_err = self.transport:join_lan(target_ip, target_port)
+    local connect_arg = fallback and (target_ip .. ":" .. tostring(target_port) .. "|" .. fallback) or target_ip
+    self.pending_lan_join = { ip = target_ip, port = target_port, fallback = fallback }
+    local ok, status_or_err = self.transport:join_lan(connect_arg, target_port)
     if not ok then
         self.pending_lan_join = nil
-        self.overlay:show_toast("连接局域网房主失败：" .. tostring(status_or_err), 4)
+        self.overlay:show_toast("连接房主失败：" .. tostring(status_or_err), 4.5)
         return false
     end
 
     if status_or_err == "connected" then
         self:on_lan_connected(target_ip, target_port)
     else
-        self.overlay:show_toast("正在连接房主 " .. tostring(target_ip) .. ":" .. tostring(target_port) .. "...", 2.5)
+        local shown = (self.privacy_mask and self.sakura)
+            and self.sakura.mask_addr(tostring(target_ip) .. ":" .. tostring(target_port))
+            or (tostring(target_ip) .. ":" .. tostring(target_port))
+        local tag = fallback and "（免费 P2P 优先，不通自动切樱花中继）" or ""
+        self.overlay:show_toast("正在连接房主 " .. shown .. tag .. "...", 2.8)
     end
     return true
 end
@@ -976,10 +993,12 @@ function lobby:update(dt)
             self.peer_name = "正在握手 (" .. tostring(ev.ip) .. ")..."
         elseif ev.type == "lan_connected" then
             self:on_lan_connected(ev.ip, ev.port)
+        elseif ev.type == "lan_fallback" then
+            self.overlay:show_toast("免费 P2P 端口导出未通，已自动切回樱花中继线路继续连接...", 3.0)
         elseif ev.type == "lan_connect_failed" then
             self.pending_lan_join = nil
             if not ev.silent then
-                self.overlay:show_toast("连接房主失败：" .. tostring(ev.reason), 4)
+                self.overlay:show_toast("连接房主失败：" .. tostring(ev.reason), 5.0)
             end
             autotest:on_lan_connect_failed()
         elseif ev.type == "peer_disconnected" then
@@ -1002,6 +1021,13 @@ function lobby:update(dt)
                         }
                     end
                 end
+            elseif ev.reason == "early_eof_refused" and self.role == "client" then
+                self.role = "none"
+                self.view = "home"
+                self.sub_modal = nil
+                self.transport:close()
+                if self.open then self.transport:start_lan_scan() end
+                self.overlay:show_toast("已连到樱花节点，但房主游戏未就绪！请确认：① 房主已点「创建房间」；② 樱花本地端口填的是 17777！", 6.5)
             else
                 self.overlay:show_toast("队友已断开连接。", 3.5)
             end

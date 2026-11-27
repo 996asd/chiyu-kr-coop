@@ -89,6 +89,9 @@ function boot:wrap_love_callbacks()
         if self.lobby then
             self.lobby:update(dt)
         end
+        if self.sakura then
+            self.sakura:update(dt, self.lobby)
+        end
         if self.voice then
             self.voice:update(dt, self.lobby, self.coop)
         end
@@ -185,6 +188,9 @@ function boot:wrap_love_callbacks()
     local orig_quit = love.quit
     love.quit = function(...)
         self:log("Shutting down KR-MP...")
+        if self.sakura then
+            self.sakura:shutdown()
+        end
         if self.voice then
             self.voice:shutdown()
         end
@@ -494,6 +500,7 @@ function boot:init(source)
     local ok_l, lockstep_mod = pcall(require, "kr_mp.lockstep")
     local ok_lb, lobby_mod = pcall(require, "kr_mp.lobby_ui")
     local ok_v, voice_mod = pcall(require, "kr_mp.voice")
+    local ok_sk, sakura_mod = pcall(require, "kr_mp.sakura")
 
     if ok_t and ok_c and ok_l and ok_lb then
         self.transport = transport_mod
@@ -508,10 +515,17 @@ function boot:init(source)
         else
             self:log("ERROR loading kr_mp.voice: %s", tostring(voice_mod))
         end
+        if ok_sk and sakura_mod then
+            self.sakura = sakura_mod
+            pcall(sakura_mod.init, sakura_mod, self, overlay)
+            self.lobby.sakura = self.sakura
+        else
+            self:log("ERROR loading kr_mp.sakura: %s", tostring(sakura_mod))
+        end
         self.coop:init(self, self.lockstep, overlay)
         self.lockstep:init(self, self.transport, self.coop, overlay)
         self.lobby:init(self, self.transport, self.lockstep, self.coop, overlay)
-        self:log("M2 Co-op modules loaded (LAN+Online Transport + Lockstep Reconnect + Co-op + Lobby + Voice).")
+        self:log("M2 Co-op modules loaded (LAN+Online Transport + SakuraFrp + Lockstep Reconnect + Co-op + Lobby + Voice).")
     else
         self:log("ERROR loading M2 modules: t=%s c=%s l=%s lb=%s",
             tostring(transport_mod), tostring(coop_mod), tostring(lockstep_mod), tostring(lobby_mod))

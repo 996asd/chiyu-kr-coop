@@ -23,23 +23,35 @@ end
 
 local function parse_sakura_parts(addr)
     if type(addr) ~= "string" then return nil end
-    local clean = proto.sanitize_addr(addr)
-    local host, port = clean:match("^([^:]+):(%d+)$")
+    local primary = proto.split_fallback_addr(addr)
+    local host, port = primary:match("^([^:]+):(%d+)$")
     if not host or not port then return nil end
     local lower = host:lower()
     local prefix, base = lower:match("^(dx%.)(.+)$")
     if not prefix then prefix, base = lower:match("^(yd%.)(.+)$") end
     if not prefix then prefix, base = lower:match("^(lt%.)(.+)$") end
     base = base or lower
-    if base:match("^frp%-[%w%-]+%.%w+$") or base:match("^[%w%-]+%.natfrp%.cloud$") or base:match("^[%w%-]+%.sakurafrp%.com$") then
+    if base:match("^frp%-[%w%-]+%.%w+$") then
         local carrier = (prefix == "dx.") and "dx" or ((prefix == "yd.") and "yd" or "default")
-        return base, port, carrier
+        return base, port, carrier, true
+    elseif base:match("^[%w%-]+%.natfrp%.cloud$") or base:match("^[%w%-]+%.sakurafrp%.com$") then
+        local carrier = (prefix == "dx.") and "dx" or ((prefix == "yd.") and "yd" or "default")
+        return base, port, carrier, true
+    elseif base:match("^[%w%.%-]+%.nyat%.app$") then
+        return base, port, "default", false
     end
     return nil
 end
 
+M.parse_sakura_parts = parse_sakura_parts
+
 function M.is_sakura_addr(addr)
     return parse_sakura_parts(addr) ~= nil
+end
+
+function M.supports_sakura_carrier(addr)
+    local _, _, _, sup = parse_sakura_parts(addr)
+    return sup == true
 end
 
 function M.get_sakura_carrier(addr)
@@ -48,14 +60,18 @@ function M.get_sakura_carrier(addr)
 end
 
 function M.switch_sakura_carrier(addr, carrier)
-    local base, port = parse_sakura_parts(addr)
-    if not base or not port then return nil end
+    local primary, fallback = proto.split_fallback_addr(addr)
+    local base, port, _, sup = parse_sakura_parts(primary)
+    if not base or not port or not sup then return nil end
+    local next_p
     if carrier == "dx" then
-        return "dx." .. base .. ":" .. port
+        next_p = "dx." .. base .. ":" .. port
     elseif carrier == "yd" then
-        return "yd." .. base .. ":" .. port
+        next_p = "yd." .. base .. ":" .. port
+    else
+        next_p = base .. ":" .. port
     end
-    return base .. ":" .. port
+    return fallback and (next_p .. "|" .. fallback) or next_p
 end
 
 function M.record_recent_addr(lobby, raw_addr)
@@ -148,6 +164,17 @@ function M.load_prefs(lobby)
     if obj.seen_guide ~= nil then
         lobby.seen_guide = (obj.seen_guide == true)
     end
+    if obj.privacy_mask ~= nil then
+        lobby.privacy_mask = (obj.privacy_mask == true)
+    end
+    if lobby.sakura then
+        if type(obj.sakura_token) == "string" and #obj.sakura_token > 0 then
+            lobby.sakura:set_token(obj.sakura_token)
+        end
+        if obj.sakura_public_mode ~= nil then
+            lobby.sakura.public_mode = (obj.sakura_public_mode == true)
+        end
+    end
 end
 
 function M.save_prefs(lobby)
@@ -173,6 +200,9 @@ function M.save_prefs(lobby)
         voice_peer_muted = lobby.voice and (lobby.voice.peer_muted == true) or false,
         voice_indicator_style = lobby.voice and lobby.voice.indicator_style or "compact",
         seen_guide = (lobby.seen_guide == true),
+        privacy_mask = (lobby.privacy_mask == true),
+        sakura_token = (lobby.sakura and type(lobby.sakura.token) == "string") and lobby.sakura.token or "",
+        sakura_public_mode = (lobby.sakura and lobby.sakura.public_mode == true) or false,
     }
     local f = io.open(get_prefs_path(), "w")
     if f then
@@ -205,12 +235,13 @@ function M.paste_into_field(lobby, field_name)
         return false
     end
     if field_name == "ip" then
-        local clean = proto.sanitize_addr(clip):sub(1, 80)
+        local clean = proto.sanitize_addr(clip):sub(1, 96)
         if #clean > 0 then
             lobby.ip_input = clean
             M.record_recent_addr(lobby, clean)
             M.save_prefs(lobby)
-            lobby.overlay:show_toast("已粘贴直连/映射地址：" .. clean, 3.0)
+            local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(clean) or clean
+            lobby.overlay:show_toast("已粘贴直连/映射地址：" .. shown, 3.0)
             return true
         end
     elseif field_name == "server" then
@@ -227,6 +258,18 @@ function M.paste_into_field(lobby, field_name)
     elseif field_name == "pw" then
         local clean = clip:gsub("[^%w%-%_@#]", ""):sub(1, 16)
         if #clean > 0 then lobby.pw_input = clean; return true end
+    elseif field_name == "sakura_token" then
+        if lobby.sakura then
+            local clean = lobby.sakura:set_token(clip)
+            if #clean >= 8 then
+                M.save_prefs(lobby)
+                lobby.overlay:show_toast("已粘贴樱花访问密钥（已隐藏显示），正在同步账号与节点...", 2.8)
+                lobby.sakura:refresh_api()
+                return true
+            end
+            lobby.overlay:show_toast("剪贴板内容不像有效的樱花访问密钥（长度不足）。", 2.8)
+            return false
+        end
     end
     lobby.overlay:show_toast("剪贴板里未识别到有效地址，请重新复制。", 2.8)
     return false

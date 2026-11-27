@@ -6,6 +6,7 @@ local updater = require("kr_mp.updater")
 local lobby_prefs = require("kr_mp.lobby_prefs")
 local ui = require("kr_mp.ui_assets")
 local modals = require("kr_mp.lobby_draw_modals")
+local sakura_modal = require("kr_mp.lobby_draw_sakura")
 
 local M = {}
 
@@ -54,17 +55,27 @@ local function resolve_banner_title(lobby)
     elseif lobby.sub_modal == "hero2" then return "英雄殿 · 选 2P 队友"
     elseif lobby.sub_modal == "towers" then return "皇家军械库 · 59选12"
     elseif lobby.sub_modal == "voice" then return "语音调音 · 麦克风设置"
+    elseif lobby.sub_modal == "sakura" then return "樱花映射助手 · SakuraFrp"
     end
     return "双人同盟 · 皇家战桌"
 end
 
+local function mask_if_private(lobby, addr)
+    if lobby.privacy_mask and lobby.sakura and type(addr) == "string" and #addr > 0 then
+        return lobby.sakura.mask_addr(addr)
+    end
+    return tostring(addr or "")
+end
+
 local function draw_home_lan(ctx, y)
     local lobby, T, cx, cw, py, ph, fm, add_btn = ctx.lobby, ctx.T, ctx.cx, ctx.cw, ctx.py, ctx.ph, ctx.font_map, ctx.add_btn
+    local sk = lobby.sakura
     local has_direct_rc = (lobby.saved_session ~= nil and lobby.saved_session.mode == "direct")
     if has_direct_rc then
         local s = lobby.saved_session
+        local rc_addr = mask_if_private(lobby, tostring(s.host) .. ":" .. tostring(tonumber(s.port) or 17777))
         add_btn("reconnect_direct",
-            string.format("一键高速追帧重连上次樱花/局域网对局 (2P)  @  %s:%d", tostring(s.host), tonumber(s.port) or 17777),
+            string.format("一键高速追帧重连上次樱花/局域网对局 (2P)  @  %s", rc_addr),
             cx, y, cw, 30, "battle", { small = true })
         y = y + 36
     end
@@ -72,51 +83,82 @@ local function draw_home_lan(ctx, y)
     local card_w = math.floor((cw - 14) / 2)
     local card_h = has_direct_rc and 152 or 166
 
-    -- Left Contract: 1P Host
+    -- Left Contract: 1P Host + Auto-Detected Local SakuraFrp Status
     ui.draw_parchment_card(cx, y, card_w, card_h, {
         top = { 236, 240, 232, 250 }, bot = { 228, 214, 178, 250 },
         border = T.p1_border, border_w = 2, thumbtack = true,
     })
-    ui.draw_pill(cx + 14, y + 12, 168, 20, "1P 房主 · 蓝方旗帜 (热续传)", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, fm.tiny_bold)
-    ui.text("设立樱花 / 局域网战桌", cx + 14, y + 37, T.ink_text, fm.hero)
-    ui.text("TCP 17777 零服务器直连；内置 180 秒樱花闪断热续传与 2P 闪退追帧重连。",
-        cx + 14, y + 58, T.ink_sub, fm.tiny, card_w - 28, "left")
+    ui.draw_pill(cx + 14, y + 12, 152, 20, "1P 房主 · 蓝方旗帜 (热续传)", T.p1_top, T.p1_border, { 242, 250, 255, 255 }, fm.tiny_bold)
+    local sk_disp, sk_copy, sk_p2p = nil, nil, false
+    if sk then sk_disp, sk_copy, sk_p2p = sk:get_host_share_addr(proto.DEFAULT_TCP_PORT) end
+    add_btn("open_sakura", sk_disp and "樱花助手√" or "樱花助手", cx + card_w - 92, y + 10, 78, 22,
+        sk_disp and "battle" or "azure", { tiny = true })
+    ui.text("设立樱花 / 局域网战桌", cx + 14, y + 36, T.ink_text, fm.hero)
+    if sk_disp then
+        local s_line = "本机樱花已就绪：" .. mask_if_private(lobby, sk_disp) .. (sk_p2p and " [P2P]" or "")
+        ui.text(s_line, cx + 14, y + 57, { 34, 108, 48, 255 }, fm.tiny_bold, card_w - 28, "left")
+    elseif sk and sk.installed then
+        ui.text("已检测到官方樱花启动器（暂未开启隧道），点右上「樱花助手」或下方一键启动。",
+            cx + 14, y + 56, T.ink_sub, fm.tiny, card_w - 28, "left")
+    else
+        ui.text("TCP 17777 零服务器直连；内置 180 秒樱花闪断热续传与 2P 闪退追帧重连。",
+            cx + 14, y + 56, T.ink_sub, fm.tiny, card_w - 28, "left")
+    end
     add_btn("host_lan", "创建房间并备战", cx + 14, y + card_h - 66, card_w - 28, 32, "battle", { small = false })
-    add_btn("join_local", "本机双开快速加入 (127.0.0.1)", cx + 14, y + card_h - 28, card_w - 28, 21, "parchment", { tiny = true })
+    local bw1 = math.floor((card_w - 28 - 6) * 0.52)
+    local bw2 = (card_w - 28 - 6) - bw1
+    add_btn("join_local", "本机双开 (127.0.0.1)", cx + 14, y + card_h - 28, bw1, 21, "parchment", { tiny = true })
+    if sk_disp then
+        add_btn("sakura_copy_detected", "复制樱花地址", cx + 14 + bw1 + 6, y + card_h - 28, bw2, 21, "wood", { tiny = true, copy_addr = sk_copy })
+    elseif sk and sk.installed then
+        add_btn("sakura_launch_app", "启动官方樱花", cx + 14 + bw1 + 6, y + card_h - 28, bw2, 21, "wood", { tiny = true })
+    else
+        add_btn("sakura_launch_app", "下载官方樱花", cx + 14 + bw1 + 6, y + card_h - 28, bw2, 21, "parchment", { tiny = true })
+    end
 
-    -- Right Contract: 2P Guest / SakuraFrp Smart Paste + Carrier Switch
+    -- Right Contract: 2P Guest / SakuraFrp Smart Paste + 3-Line Speed Probe + Privacy Mask
     local rx = cx + card_w + 14
     ui.draw_parchment_card(rx, y, card_w, card_h, {
         top = { 250, 238, 226, 250 }, bot = { 234, 212, 176, 250 },
         border = T.p2_border, border_w = 2, thumbtack = true,
     })
     ui.draw_pill(rx + 14, y + 12, 146, 20, "2P 队友 · 樱花一键直连", T.p2_top, T.p2_border, { 255, 244, 244, 255 }, fm.tiny_bold)
-    ui.text("粘贴樱花 / 局域网地址直连", rx + 14, y + 37, T.ink_text, fm.hero)
+    add_btn("toggle_privacy", lobby.privacy_mask and "防窥:开" or "防窥:关", rx + card_w - 76, y + 10, 62, 22,
+        lobby.privacy_mask and "azure" or "parchment", { tiny = true })
+    ui.text("粘贴樱花 / 局域网地址直连", rx + 14, y + 36, T.ink_text, fm.hero)
 
-    local ip_disp = lobby.ip_input
-    if #ip_disp > 32 then ip_disp = "..." .. ip_disp:sub(-29) end
+    local ip_raw = (lobby.focused_field == "ip") and lobby.ip_input or mask_if_private(lobby, lobby.ip_input)
+    local ip_disp = (#ip_raw > 30) and ("..." .. ip_raw:sub(-27)) or ip_raw
     local ip_w = card_w - 28 - 64
-    add_btn("ip_box", ip_disp .. (lobby.focused_field == "ip" and "|" or ""), rx + 14, y + 61, ip_w, 27, "input", {
+    add_btn("ip_box", ip_disp .. (lobby.focused_field == "ip" and "|" or ""), rx + 14, y + 56, ip_w, 25, "input", {
         small = true, focused = (lobby.focused_field == "ip"),
     })
-    add_btn("paste_ip", "粘贴", rx + 14 + ip_w + 6, y + 61, 58, 27, "wood", { small = true })
+    add_btn("paste_ip", "粘贴", rx + 14 + ip_w + 6, y + 56, 58, 25, "wood", { small = true })
 
-    if lobby_prefs.is_sakura_addr(lobby.ip_input) then
+    if lobby_prefs.supports_sakura_carrier(lobby.ip_input) then
         local cur_c = lobby_prefs.get_sakura_carrier(lobby.ip_input)
-        local cw3 = math.floor((card_w - 28 - 10) / 3)
-        local cy3 = y + 92
+        local cw4 = math.floor((card_w - 28 - 15) / 4)
+        local cy4 = y + 85
         local carriers = {
             { id = "default", lbl = "默认线" },
-            { id = "dx",      lbl = "电信(dx)" },
-            { id = "yd",      lbl = "移动(yd)" },
+            { id = "dx",      lbl = "电信dx" },
+            { id = "yd",      lbl = "移动yd" },
         }
         for ci, cinfo in ipairs(carriers) do
             local act = (cur_c == cinfo.id)
-            add_btn("sakura_carrier", cinfo.lbl, rx + 14 + (ci - 1) * (cw3 + 5), cy3, cw3, 20,
+            local lbl = sk and sk:get_probe_label(lobby.ip_input, cinfo.id, cinfo.lbl) or cinfo.lbl
+            add_btn("sakura_carrier", lbl, rx + 14 + (ci - 1) * (cw4 + 5), cy4, cw4, 20,
                 act and "azure" or "parchment", { tiny = true, carrier = cinfo.id })
         end
+        local pb_lbl = (sk and sk.probe_running) and "测速中.." or "三线测速"
+        add_btn("sakura_probe", pb_lbl, rx + 14 + 3 * (cw4 + 5), cy4, (card_w - 28) - 3 * (cw4 + 5), 20,
+            (sk and sk.probe_running) and "wood" or "battle", { tiny = true })
+    elseif select(2, proto.split_fallback_addr(lobby.ip_input)) ~= nil then
+        ui.text("已识别免费 P2P + 樱花中继双地址：优先直连，2.6 秒不通自动切中继！", rx + 14, y + 86, { 34, 108, 48, 255 }, fm.tiny, card_w - 28, "left")
+    elseif lobby_prefs.is_sakura_addr(lobby.ip_input) then
+        ui.text("已识别樱花免费子域 (.nyat.app)，支持 180 秒闪断热续传与追帧重连！", rx + 14, y + 86, { 34, 108, 48, 255 }, fm.tiny, card_w - 28, "left")
     else
-        ui.text("复制整行樱花日志点「粘贴」(Ctrl+V) 自动提取并识别电信/移动线路！", rx + 14, y + 93, T.ink_muted, fm.tiny, card_w - 28, "left")
+        ui.text("复制整行樱花日志点「粘贴」(Ctrl+V) 自动提取地址，支持三线测速选优！", rx + 14, y + 86, T.ink_muted, fm.tiny, card_w - 28, "left")
     end
 
     local lan_connecting = (not lobby.transport:is_online()) and lobby.transport:is_connecting()
@@ -135,7 +177,8 @@ local function draw_home_lan(ctx, y)
         local max_chip_w = math.floor((cw - 128 - (#rec - 1) * 6) / #rec)
         for ri = 1, #rec do
             local addr = rec[ri]
-            local disp = (#addr > 26) and ("..." .. addr:sub(-23)) or addr
+            local shown = mask_if_private(lobby, addr)
+            local disp = (#shown > 24) and ("..." .. shown:sub(-21)) or shown
             add_btn("use_recent_addr", disp, rx_c + (ri - 1) * (max_chip_w + 6), y + 7, max_chip_w, 22, "wood", {
                 tiny = true, addr = addr,
             })
@@ -459,6 +502,9 @@ local function draw_room_armory_tray(ctx, y, is_host)
         hovered_tw_name and T.gold_bright or { 228, 202, 154, 215 }, fm.tiny)
 
     if is_host then
+        if not lobby.transport:is_online() then
+            add_btn("open_sakura", "樱花助手", cx + cw - 284, y + 5, 70, 23, "azure", { tiny = true })
+        end
         add_btn("open_guide", "新手教程", cx + cw - 208, y + 5, 76, 23, "parchment", { tiny = true, tab = 2 })
         add_btn("open_towers", string.format("配置 %d 选 12", catalog.TOTAL_TOWERS or 59), cx + cw - 126, y + 5, 114, 23, "wood", { tiny = true })
     else
@@ -485,6 +531,10 @@ local function draw_room(ctx)
 
     local net_info, net_style, net_fg
     local port_drifted = is_host and (not lobby.transport:is_online()) and lobby.transport:is_port_drifted()
+    local sk_disp = nil
+    if is_host and (not lobby.transport:is_online()) and (not port_drifted) and lobby.sakura then
+        sk_disp = lobby.sakura:get_host_share_addr(lobby.transport:get_port())
+    end
     if lobby.transport:is_online() then
         net_info = string.format("#%s (点复制) · %dms", tostring(lobby.online_room_code or "----"), rtt)
         net_style = "parchment"
@@ -492,17 +542,31 @@ local function draw_room(ctx)
         net_info = string.format("警告!端口:%d!", lobby.transport:get_port())
         net_style = "crimson"
         net_fg = { 255, 244, 218, 255 }
+    elseif is_host and sk_disp then
+        local shown = mask_if_private(lobby, sk_disp)
+        if #shown > 14 then shown = shown:sub(1, 13) .. ".." end
+        net_info = "樱花:" .. shown
+        net_style = "battle"
+        net_fg = { 255, 252, 236, 255 }
     elseif is_host then
-        net_info = string.format("TCP:%d (复制) · %dms", lobby.transport:get_port(), rtt)
+        net_info = string.format("TCP:%d(复制)·%dms", lobby.transport:get_port(), rtt)
         net_style = "parchment"
     else
-        net_info = string.format("直连 (复制) · %dms", rtt)
+        net_info = string.format("直连(复制)·%dms", rtt)
         net_style = "parchment"
     end
     local info_w = is_host and 166 or 154
-    add_btn("copy_net_info", net_info, cx + 136, y, info_w, 24, net_style, {
-        tiny = true, fg = net_fg or T.ink_sub,
-    })
+    if is_host and not lobby.transport:is_online() then
+        add_btn("copy_net_info", net_info, cx + 136, y, 138, 24, net_style, {
+            tiny = true, fg = net_fg or T.ink_sub,
+        })
+        add_btn("toggle_privacy", lobby.privacy_mask and "隐" or "显", cx + 136 + 140, y, 26, 24,
+            lobby.privacy_mask and "azure" or "parchment", { tiny = true })
+    else
+        add_btn("copy_net_info", net_info, cx + 136, y, info_w, 24, net_style, {
+            tiny = true, fg = net_fg or T.ink_sub,
+        })
+    end
 
     if lobby.voice then
         local v_ok, v_mode, v_talk = lobby.voice.supported, lobby.voice.mode, lobby.voice.local_talking
@@ -627,6 +691,8 @@ function M.draw(lobby)
 
     if lobby.sub_modal == "guide" then
         modals.draw_guide(ctx)
+    elseif lobby.sub_modal == "sakura" then
+        sakura_modal.draw(ctx)
     elseif lobby.view == "home" then
         draw_home(ctx)
     elseif lobby.sub_modal == "stages" then

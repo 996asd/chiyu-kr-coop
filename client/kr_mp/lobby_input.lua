@@ -13,13 +13,14 @@ local INPUT_BOX_IDS = {
     server_box = true,
     code_box = true,
     pw_box = true,
+    sakura_token_box = true,
 }
 
 local TAB_SFX_IDS = {
     tab_lan = true, tab_online = true,
     stage_pack = true, hero_pack = true, tower_pack = true,
     open_stages = true, open_hero1 = true, open_hero2 = true, open_towers = true,
-    open_guide = true, guide_tab = true,
+    open_guide = true, guide_tab = true, open_sakura = true,
 }
 
 local function toggle_tower_in_deck(deck, tid)
@@ -107,7 +108,7 @@ function BTN_HANDLERS.join_local(lobby) lobby:join_lan_room("127.0.0.1", proto.D
 function BTN_HANDLERS.ip_box(lobby) lobby:set_focus("ip") end
 function BTN_HANDLERS.paste_ip(lobby) lobby:paste_into_field("ip") end
 function BTN_HANDLERS.join_ip(lobby)
-    lobby.ip_input = proto.sanitize_addr(lobby.ip_input):sub(1, 80)
+    lobby.ip_input = proto.sanitize_addr(lobby.ip_input):sub(1, 96)
     lobby_prefs.record_recent_addr(lobby, lobby.ip_input)
     lobby:save_prefs()
     lobby:join_lan_room(lobby.ip_input)
@@ -119,7 +120,113 @@ function BTN_HANDLERS.sakura_carrier(lobby, btn)
         lobby_prefs.record_recent_addr(lobby, next_addr)
         lobby:save_prefs()
         local names = { default = "默认线", dx = "电信专线 (dx.)", yd = "移动专线 (yd.)" }
-        lobby.overlay:show_toast("已切至樱花" .. (names[btn.carrier] or "默认线") .. "：" .. next_addr, 2.5)
+        local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(next_addr) or next_addr
+        lobby.overlay:show_toast("已切至樱花" .. (names[btn.carrier] or "默认线") .. "：" .. shown, 2.5)
+    end
+end
+function BTN_HANDLERS.sakura_probe(lobby)
+    if lobby.sakura then
+        lobby.sakura:start_carrier_probe(lobby.ip_input)
+    end
+end
+function BTN_HANDLERS.toggle_privacy(lobby)
+    lobby.privacy_mask = not lobby.privacy_mask
+    lobby:save_prefs()
+    lobby.overlay:show_toast(
+        lobby.privacy_mask and "已开启主播防窥打码：界面自动隐藏樱花地址与端口，点复制依然复制完整地址！"
+            or "已关闭防窥打码：恢复明文显示连接地址。",
+        2.8
+    )
+end
+function BTN_HANDLERS.open_sakura(lobby)
+    if lobby.overlay then lobby.overlay:clear_toast() end
+    if lobby.sakura then
+        lobby.sakura:scan_local(true)
+        if type(lobby.sakura.token) == "string" and #lobby.sakura.token >= 8 and not lobby.sakura.user_info and not lobby.sakura.api_busy then
+            lobby.sakura:refresh_api()
+        end
+    end
+    lobby.sub_modal = "sakura"
+end
+function BTN_HANDLERS.sakura_rescan(lobby)
+    if lobby.sakura then
+        lobby.sakura:scan_local(true)
+        lobby.overlay:show_toast("已刷新本机官方樱花启动器与隧道状态。", 2.0)
+    end
+end
+function BTN_HANDLERS.sakura_launch_app(lobby)
+    if lobby.sakura then lobby.sakura:launch_official_launcher() end
+end
+function BTN_HANDLERS.sakura_copy_detected(lobby, btn)
+    local target = btn and btn.copy_addr
+    if not target and lobby.sakura then
+        local port = (lobby.role == "host" and lobby.transport and lobby.transport:get_port()) or proto.DEFAULT_TCP_PORT
+        local _, copy = lobby.sakura:get_host_share_addr(port)
+        target = copy
+    end
+    if target and #target > 0 then
+        local has_p2p = (select(2, proto.split_fallback_addr(target)) ~= nil)
+        local msg
+        if lobby.privacy_mask then
+            msg = has_p2p and "已复制免费 P2P + 樱花中继双地址（防窥隐藏），发给队友粘贴即可！"
+                or "已复制樱花公网联机地址（防窥隐藏），发给队友粘贴即可进房！"
+        else
+            msg = (has_p2p and "已复制 P2P+中继双地址：" or "已复制樱花联机地址：") .. target
+        end
+        lobby:copy_to_clipboard(target, msg)
+    else
+        lobby.overlay:show_toast("暂未检测到可复制的活跃樱花地址，请先启动一条 TCP 17777 隧道。", 2.8)
+    end
+end
+function BTN_HANDLERS.sakura_token_box(lobby) lobby:set_focus("sakura_token") end
+function BTN_HANDLERS.paste_sakura_token(lobby) lobby:paste_into_field("sakura_token") end
+function BTN_HANDLERS.sakura_api_refresh(lobby)
+    if lobby.sakura then lobby.sakura:refresh_api() end
+end
+function BTN_HANDLERS.sakura_token_clear(lobby)
+    if lobby.sakura then
+        lobby.sakura:stop_managed_frpc()
+        lobby.sakura:set_token("")
+        lobby:save_prefs()
+        lobby.overlay:show_toast("已清空本地保存的樱花访问密钥。", 2.2)
+    end
+end
+function BTN_HANDLERS.sakura_toggle_public(lobby)
+    if lobby.sakura then
+        lobby.sakura.public_mode = not lobby.sakura.public_mode
+        lobby.sakura:rebuild_filtered_nodes()
+        lobby:save_prefs()
+        lobby.overlay:show_toast(
+            lobby.sakura.public_mode and "已开启【公开直播合规模式】：仅推荐樱花官方允许公开招人的「多线」节点！"
+                or "已切为【熟人私密开黑模式】：可任选低负载普通/多线节点（请勿向公网大群公布普通节点地址）。",
+            3.2
+        )
+    end
+end
+function BTN_HANDLERS.sakura_start_frpc(lobby, btn)
+    if not lobby.sakura or not btn.tunnel then return end
+    local ok, err = lobby.sakura:start_managed_frpc(btn.tunnel)
+    if ok then
+        lobby.overlay:show_toast("已后台静默启动隧道「" .. tostring(btn.tunnel.name) .. "」，可直接建房并一键复制地址！", 3.2)
+    else
+        lobby.overlay:show_toast("启动隧道失败：" .. tostring(err), 3.6)
+    end
+end
+function BTN_HANDLERS.sakura_stop_frpc(lobby)
+    if lobby.sakura and lobby.sakura:stop_managed_frpc() then
+        lobby.overlay:show_toast("已停止 KR-MP 内置启动的樱花隧道。", 2.2)
+    end
+end
+function BTN_HANDLERS.sakura_use_online(lobby, btn)
+    if btn.tunnel and btn.tunnel.addr then
+        local c = btn.tunnel.p2p_addr and (btn.tunnel.p2p_addr .. "|" .. btn.tunnel.addr) or btn.tunnel.addr
+        BTN_HANDLERS.sakura_copy_detected(lobby, { copy_addr = c })
+    end
+end
+function BTN_HANDLERS.sakura_create_tunnel(lobby, btn)
+    if lobby.sakura and btn.node_id then
+        local port = (lobby.role == "host" and lobby.transport and lobby.transport:get_port()) or proto.DEFAULT_TCP_PORT
+        lobby.sakura:create_krmp_tunnel(btn.node_id, port)
     end
 end
 function BTN_HANDLERS.use_recent_addr(lobby, btn)
@@ -142,14 +249,30 @@ function BTN_HANDLERS.copy_net_info(lobby)
         end
     elseif lobby.role == "host" then
         local port = lobby.transport:get_port()
-        lobby:copy_to_clipboard("127.0.0.1:" .. tostring(port),
-            string.format("已复制本机端口 127.0.0.1:%d（樱花隧道本地端口请设为 %d）", port, port))
+        local sk_disp, sk_copy, sk_p2p = nil, nil, false
+        if lobby.sakura and not lobby.transport:is_port_drifted() then
+            sk_disp, sk_copy, sk_p2p = lobby.sakura:get_host_share_addr(port)
+        end
+        if sk_disp and sk_copy then
+            local msg
+            if lobby.privacy_mask then
+                msg = sk_p2p and "已复制免费 P2P + 樱花中继双地址（防窥隐藏），发给队友粘贴即可！"
+                    or "已复制本机樱花公网联机地址（防窥隐藏），发给队友粘贴即可！"
+            else
+                msg = (sk_p2p and "已复制 P2P+樱花双地址：" or "已复制本机樱花公网地址：") .. sk_copy
+            end
+            lobby:copy_to_clipboard(sk_copy, msg)
+        else
+            lobby:copy_to_clipboard("127.0.0.1:" .. tostring(port),
+                string.format("已复制本机端口 127.0.0.1:%d（樱花隧道本地端口请设为 %d）", port, port))
+        end
     else
         local addr = tostring(lobby.last_direct_host or lobby.ip_input or "127.0.0.1")
         if lobby.last_direct_port and not addr:find(":", 1, true) then
             addr = addr .. ":" .. tostring(lobby.last_direct_port)
         end
-        lobby:copy_to_clipboard(addr, "已复制房主地址：" .. addr)
+        local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(addr) or addr
+        lobby:copy_to_clipboard(addr, "已复制房主地址：" .. shown)
     end
 end
 
@@ -462,8 +585,12 @@ function M.textinput(lobby, t)
     for i = 1, #clean_t do
         local c = clean_t:sub(i, i)
         if f == "ip" then
-            if c:match("^[%d%.:a-zA-Z%-]$") and #lobby.ip_input < 80 then
+            if c:match("^[%d%.:a-zA-Z%-|]$") and #lobby.ip_input < 96 then
                 lobby.ip_input = lobby.ip_input .. c
+            end
+        elseif f == "sakura_token" then
+            if lobby.sakura and c:match("^[%w%-%_]$") and #(lobby.sakura.token or "") < 96 then
+                lobby.sakura.token = (lobby.sakura.token or "") .. c
             end
         elseif f == "server" then
             if c:match("^[%d%.:a-zA-Z%-]$") and #lobby.server_input < 80 then
@@ -508,6 +635,7 @@ function M.keypressed(lobby, key)
             return true
         elseif key == "backspace" then
             if f == "ip" then lobby.ip_input = lobby.ip_input:sub(1, -2)
+            elseif f == "sakura_token" and lobby.sakura then lobby.sakura.token = (lobby.sakura.token or ""):sub(1, -2)
             elseif f == "server" then lobby.server_input = lobby.server_input:sub(1, -2)
             elseif f == "code" then lobby.code_input = lobby.code_input:sub(1, -2)
             elseif f == "pw" then lobby.pw_input = lobby.pw_input:sub(1, -2)
@@ -516,9 +644,12 @@ function M.keypressed(lobby, key)
         elseif key == "return" or key == "kpenter" then
             lobby:set_focus(nil)
             if f == "ip" then
-                lobby.ip_input = proto.sanitize_addr(lobby.ip_input):sub(1, 80)
+                lobby.ip_input = proto.sanitize_addr(lobby.ip_input):sub(1, 96)
                 lobby:save_prefs()
                 lobby:join_lan_room(lobby.ip_input)
+            elseif f == "sakura_token" and lobby.sakura then
+                lobby:save_prefs()
+                lobby.sakura:refresh_api()
             elseif f == "server" then
                 lobby.server_input = proto.sanitize_addr(lobby.server_input):sub(1, 80)
                 lobby:save_prefs()

@@ -61,6 +61,8 @@ kr-mp-mod/
 │       ├── lobby_input.lua     # 大厅键盘/鼠标输入与表驱动按钮分发（BTN_HANDLERS）
 │       ├── lobby_draw.lua      # 皇家战桌首页与备战房间主渲染器
 │       ├── lobby_draw_modals.lua # 新手教程 / 201 关 / 105 英雄 / 59 选 12 塔 / 语音调音弹窗渲染器
+│       ├── lobby_draw_sakura.lua # 樱花映射专属助手弹窗（免密钥感知/防窥打码/OpenAPI v4 建隧道/启停 frpc）
+│       ├── sakura.lua          # 樱花映射深度适配（只读状态与日志感知、三线测速、OpenAPI v4、无窗 frpc 托管）
 │       ├── autotest.lua        # M1/M2 多进程自动化联机回归测试驱动（与正式 UI 完全解耦）
 │       ├── overlay.lua         # 顶部居中紧凑中文 HUD（金币/延迟/校验/倍速/暂停/转50金/语音调音/追帧进度条）
 │       ├── voice.lua           # 内置低延迟双向连麦语音（ADPCM/按V/自由麦/闭麦/混音增益/声波状态）

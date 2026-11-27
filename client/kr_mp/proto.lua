@@ -47,20 +47,51 @@ function proto.path_join(dir, name)
     return dir .. sep .. tostring(name or "")
 end
 
--- Cleanly extract host[:port] from clipboard / SakuraFrp / OpenFrp copy-paste strings
--- Handles whitespace, fullwidth Chinese colon "：", "tcp://", "http://", or surrounding Chinese text.
-function proto.sanitize_addr(raw)
+-- Cleanly extract host[:port] (or P2P|Relay dual address) from clipboard / SakuraFrp / OpenFrp copy-paste strings
+-- Handles SakuraLauncher log markers >>host:port<<, timestamps (ignores 12:34), fullwidth Chinese colon "：", "tcp://", etc.
+local function extract_single_addr(raw)
     if type(raw) ~= "string" then return "" end
     local s = raw:gsub("\r", " "):gsub("\n", " ")
     s = s:gsub("：", ":") -- Chinese fullwidth colon -> ASCII colon
     s = s:gsub("^[%s]+", ""):gsub("[%s]+$", "")
     s = s:gsub("^%a+://", "")
-    -- Try extracting explicit host:port token from pasted SakuraFrp lines like "连接地址: cn-cd-dx-2.natfrp.cloud:54321"
-    local hp = s:match("([%w%.%-]+:%d+)")
+    -- 1. Prefer official SakuraFrp log angle-bracket marker: >>frp-ski.com:54321<<
+    local sakura_mark = s:match(">>([%w%-]+%.[%w%.%-]+:%d+)<<")
+    if sakura_mark then return sakura_mark end
+    -- 2. Dotted hostname / IPv4 + port (explicitly excludes log timestamps like "12:34" or "07:25")
+    local hp = s:match("([%w%-]+%.[%w%.%-]+:%d+)")
     if hp then return hp end
-    -- Otherwise keep bare IP / hostname
-    local bare = s:match("([%w%.%-]+)")
-    return bare or ""
+    -- 3. localhost:port
+    local lh = s:match("([lL][oO][cC][aA][lL][hH][oO][sS][tT]:%d+)")
+    if lh then return lh:lower() end
+    -- 4. Bare dotted IP / hostname
+    local bare = s:match("([%w%-]+%.[%w%.%-]+)")
+    if bare then return bare end
+    local fallback = s:match("([%w%.%-]+)")
+    return fallback or ""
+end
+
+function proto.sanitize_addr(raw)
+    if type(raw) ~= "string" then return "" end
+    local p1, p2 = raw:match("^([^|]+)|([^|]+)$")
+    if p1 and p2 then
+        local a1 = extract_single_addr(p1)
+        local a2 = extract_single_addr(p2)
+        if #a1 > 0 and #a2 > 0 then
+            return a1 .. "|" .. a2
+        end
+    end
+    return extract_single_addr(raw)
+end
+
+-- Split optional "p2p_host:port|relay_host:port" dual address into (primary, fallback_or_nil)
+function proto.split_fallback_addr(raw)
+    local clean = proto.sanitize_addr(raw or "")
+    local p1, p2 = clean:match("^([^|]+)|([^|]+)$")
+    if p1 and p2 then
+        return p1, p2
+    end
+    return clean, nil
 end
 
 -- Core deterministic simulation & director scripts (100% identical between PC FL 8.2.0 and Android HD APK)

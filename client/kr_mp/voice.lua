@@ -43,6 +43,9 @@ local voice = {
     self_test = false,     -- local loopback test (hear yourself in lobby)
 
     -- Live runtime status
+    _tx_pack_buf = nil,    -- pending 40ms ADPCM frame for SakuraFrp 80ms low-PPS packing
+    _tx_pack_lvl = 0,
+    _tx_pack_ts = 0,
     active_room = false,
     peer_connected = false,
     online_server_ok = true,
@@ -1113,16 +1116,89 @@ function voice:on_voice_message(msg)
         return
     end
     local bin = b64_decode(msg.d)
-    if not bin or #bin < 6 then
-        return
-    end
-    if self.backend == "love_audio" then
-        if la_open_spk(self) then
-            la_play_adpcm(self, bin)
+    if bin and #bin >= 6 then
+        if self.backend == "love_audio" then
+            if la_open_spk(self) then
+                la_play_adpcm(self, bin)
+            end
+        elseif self.ch_cmd then
+            self.ch_cmd:push({ kind = "rx", data = bin })
         end
-    elseif self.ch_cmd then
-        self.ch_cmd:push({ kind = "rx", data = bin })
     end
+    -- Optional 2nd packed 40ms frame (80ms SakuraFrp Low-PPS mode, 100% backward compatible)
+    if type(msg.d2) == "string" and #msg.d2 >= 8 then
+        local bin2 = b64_decode(msg.d2)
+        if bin2 and #bin2 >= 6 then
+            if self.backend == "love_audio" then
+                if la_open_spk(self) then
+                    la_play_adpcm(self, bin2)
+                end
+            elseif self.ch_cmd then
+                self.ch_cmd:push({ kind = "rx", data = bin2 })
+            end
+        end
+    end
+end
+
+-- Automatically enable 2-frame (80ms) low-PPS packing on non-LAN / SakuraFrp connections (cuts voice PPS in half!)
+function voice:should_use_low_pps()
+    if not self.transport then return false end
+    if self.transport.is_online and self.transport:is_online() then
+        return true
+    end
+    local rtt = self.transport.get_rtt_ms and self.transport:get_rtt_ms() or 0
+    if rtt >= 18 then return true end
+    local lan = self.transport.lan_backend
+    if not lan then return false end
+    local ip = tostring(lan.peer_ip or "")
+    if ip ~= "" and ip ~= "127.0.0.1" and not ip:match("^192%.168%.") and not ip:match("^10%.") then
+        return true
+    end
+    return false
+end
+
+function voice:flush_tx_pack(now, force)
+    if not self._tx_pack_buf then return end
+    if not force and (now - (self._tx_pack_ts or 0)) < 0.075 then return end
+    local d1 = self._tx_pack_buf
+    local l1 = self._tx_pack_lvl or 25
+    self._tx_pack_buf = nil
+    self._tx_pack_lvl = 0
+    self._tx_pack_ts = 0
+    if self.transport and self.transport:is_connected() then
+        local qlen = self.transport.get_send_queue_len and self.transport:get_send_queue_len() or 0
+        if qlen < 8 then
+            self.transport:send({ t = "VOICE", d = d1, l = l1 })
+            self.tx_count = self.tx_count + 1
+        end
+    end
+end
+
+function voice:send_adpcm_frame(adpcm_bin, norm, now)
+    if not self.transport or not self.transport:is_connected() then return false end
+    local qlen = self.transport.get_send_queue_len and self.transport:get_send_queue_len() or 0
+    if qlen >= 8 then return false end
+    local lvl_int = math.min(100, math.max(1, math.floor(norm * 100 + 0.5)))
+    local b64 = b64_encode(adpcm_bin)
+    if self:should_use_low_pps() then
+        if not self._tx_pack_buf then
+            self._tx_pack_buf = b64
+            self._tx_pack_lvl = lvl_int
+            self._tx_pack_ts = now
+            return true
+        end
+        local d1 = self._tx_pack_buf
+        local l_max = math.max(self._tx_pack_lvl or 1, lvl_int)
+        self._tx_pack_buf = nil
+        self._tx_pack_lvl = 0
+        self._tx_pack_ts = 0
+        self.transport:send({ t = "VOICE", d = d1, d2 = b64, l = l_max })
+        self.tx_count = self.tx_count + 1
+        return true
+    end
+    self.transport:send({ t = "VOICE", d = b64, l = lvl_int })
+    self.tx_count = self.tx_count + 1
+    return true
 end
 
 function voice:_update_love_audio(now, peer_ok, srv_ok, want_mic, want_spk)
@@ -1218,21 +1294,17 @@ function voice:_update_love_audio(now, peer_ok, srv_ok, want_mic, want_spk)
                 la_play_adpcm(self, adpcm)
             end
             if peer_ok and srv_ok and self.transport and self.transport:is_connected() then
-                local qlen = self.transport.get_send_queue_len and self.transport:get_send_queue_len() or 0
-                if qlen < 8 then
-                    local lvl_int = math.min(100, math.max(1, math.floor(norm * 100 + 0.5)))
-                    self.transport:send({
-                        t = "VOICE",
-                        d = b64_encode(adpcm),
-                        l = lvl_int,
-                    })
-                    self.tx_count = self.tx_count + 1
-                end
+                self:send_adpcm_frame(adpcm, norm, now)
             end
             sent_this_tick = sent_this_tick + 1
         else
             self.local_level = self.local_level * 0.55 + norm * 0.45
         end
+    end
+    if peer_ok and srv_ok then
+        self:flush_tx_pack(now, false)
+    else
+        self._tx_pack_buf = nil
     end
 end
 
@@ -1334,19 +1406,16 @@ function voice:update(dt, lobby, coop)
 
             -- Transmit to peer if connected & transport queue is uncongested (never starve 60Hz lockstep!)
             if peer_ok and srv_ok and self.transport and self.transport:is_connected() and sent_this_tick < 3 then
-                local qlen = self.transport.get_send_queue_len and self.transport:get_send_queue_len() or 0
-                if qlen < 8 then
-                    local lvl_int = math.min(100, math.max(1, math.floor(norm * 100 + 0.5)))
-                    self.transport:send({
-                        t = "VOICE",
-                        d = b64_encode(ev.data),
-                        l = lvl_int,
-                    })
-                    self.tx_count = self.tx_count + 1
+                if self:send_adpcm_frame(ev.data, norm, now) then
                     sent_this_tick = sent_this_tick + 1
                 end
             end
         end
+    end
+    if peer_ok and srv_ok then
+        self:flush_tx_pack(now, false)
+    else
+        self._tx_pack_buf = nil
     end
 end
 
