@@ -61,6 +61,7 @@ type Room struct {
 	Seats [3]*Seat
 
 	// Active match lockstep cache for fast-forward reconnect
+	MatchID             string
 	MatchCfgRaw         json.RawMessage
 	TurnTicks           int
 	InputDelayTurns     int
@@ -392,6 +393,8 @@ func (h *Hub) HandleMessage(c *Client, msg *IncomingMsg) {
 		h.onDesyncDiagLocked(c, msg)
 	case "RETURN_LOBBY":
 		h.onReturnLobbyLocked(c, msg)
+	case "MATCH_FLOW":
+		h.onMatchFlowLocked(c, msg)
 	default:
 		c.Send(map[string]any{"t": "ERROR", "msg": "Unknown message type: " + msg.Type})
 	}
@@ -406,6 +409,7 @@ func (h *Hub) onReturnLobbyLocked(c *Client, msg *IncomingMsg) {
 		return
 	}
 	r.Status = "lobby"
+	r.MatchID = ""
 	r.MatchCfgRaw = nil
 	r.Turns = nil
 	r.HighestCompleteTurn = 0
@@ -441,6 +445,32 @@ func (h *Hub) onReturnLobbyLocked(c *Client, msg *IncomingMsg) {
 			})
 		}
 	}
+}
+
+func (h *Hub) onMatchFlowLocked(c *Client, msg *IncomingMsg) {
+	if c.roomCode == "" || c.pid < 1 || c.pid > 2 {
+		return
+	}
+	if msg.Action != "next" && msg.Action != "restart" && msg.Action != "cancel_auto" {
+		return
+	}
+	r, ok := h.rooms[c.roomCode]
+	if !ok {
+		return
+	}
+	other := r.Seats[3-c.pid]
+	if other == nil || !other.Connected || other.Client == nil {
+		return
+	}
+	pkt := map[string]any{
+		"t":      "MATCH_FLOW",
+		"pid":    c.pid,
+		"action": msg.Action,
+	}
+	if msg.LevelIdx != nil && *msg.LevelIdx >= 1 && *msg.LevelIdx <= 999 {
+		pkt["level_idx"] = *msg.LevelIdx
+	}
+	other.Client.Send(pkt)
 }
 
 func (h *Hub) onVoiceLocked(c *Client, msg *IncomingMsg) {
@@ -516,6 +546,7 @@ func (h *Hub) onHelloLocked(c *Client, msg *IncomingMsg) {
 		"voice_ok":           true,
 		"guest_stage_ok":     true,
 		"lobby_reconnect_ok": true,
+		"direct_next_ok":     true,
 		"client_id":          c.id,
 		"rooms":              h.buildRoomListLocked(),
 	})
@@ -896,8 +927,8 @@ func (h *Hub) onStartMatchLocked(c *Client, msg *IncomingMsg) {
 		c.Send(map[string]any{"t": "ERROR", "msg": "Only host can start the match."})
 		return
 	}
-	if r.Status != "lobby" {
-		c.Send(map[string]any{"t": "ERROR", "msg": "Match already started."})
+	if r.Status != "lobby" && r.Status != "running" && r.Status != "loading" {
+		c.Send(map[string]any{"t": "ERROR", "msg": "Match cannot start while waiting for reconnect."})
 		return
 	}
 	if r.Seats[2] == nil || !r.Seats[2].Connected {
@@ -918,6 +949,19 @@ func (h *Hub) onStartMatchLocked(c *Client, msg *IncomingMsg) {
 		cfgMeta.InputDelayTurns = 2
 	}
 
+	// Keep room metadata synced with latest chained stage
+	if cfgMeta.LevelIdx >= 1 && cfgMeta.LevelIdx <= 999 {
+		var roomMap map[string]any
+		if err := json.Unmarshal(r.RoomJSON, &roomMap); err == nil {
+			roomMap["level_idx"] = cfgMeta.LevelIdx
+			if b, err := json.Marshal(roomMap); err == nil {
+				r.RoomJSON = b
+				r.Meta = parseRoomMeta(r.RoomJSON)
+			}
+		}
+	}
+
+	r.MatchID = cfgMeta.MatchID
 	r.MatchCfgRaw = append(json.RawMessage(nil), msg.Cfg...)
 	r.TurnTicks = cfgMeta.TurnTicks
 	r.InputDelayTurns = cfgMeta.InputDelayTurns
@@ -961,6 +1005,9 @@ func (h *Hub) onLoadDoneLocked(c *Client, msg *IncomingMsg) {
 	if !ok || c.pid < 1 || c.pid > 2 || r.Seats[c.pid] == nil {
 		return
 	}
+	if msg.MatchID != "" && r.MatchID != "" && msg.MatchID != r.MatchID {
+		return
+	}
 	r.Seats[c.pid].Loaded = true
 	log.Printf("[ROOM %s] P%d LOAD_DONE", r.Code, c.pid)
 
@@ -969,6 +1016,9 @@ func (h *Hub) onLoadDoneLocked(c *Client, msg *IncomingMsg) {
 		r.UpdatedAt = time.Now()
 		log.Printf("[ROOM %s] Both loaded -> broadcasting BEGIN_SIM!", r.Code)
 		pkt := map[string]any{"t": "BEGIN_SIM"}
+		if r.MatchID != "" {
+			pkt["match_id"] = r.MatchID
+		}
 		for pid := 1; pid <= 2; pid++ {
 			if r.Seats[pid].Connected && r.Seats[pid].Client != nil {
 				r.Seats[pid].Client.Send(pkt)
@@ -982,7 +1032,7 @@ func (h *Hub) onTurnLocked(c *Client, msg *IncomingMsg) {
 	if !ok || c.pid < 1 || c.pid > 2 || msg.Turn == nil {
 		return
 	}
-	if r.Turns == nil {
+	if r.Status == "loading" || r.Turns == nil {
 		return
 	}
 

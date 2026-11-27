@@ -598,7 +598,17 @@ local function draw_room_center_column(ctx, mid_x, y, mid_w, is_host)
     })
     ui.draw_vgrad_rect(mp_x + 1, mp_y + mp_h - 52, mp_w - 2, 51, { 24, 12, 4, 0 }, { 22, 10, 4, 235 }, 4)
     local pks = PACK_TAG_STYLES[get_stage_pack_info(lobby.room.level_idx)] or PACK_TAG_STYLES.kr5
-    ui.draw_pill(mp_x + 7, mp_y + 7, 68, 19, pks.era, pks.bg, pks.border, pks.fg, fm.tiny_bold)
+    ui.draw_pill(mp_x + 7, mp_y + 7, 66, 19, pks.era, pks.bg, pks.border, pks.fg, fm.tiny_bold)
+    local auto_on = (lobby.room.auto_next_stage ~= false)
+    if is_host then
+        add_btn("toggle_auto_next", auto_on and "自动下一关:开" or "自动下一关:关",
+            mp_x + 79, mp_y + 6, 108, 22, auto_on and "battle" or "parchment", { tiny = true })
+    else
+        ui.draw_pill(mp_x + 79, mp_y + 7, 108, 19, auto_on and "自动下一关:开" or "自动下一关:关",
+            auto_on and { 38, 118, 56, 225 } or { 72, 54, 34, 210 },
+            auto_on and { 24, 80, 38, 240 } or { 148, 114, 62, 200 },
+            auto_on and { 246, 255, 242, 255 } or { 236, 220, 186, 230 }, fm.tiny_bold)
+    end
     add_btn("open_stages", string.format("切换地图 (%d关)", catalog.TOTAL_STAGES or 201),
         mp_x + mp_w - 114, mp_y + 6, 108, 22, "wood", { tiny = true })
     local df_info = DIFF_STYLES[lobby.room.level_difficulty] or DIFF_STYLES[2]

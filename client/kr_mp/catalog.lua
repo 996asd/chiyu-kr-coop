@@ -520,6 +520,26 @@ function catalog.get_stage_info(idx)
     return STAGE_BY_IDX[tonumber(idx) or catalog.DEFAULT_LEVEL]
 end
 
+-- Returns next stage idx within the same KR generation pack (exact campaign order),
+-- or nil when the current stage is the final stage of that pack.
+function catalog.get_next_stage_idx(idx)
+    local cur = tonumber(idx)
+    if not cur then return nil end
+    for _, pack in ipairs(catalog.STAGE_PACKS) do
+        local stages = pack.stages
+        for i = 1, #stages do
+            if stages[i].idx == cur then
+                local nxt = stages[i + 1]
+                if nxt then
+                    return nxt.idx, nxt, pack
+                end
+                return nil, nil, pack
+            end
+        end
+    end
+    return nil
+end
+
 function catalog.get_stage_label(idx)
     local s = STAGE_BY_IDX[tonumber(idx) or catalog.DEFAULT_LEVEL]
     if s then

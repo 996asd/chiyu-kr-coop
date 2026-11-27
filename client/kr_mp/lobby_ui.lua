@@ -13,6 +13,7 @@ local lobby_prefs = require("kr_mp.lobby_prefs")
 local lobby_input = require("kr_mp.lobby_input")
 local lobby_draw = require("kr_mp.lobby_draw")
 local autotest = require("kr_mp.autotest")
+local stage_flow = require("kr_mp.stage_flow")
 
 local DELAY_LABELS = {
     [2] = "缓冲:局域网100ms",
@@ -50,6 +51,7 @@ local function ensure_room_defaults(r)
     r.econ_mode = r.econ_mode or "independent"
     r.tower_mode = r.tower_mode or "owned"
     r.input_delay_turns = normalize_delay_turns(r.input_delay_turns)
+    if r.auto_next_stage == nil then r.auto_next_stage = true end
     loadout.normalize_room_loadout(r)
 end
 
@@ -103,6 +105,8 @@ local lobby = {
     server_voice_ok = true,
     server_guest_stage_ok = false,
     server_lobby_reconnect_ok = false,
+    server_direct_next_ok = false,
+    _pending_chain_stage = nil,
     online_reconnecting_room = false,
     online_reconnect_attempt = 0,
     online_reconnect_next_ts = 0,
@@ -143,6 +147,7 @@ local lobby = {
         cataclysm = loadout.DEFAULT_CATACLYSM,
         reinforcements = { [1] = loadout.DEFAULT_REINF, [2] = loadout.DEFAULT_REINF },
         max_tech = true,
+        auto_next_stage = true,
     },
 
     buttons = {},
@@ -283,6 +288,8 @@ function lobby:exit_dead_online_room(reason_toast)
     self.online_reconnecting_room = false
     self.online_reconnect_attempt = 0
     self._pending_lobby_reconnect = false
+    self._pending_chain_stage = nil
+    stage_flow:reset()
     self:clear_saved_session()
     self.role = "none"
     self.peer_connected = false
@@ -672,6 +679,8 @@ function lobby:leave_room()
     self.online_reconnecting_room = false
     self.online_reconnect_attempt = 0
     self._pending_lobby_reconnect = false
+    self._pending_chain_stage = nil
+    stage_flow:reset()
     if self.transport:is_online() and self.transport:is_connected() then
         self.transport:send({ t = "LEAVE_ROOM" })
     end
@@ -722,6 +731,29 @@ function lobby:on_return_lobby(by_pid, room_data, msg)
     self.online_reconnecting_room = false
     self._pending_lobby_reconnect = false
     if self.overlay then self.overlay.voice_panel_open = false end
+    -- Old online server fallback: Host silently bounces through RETURN_LOBBY -> UPDATE_ROOM -> START_MATCH without flashing War Table
+    if self.role == "host" and self._pending_chain_stage then
+        local pending = self._pending_chain_stage
+        self._pending_chain_stage = nil
+        if room_data then self.room = room_data; ensure_room_defaults(self.room) end
+        self.room.level_idx = pending.level_idx
+        ensure_room_defaults(self.room)
+        local peer_ok = (msg == nil or msg.peer_connected == nil) and true or (msg.peer_connected == true)
+        self.peer_connected = peer_ok
+        self.local_ready = true
+        self.peer_ready = peer_ok
+        self.open = false
+        self.sub_modal = nil
+        self:save_prefs()
+        if peer_ok and self:is_room_link_alive() then
+            self:broadcast_room_state()
+            if self:host_start_match(true) then
+                return
+            end
+        end
+    end
+    self._pending_chain_stage = nil
+    stage_flow:reset()
     if self.coop and self.coop:is_active() then
         self.coop:leave_match()
     end
@@ -757,7 +789,37 @@ function lobby:on_return_lobby(by_pid, room_data, msg)
     self.overlay:show_toast(string.format("%dP 返回战桌（连接保持不断），可直接换关或再次出征！", tonumber(by_pid) or 0), 3.0)
 end
 
-function lobby:host_start_match()
+function lobby:launch_chain_stage(target_level_idx, reason, requested_by_pid)
+    if self.role ~= "host" then return false end
+    local target = math.floor(tonumber(target_level_idx) or 0)
+    if target < 1 or target > 999 then return false end
+    if self.transport:is_online() and not self:is_room_link_alive() then
+        self.overlay:show_toast("与公网服务器连接已断开，无法切换关卡！", 3.5)
+        return false
+    end
+    if not self.peer_connected then
+        self.overlay:show_toast("2P 队友未在线，无法切换关卡！", 3.5)
+        return false
+    end
+    ensure_room_defaults(self.room)
+    self.room.level_idx = target
+    self:save_prefs()
+    local label = catalog.get_stage_label(target)
+    local prefix = (reason == "restart") and "正在原地重开：" or "正在自动进入下一关："
+    if self.overlay then self.overlay:show_toast(prefix .. label, 2.5) end
+    if self.transport:is_online() and self.server_direct_next_ok ~= true then
+        self._pending_chain_stage = { level_idx = target, reason = reason or "next" }
+        self.boot:log("[LOBBY] Old online server -> silent chain bounce to level=%d (reason=%s)", target, tostring(reason))
+        local sent = self.transport:send({ t = "RETURN_LOBBY", pid = 1 })
+        if not sent then self._pending_chain_stage = nil; return false end
+        return true
+    end
+    self.boot:log("[LOBBY] Direct chaining to level=%d (reason=%s, by=P%d, online=%s)",
+        target, tostring(reason), tonumber(requested_by_pid) or 1, tostring(self.transport:is_online()))
+    return self:host_start_match(true)
+end
+
+function lobby:host_start_match(is_chain)
     if self.role ~= "host" then return false end
     if self.transport:is_online() and not self:is_room_link_alive() then
         self.overlay:show_toast("与公网服务器连接已断开，无法发车！请等待自动重连或关闭重开房间。", 4.0)
@@ -806,12 +868,13 @@ function lobby:host_start_match()
         cataclysm = self.room.cataclysm,
         reinforcements = { self.room.reinforcements[1], self.room.reinforcements[2] },
         max_tech = (self.room.max_tech ~= false),
+        auto_next_stage = (self.room.auto_next_stage ~= false),
         slot_snapshot = slot_snap,
     }
 
-    self.boot:log("[LOBBY] Host launching 2P Co-op match (online=%s, level=%d, seed=%d, delay=%d, econ=%s, tower=%s, deck=%d)",
-        tostring(self.transport:is_online()), cfg.level_idx, cfg.seed, cfg.input_delay_turns, cfg.econ_mode, cfg.tower_mode, #cfg.towers)
-    local sent_ok = self.transport:send({ t = "START_MATCH", cfg = cfg })
+    self.boot:log("[LOBBY] Host launching 2P Co-op match (online=%s, chain=%s, level=%d, seed=%d, delay=%d, econ=%s, tower=%s, deck=%d)",
+        tostring(self.transport:is_online()), tostring(is_chain == true), cfg.level_idx, cfg.seed, cfg.input_delay_turns, cfg.econ_mode, cfg.tower_mode, #cfg.towers)
+    local sent_ok = self.transport:send({ t = "START_MATCH", cfg = cfg, direct_chain = (is_chain == true) })
     if not sent_ok then
         self.overlay:show_toast("发送开局指令失败：网络连接已断开！请等待重连或退出重开房间。", 4.0)
         return false
@@ -864,10 +927,11 @@ function MSG_HANDLERS.SERVER_HELLO(self, msg)
     self.server_voice_ok = (msg.voice_ok == true)
     self.server_guest_stage_ok = (msg.guest_stage_ok == true)
     self.server_lobby_reconnect_ok = (msg.lobby_reconnect_ok == true)
+    self.server_direct_next_ok = (msg.direct_next_ok == true)
     self.online_rooms = msg.rooms or {}
     updater:note_server_version(msg.server_ver)
-    self.boot:log("[LOBBY] Server hello OK (ver=%s, voice_ok=%s, guest_stage=%s, rooms=%d)",
-        tostring(msg.server_ver), tostring(self.server_voice_ok), tostring(self.server_guest_stage_ok), #self.online_rooms)
+    self.boot:log("[LOBBY] Server hello OK (ver=%s, voice_ok=%s, guest_stage=%s, direct_next=%s, rooms=%d)",
+        tostring(msg.server_ver), tostring(self.server_voice_ok), tostring(self.server_guest_stage_ok), tostring(self.server_direct_next_ok), #self.online_rooms)
     self:flush_pending_online_action()
 end
 
@@ -950,6 +1014,8 @@ function MSG_HANDLERS.ROOM_CLOSED(self, msg)
     self.online_reconnecting_room = false
     self.online_reconnect_attempt = 0
     self._pending_lobby_reconnect = false
+    self._pending_chain_stage = nil
+    stage_flow:reset()
     self:clear_saved_session()
     if self.coop and self.coop:is_active() then self.coop:leave_match() end
     self.role = "none"
@@ -1116,8 +1182,21 @@ function MSG_HANDLERS.SET_GUEST(self, msg)
     self:broadcast_room_state()
 end
 
+function MSG_HANDLERS.MATCH_FLOW(self, msg)
+    stage_flow:on_message(msg)
+end
+
 function MSG_HANDLERS.START_MATCH(self, msg)
     if not msg.cfg then return end
+    self._pending_chain_stage = nil
+    if self.room then
+        if tonumber(msg.cfg.level_idx) then
+            self.room.level_idx = math.floor(tonumber(msg.cfg.level_idx))
+        end
+        if msg.cfg.auto_next_stage ~= nil then
+            self.room.auto_next_stage = (msg.cfg.auto_next_stage == true)
+        end
+    end
     self.boot:log("[LOBBY] Received START_MATCH (pid=%d, level=%d, seed=%d, match_id=%s)",
         self.local_pid, msg.cfg.level_idx or 0, msg.cfg.seed or 0, tostring(msg.cfg.match_id))
     if msg.code and self.online_token then

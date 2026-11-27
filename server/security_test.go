@@ -233,3 +233,101 @@ doneRead:
 		t.Fatalf("host explicit LEAVE_ROOM should close room immediately")
 	}
 }
+
+func TestDirectChainNextStageAndMatchFlow(t *testing.T) {
+	hub := NewHubWithLimits(50, 100, 10, 4, 60*time.Second)
+	mkClient := func() *Client {
+		c := &Client{remoteIP: "127.0.0.1", hub: hub, sendCh: make(chan []byte, 32), done: make(chan struct{})}
+		hub.TryRegisterClient(c)
+		return c
+	}
+	drainAll := func(c *Client) []map[string]any {
+		var out []map[string]any
+		for {
+			select {
+			case b := <-c.sendCh:
+				var m map[string]any
+				_ = json.Unmarshal(b, &m)
+				out = append(out, m)
+			default:
+				return out
+			}
+		}
+	}
+
+	host := mkClient()
+	guest := mkClient()
+
+	// SERVER_HELLO advertises direct_next_ok
+	hub.HandleMessage(host, &IncomingMsg{Type: "HELLO", Proto: ProtocolVer})
+	msgs := drainAll(host)
+	if len(msgs) == 0 || msgs[0]["t"] != "SERVER_HELLO" || msgs[0]["direct_next_ok"] != true {
+		t.Fatalf("expected SERVER_HELLO with direct_next_ok=true, got %#v", msgs)
+	}
+
+	hub.HandleMessage(host, &IncomingMsg{
+		Type: "CREATE_ROOM",
+		Name: "ChainRoom",
+		Room: json.RawMessage(`{"name":"ChainRoom","level_idx":45,"heroes":[53,54]}`),
+	})
+	code := host.roomCode
+	hub.HandleMessage(guest, &IncomingMsg{Type: "JOIN_ROOM", Code: code})
+	drainAll(host)
+	drainAll(guest)
+
+	// Start Match #1 (level 45)
+	hub.HandleMessage(host, &IncomingMsg{
+		Type: "START_MATCH",
+		Cfg:  json.RawMessage(`{"match_id":"m1","level_idx":45,"seed":111,"turn_ticks":3,"input_delay_turns":2}`),
+	})
+	hub.HandleMessage(host, &IncomingMsg{Type: "LOAD_DONE", Pid: 1, MatchID: "m1"})
+	hub.HandleMessage(guest, &IncomingMsg{Type: "LOAD_DONE", Pid: 2, MatchID: "m1"})
+	r := hub.rooms[code]
+	if r.Status != "running" || r.MatchID != "m1" {
+		t.Fatalf("expected running m1, got status=%s match_id=%s", r.Status, r.MatchID)
+	}
+	drainAll(host)
+	drainAll(guest)
+
+	// Guest sends MATCH_FLOW next -> relayed to Host
+	nxt := 46
+	hub.HandleMessage(guest, &IncomingMsg{Type: "MATCH_FLOW", Pid: 2, Action: "next", LevelIdx: &nxt})
+	hMsgs := drainAll(host)
+	if len(hMsgs) != 1 || hMsgs[0]["t"] != "MATCH_FLOW" || hMsgs[0]["action"] != "next" || int(hMsgs[0]["level_idx"].(float64)) != 46 {
+		t.Fatalf("expected relayed MATCH_FLOW to host, got %#v", hMsgs)
+	}
+
+	// Host directly chains START_MATCH (level 46, m2) while r.Status == "running" (NO RETURN_LOBBY!)
+	hub.HandleMessage(host, &IncomingMsg{
+		Type:        "START_MATCH",
+		DirectChain: true,
+		Cfg:         json.RawMessage(`{"match_id":"m2","level_idx":46,"seed":222,"turn_ticks":3,"input_delay_turns":2}`),
+	})
+	if r.Status != "loading" || r.MatchID != "m2" || r.Meta.LevelIdx != 46 {
+		t.Fatalf("direct chain failed: status=%s match_id=%s level=%d", r.Status, r.MatchID, r.Meta.LevelIdx)
+	}
+	drainAll(host)
+	drainAll(guest)
+
+	// Late trailing TURN from Match #1 while loading m2 must be silently dropped
+	staleTurn := 650
+	hub.HandleMessage(guest, &IncomingMsg{Type: "TURN", Pid: 2, Turn: &staleTurn, Cmds: json.RawMessage(`[]`)})
+	if r.Turns[650] != nil || len(drainAll(host)) != 0 {
+		t.Fatalf("stale TURN during loading must be dropped")
+	}
+
+	// Stale LOAD_DONE from m1 must be ignored; m2 LOAD_DONE starts m2 with match_id=m2
+	hub.HandleMessage(guest, &IncomingMsg{Type: "LOAD_DONE", Pid: 2, MatchID: "m1"})
+	if r.Seats[2].Loaded {
+		t.Fatalf("stale LOAD_DONE(m1) should have been ignored")
+	}
+	hub.HandleMessage(host, &IncomingMsg{Type: "LOAD_DONE", Pid: 1, MatchID: "m2"})
+	hub.HandleMessage(guest, &IncomingMsg{Type: "LOAD_DONE", Pid: 2, MatchID: "m2"})
+	if r.Status != "running" {
+		t.Fatalf("expected running after m2 LOAD_DONE, got %s", r.Status)
+	}
+	bMsgs := drainAll(guest)
+	if len(bMsgs) != 1 || bMsgs[0]["t"] != "BEGIN_SIM" || bMsgs[0]["match_id"] != "m2" {
+		t.Fatalf("expected BEGIN_SIM(m2), got %#v", bMsgs)
+	}
+}

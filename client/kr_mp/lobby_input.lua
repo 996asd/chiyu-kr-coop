@@ -644,6 +644,18 @@ function BTN_HANDLERS.tower_toggle(lobby)
     lobby:broadcast_room_state()
 end
 
+function BTN_HANDLERS.toggle_auto_next(lobby)
+    if lobby.role ~= "host" then return end
+    lobby.room.auto_next_stage = not (lobby.room.auto_next_stage ~= false)
+    lobby:save_prefs()
+    lobby:broadcast_room_state()
+    lobby.overlay:show_toast(
+        lobby.room.auto_next_stage and "已开启【自动下一关】：通关后免返回战桌，倒计时自动连战下一关！"
+            or "已关闭【自动下一关】：通关后可手动点「进入下一关」或返回战桌调整阵容。",
+        2.6
+    )
+end
+
 function BTN_HANDLERS.delay_cycle(lobby)
     if lobby.role ~= "host" then return end
     local cur = lobby.normalize_delay_turns(lobby.room.input_delay_turns)

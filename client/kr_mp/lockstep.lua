@@ -257,7 +257,7 @@ function lockstep:on_local_loaded()
     end
 
     self:log("Local sim initialized (P%d). Sending LOAD_DONE.", self.local_pid)
-    self.transport:send({ t = "LOAD_DONE", pid = self.local_pid })
+    self.transport:send({ t = "LOAD_DONE", pid = self.local_pid, match_id = self.match_id })
     self:try_start_running()
 end
 
@@ -276,7 +276,7 @@ function lockstep:try_start_running()
     end
     if self.local_pid == 1 and self.local_loaded and self.remote_loaded then
         self:log("Both peers loaded! Broadcasting BEGIN_SIM.")
-        self.transport:send({ t = "BEGIN_SIM" })
+        self.transport:send({ t = "BEGIN_SIM", match_id = self.match_id })
         self:start_running()
     end
 end
@@ -724,15 +724,23 @@ function lockstep:on_message(msg)
     if not self.active or not msg then return false end
     local t = msg.t
     if t == "LOAD_DONE" then
+        if msg.match_id and self.match_id and msg.match_id ~= self.match_id then
+            return true
+        end
         self:on_remote_loaded(msg.pid)
         return true
     elseif t == "BEGIN_SIM" then
+        if msg.match_id and self.match_id and msg.match_id ~= self.match_id then
+            return true
+        end
         self:start_running()
         return true
     elseif t == "SYNC_RESUME" then
+        if self.phase == "LOADING" then return true end
         self:on_sync_resume(msg.pid)
         return true
     elseif t == "SYNC_SPEED" then
+        if self.phase == "LOADING" then return true end
         self:on_sync_speed(msg.speed, msg.pid)
         return true
     elseif t == "PEER_DISCONNECTED" then
@@ -766,6 +774,7 @@ function lockstep:on_message(msg)
     elseif t == "RECONNECT_DONE" and self.local_pid == 1 and not (self.transport and self.transport:is_online()) then
         return self:handle_direct_reconnect_done(msg)
     elseif t == "TURN" then
+        if self.phase == "LOADING" then return true end
         local turn_id = tonumber(msg.turn)
         local pid = tonumber(msg.pid)
         if turn_id ~= nil and pid ~= nil then
@@ -776,6 +785,7 @@ function lockstep:on_message(msg)
         end
         return true
     elseif t == "DESYNC_DIAG" then
+        if self.phase == "LOADING" then return true end
         local rtick = tonumber(msg.tick)
         local rpid = tonumber(msg.pid) or self.remote_pid
         self:log("  REMOTE DIAG (P%s tick=%s): %s",

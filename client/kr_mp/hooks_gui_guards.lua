@@ -2,6 +2,8 @@
 -- Prevents FL 8.2.0 UI popups, selection/hover helpers, PauseView, and DragEntityView
 -- from mutating simulation state, consuming battle PRNG, or leaving stuck visual artifacts.
 local commands = require("kr_mp.commands")
+local prng = require("kr_mp.prng")
+local stage_flow = require("kr_mp.stage_flow")
 
 local M = {}
 
@@ -155,11 +157,46 @@ local function install_coop_menu_guards(hooks, game_gui)
         end)
     end
 
+    if VictoryView then
+        hooks.wrap_once(VictoryView, "show", "coop_victory", function(orig_vv_show)
+            return function(self_vv, ...)
+                prng:enter_visual()
+                local ok_v, r1 = pcall(orig_vv_show, self_vv, ...)
+                prng:exit_visual()
+                if hooks:is_mp_active() then
+                    stage_flow:on_victory_view_shown()
+                end
+                if not ok_v then error(r1) end
+                return r1
+            end
+        end)
+    end
+
+    if DefeatView then
+        hooks.wrap_once(DefeatView, "show", "coop_defeat", function(orig_dv_show)
+            return function(self_dv, ...)
+                prng:enter_visual()
+                local ok_d, r1 = pcall(orig_dv_show, self_dv, ...)
+                prng:exit_visual()
+                if hooks:is_mp_active() then
+                    stage_flow:on_defeat_view_shown()
+                end
+                if not ok_d then error(r1) end
+                return r1
+            end
+        end)
+    end
+
     hooks.wrap_once(game_gui, "restart_game", "coop_menu", function(orig_restart)
         return function(self_gui, ...)
             if hooks:is_mp_active() then
+                local st = self_gui and self_gui.game and self_gui.game.store
+                if st and st.game_outcome ~= nil then
+                    stage_flow:request_restart()
+                    return
+                end
                 if hooks.overlay then
-                    hooks.overlay:show_toast("联机模式无法单人重开，请点顶部「战桌」不断线返回备战换关或重开！", 3.5)
+                    hooks.overlay:show_toast("对局中无法单人重开，请点顶部「战桌」不断线返回备战换关或重开！", 3.5)
                 end
                 return
             end
@@ -171,6 +208,11 @@ local function install_coop_menu_guards(hooks, game_gui)
         return function(self_gui, ...)
             if hooks:is_mp_active() and hooks.boot and hooks.boot.on_hud_action then
                 local connected = hooks.boot.transport and hooks.boot.transport:is_connected()
+                if connected and stage_flow:is_victory_auto_ready() then
+                    if stage_flow:request_next() then
+                        return
+                    end
+                end
                 pcall(hooks.boot.on_hud_action, hooks.boot, connected and "mp_return_lobby" or "mp_leave")
                 return
             end

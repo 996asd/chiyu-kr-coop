@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	ServerVersion = "2.4.1"
+	ServerVersion = "2.4.3"
 	ProtocolVer   = 3
 )
 
@@ -40,8 +40,11 @@ type IncomingMsg struct {
 	LevelIdx *int   `json:"level_idx,omitempty"`
 
 	// Match lifecycle & lockstep turns
-	Cfg   json.RawMessage `json:"cfg,omitempty"`
-	Pid   int             `json:"pid,omitempty"`
+	Cfg         json.RawMessage `json:"cfg,omitempty"`
+	DirectChain bool            `json:"direct_chain,omitempty"`
+	MatchID     string          `json:"match_id,omitempty"`
+	Action      string          `json:"action,omitempty"`
+	Pid         int             `json:"pid,omitempty"`
 	Turn  *int            `json:"turn,omitempty"`
 	Cmds  json.RawMessage `json:"cmds,omitempty"`
 	HT    *int            `json:"ht,omitempty"`
@@ -71,10 +74,11 @@ type RoomMeta struct {
 
 // MatchCfgMeta extracts turn timing parameters from START_MATCH cfg without modifying raw JSON.
 type MatchCfgMeta struct {
-	TurnTicks       int `json:"turn_ticks"`
-	InputDelayTurns int `json:"input_delay_turns"`
-	LevelIdx        int `json:"level_idx"`
-	Seed            int `json:"seed"`
+	MatchID         string `json:"match_id"`
+	TurnTicks       int    `json:"turn_ticks"`
+	InputDelayTurns int    `json:"input_delay_turns"`
+	LevelIdx        int    `json:"level_idx"`
+	Seed            int    `json:"seed"`
 }
 
 // RoomSummary is sent in ROOM_LIST for public room browsing.

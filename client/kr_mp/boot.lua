@@ -78,6 +78,9 @@ function boot:wrap_love_callbacks()
             self.coop:draw_world_overlays()
         end
         overlay:draw()
+        if self.stage_flow then
+            self.stage_flow:draw()
+        end
         if self.lobby then
             self.lobby:draw()
         end
@@ -88,6 +91,9 @@ function boot:wrap_love_callbacks()
     love.update = function(dt, ...)
         if self.lobby then
             self.lobby:update(dt)
+        end
+        if self.stage_flow then
+            self.stage_flow:update(dt)
         end
         if self.sakura then
             self.sakura:update(dt, self.lobby)
@@ -130,6 +136,9 @@ function boot:wrap_love_callbacks()
         if overlay:mousepressed(x, y, button) then
             return
         end
+        if self.stage_flow and self.stage_flow:mousepressed(x, y, button) then
+            return
+        end
         if orig_mousepressed then
             return orig_mousepressed(x, y, button, istouch, ...)
         end
@@ -153,6 +162,9 @@ function boot:wrap_love_callbacks()
         if overlay:mousereleased(x, y, button) then
             return
         end
+        if self.stage_flow and self.stage_flow:mousereleased(x, y, button) then
+            return
+        end
         if orig_mousereleased then
             return orig_mousereleased(x, y, button, istouch, ...)
         end
@@ -164,7 +176,7 @@ function boot:wrap_love_callbacks()
         if self.lobby and self.lobby.open then
             return
         end
-        if overlay:is_point_over_hud(x, y) then
+        if overlay:is_point_over_hud(x, y) or (self.stage_flow and self.stage_flow:is_point_over(x, y)) then
             return
         end
         if orig_touchpressed then
@@ -186,7 +198,7 @@ function boot:wrap_love_callbacks()
             overlay:mousemoved(px, py, dx or 0, dy or 0)
             return
         end
-        if overlay._consumed_down then
+        if overlay._consumed_down or (self.stage_flow and self.stage_flow._consumed_down) then
             return
         end
         if orig_touchmoved then
@@ -199,7 +211,7 @@ function boot:wrap_love_callbacks()
         if self.lobby and self.lobby.open then
             return
         end
-        if overlay._consumed_down then
+        if overlay._consumed_down or (self.stage_flow and self.stage_flow._consumed_down) then
             return
         end
         if orig_touchreleased then
@@ -568,6 +580,13 @@ function boot:init(source)
         self.coop:init(self, self.lockstep, overlay)
         self.lockstep:init(self, self.transport, self.coop, overlay)
         self.lobby:init(self, self.transport, self.lockstep, self.coop, overlay)
+        local ok_sf, sf_mod = pcall(require, "kr_mp.stage_flow")
+        if ok_sf and sf_mod then
+            self.stage_flow = sf_mod
+            pcall(sf_mod.init, sf_mod, self, self.lobby, self.coop, self.lockstep, overlay)
+        else
+            self:log("ERROR loading kr_mp.stage_flow: %s", tostring(sf_mod))
+        end
         self:log("M2 Co-op modules loaded (LAN+Online Transport + SakuraFrp + Lockstep Reconnect + Co-op + Lobby + Voice).")
     else
         self:log("ERROR loading M2 modules: t=%s c=%s l=%s lb=%s",

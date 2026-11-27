@@ -185,6 +185,9 @@ function M.load_prefs(lobby)
     if obj.room_max_tech ~= nil then
         lobby.room.max_tech = (obj.room_max_tech == true)
     end
+    if obj.room_auto_next_stage ~= nil then
+        lobby.room.auto_next_stage = (obj.room_auto_next_stage == true)
+    end
     lobby.ensure_room_defaults(lobby.room)
 
     if obj.show_tower_marks ~= nil and lobby.coop then
@@ -241,6 +244,7 @@ function M.save_prefs(lobby)
             loadout.normalize_reinf(r.reinforcements and r.reinforcements[2]),
         },
         room_max_tech = (r.max_tech ~= false),
+        room_auto_next_stage = (r.auto_next_stage ~= false),
         show_tower_marks = (lobby.coop == nil) or (lobby.coop.show_tower_marks ~= false),
         voice_mode = lobby.voice and lobby.voice.mode or "ptt",
         voice_mic_gain = lobby.voice and lobby.voice.mic_gain or 1.0,

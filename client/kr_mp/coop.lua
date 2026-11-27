@@ -7,6 +7,7 @@ local km = require("klua.macros")
 local fonts = require("kr_mp.fonts")
 local catalog = require("kr_mp.catalog")
 local loadout = require("kr_mp.coop_loadout")
+local stage_flow = require("kr_mp.stage_flow")
 
 local coop = {
     boot = nil,
@@ -130,6 +131,17 @@ function coop:init(boot, lockstep, overlay)
         signal.register("hero-level-increased", function(hero)
             if self.active and hero and game and game.store then
                 loadout.upgrade_hero_skills_for_level(hero, game.store)
+            end
+        end)
+        -- Post-match Victory / Defeat seamless stage chaining
+        signal.register("game-victory", function(st)
+            if self.active then
+                stage_flow:on_outcome("victory", st)
+            end
+        end)
+        signal.register("game-defeat", function(st)
+            if self.active then
+                stage_flow:on_outcome("defeat", st)
             end
         end)
     end
@@ -276,6 +288,12 @@ function coop:prepare_match(local_pid, cfg, reconnect_data)
     self.shared_power_ready_tick = {}
     self.hero_ult_ready_tick = {}
     self.pings = {}
+    stage_flow:reset()
+    local ok_sdb, S_db = pcall(require, "sound_db")
+    if ok_sdb and S_db and S_db.stop_all then
+        pcall(S_db.stop_all, S_db)
+        if S_db.resume then pcall(S_db.resume, S_db) end
+    end
 
     if self.lockstep then
         if reconnect_data then
@@ -369,6 +387,7 @@ end
 
 function coop:leave_match()
     self._pending_launch_args = nil
+    stage_flow:reset()
     self.active = false
     self.cfg = nil
     self.slot_snapshot = nil
@@ -919,6 +938,10 @@ function coop:draw_world_overlays()
         return
     end
     if not main or not main.handler or main.handler.active_item ~= game then
+        return
+    end
+    local gui = game.game_gui
+    if gui and ((gui.victoryview and not gui.victoryview.hidden) or (gui.defeatview and not gui.defeatview.hidden)) then
         return
     end
 
