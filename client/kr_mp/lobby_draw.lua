@@ -175,7 +175,7 @@ local function draw_home_sakura(ctx, y)
     y = y + card_h + 10
 
     -- Bottom Dark-Oak SakuraFrp Control Center (Single Source of Truth, Zero Redundancy, Zero Dead Space)
-    local tray_h = (py + ph - 22) - y
+    local tray_h = (py + ph - 34) - y
     ui.draw_armory_tray(cx, y, cw, tray_h, 9)
     local sk_alive = (sk ~= nil and (sk.managed_proc ~= nil or sk.frpc_running == true))
     ui.draw_ping_dot(cx + 18, y + 17, sk_alive and 15 or 999, sk_alive)
@@ -343,7 +343,7 @@ local function draw_home_lan(ctx, y)
     y = y + card_h + 10
 
     -- Bottom Dark-Oak Tavern Notice Board (100% Dedicated to UDP 17778 LAN Auto-Discovery)
-    local tray_h = (py + ph - 22) - y
+    local tray_h = (py + ph - 34) - y
     ui.draw_armory_tray(cx, y, cw, tray_h, 9)
     local rooms = lobby.transport:get_lan_rooms()
     ui.draw_ping_dot(cx + 18, y + 18, 12, #rooms > 0)
@@ -424,7 +424,7 @@ local function draw_home_online(ctx, y)
     add_btn("join_code", "凭房间码进房", rx + 12, y + 58, rw - 24, 26, "crimson", { small = true })
     y = y + 100
 
-    local tray_h = (py + ph - 22) - y
+    local tray_h = (py + ph - 34) - y
     ui.draw_armory_tray(cx, y, cw, tray_h, 9)
     ui.draw_ping_dot(cx + 18, y + 17, lobby.transport:get_rtt_ms(), lobby.server_connected)
     ui.print_shadow(string.format("公开在线房间大厅 (%d 个房间)", #lobby.online_rooms), cx + 30, y + 10, T.gold_bright, nil, nil, nil, fm.small_bold)
@@ -863,8 +863,8 @@ function M.draw(lobby)
         server_modal.draw(ctx)
     elseif lobby.view == "home" then
         draw_home(ctx)
-        ui.text("赤羽的王国保卫战联机器 · 永久免费开源（仅适配 FL 8.2.0 · 如付费购买请立刻退款）",
-            ctx.cx, py + ph - 17, { 132, 102, 64, 215 }, font_map.tiny, ctx.cw, "center")
+        ui.text("赤羽的王国保卫战联机器 · 永久免费开源（仅适配 FL 8.2.0 · 严禁倒卖，如付费购买请立刻退款）",
+            ctx.cx, py + ph - 30, { 146, 42, 28, 250 }, font_map.small_bold, ctx.cw, "center")
     elseif lobby.sub_modal == "stages" then
         modals.draw_stages(ctx)
     elseif lobby.sub_modal == "hero1" or lobby.sub_modal == "hero2" then
