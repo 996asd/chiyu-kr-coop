@@ -91,65 +91,17 @@ local sakura = {
     _shell32 = nil,
 }
 
--- === Win32 FFI Helpers (Zero Console Popup, Optional on Windows Only) ===
+-- === Win32 FFI Helpers (delegated to shared win_util.lua) ===
+local win_util = require("kr_mp.win_util")
 
-local function init_win32(self)
-    if self._win32_ready then return self._k32 ~= nil end
-    self._win32_ready = true
-    local ok_ffi, ffi = pcall(require, "ffi")
-    if not ok_ffi or not ffi or ffi.os ~= "Windows" then return false end
-    local cdefs = {
-        "typedef struct { uint32_t dwSize; uint32_t cntUsage; uint32_t th32ProcessID; uintptr_t th32DefaultHeapID; uint32_t th32ModuleID; uint32_t cntThreads; uint32_t th32ParentProcessID; int32_t pcPriClassBase; uint32_t dwFlags; char szExeFile[260]; } KR_PROCESSENTRY32;",
-        "typedef struct { uint32_t cb; const char* lpReserved; const char* lpDesktop; const char* lpTitle; uint32_t dwX; uint32_t dwY; uint32_t dwXSize; uint32_t dwYSize; uint32_t dwXCountChars; uint32_t dwYCountChars; uint32_t dwFillAttribute; uint32_t dwFlags; uint16_t wShowWindow; uint16_t cbReserved2; uint8_t* lpReserved2; void* hStdInput; void* hStdOutput; void* hStdError; } KR_STARTUPINFOA;",
-        "typedef struct { void* hProcess; void* hThread; uint32_t dwProcessId; uint32_t dwThreadId; } KR_PROCESS_INFORMATION;",
-        "typedef struct { uint32_t nLength; void* lpSecurityDescriptor; int32_t bInheritHandle; } KR_SECURITY_ATTRIBUTES;",
-        "void* CreateToolhelp32Snapshot(uint32_t dwFlags, uint32_t th32ProcessID);",
-        "int32_t Process32First(void* hSnapshot, KR_PROCESSENTRY32* lppe);",
-        "int32_t Process32Next(void* hSnapshot, KR_PROCESSENTRY32* lppe);",
-        "void* OpenProcess(uint32_t dwDesiredAccess, int32_t bInheritHandle, uint32_t dwProcessId);",
-        "int32_t CloseHandle(void* hObject);",
-        "uint32_t GetCurrentProcessId(void);",
-        "int32_t CreateDirectoryA(const char* lpPathName, void* lpSecurityAttributes);",
-        "void* CreateFileA(const char* lpFileName, uint32_t dwDesiredAccess, uint32_t dwShareMode, KR_SECURITY_ATTRIBUTES* lpSecurityAttributes, uint32_t dwCreationDisposition, uint32_t dwFlagsAndAttributes, void* hTemplateFile);",
-        "int32_t SetEnvironmentVariableA(const char* lpName, const char* lpValue);",
-        "int32_t CreateProcessA(const char* lpApplicationName, char* lpCommandLine, void* lpProcessAttributes, void* lpThreadAttributes, int32_t bInheritHandles, uint32_t dwCreationFlags, void* lpEnvironment, const char* lpCurrentDirectory, KR_STARTUPINFOA* lpStartupInfo, KR_PROCESS_INFORMATION* lpProcessInformation);",
-        "int32_t GetExitCodeProcess(void* hProcess, uint32_t* lpExitCode);",
-        "int32_t TerminateProcess(void* hProcess, uint32_t uExitCode);",
-        "void* ShellExecuteA(void* hwnd, const char* lpOperation, const char* lpFile, const char* lpParameters, const char* lpDirectory, int32_t nShowCmd);",
-    }
-    for _, decl in ipairs(cdefs) do pcall(ffi.cdef, decl) end
-    local ok_k, k32 = pcall(ffi.load, "kernel32")
-    if ok_k and k32 then self._ffi, self._k32 = ffi, k32 end
-    local ok_s, sh32 = pcall(ffi.load, "shell32")
-    if ok_s and sh32 then self._shell32 = sh32 end
-    return self._k32 ~= nil
-end
-
-local function get_base_dir()
-    local ok, base = pcall(function() return love.filesystem.getSourceBaseDirectory() end)
-    return (ok and type(base) == "string" and #base > 0) and base:gsub("/", "\\"):gsub("\\+$", "") or "."
-end
-
-local function get_save_dir()
-    local ok, sd = pcall(function() return love.filesystem.getSaveDirectory() end)
-    if ok and type(sd) == "string" and #sd > 0 then return sd:gsub("/", "\\"):gsub("\\+$", "") end
-    return (os.getenv("TEMP") or "."):gsub("/", "\\"):gsub("\\+$", "")
-end
-
-local function is_ascii_path(p)
-    return type(p) == "string" and #p > 0 and (p:find("[\128-\255]") == nil)
-end
-
-local function ascii_cache_dirs()
-    local out = {}
-    local pub = os.getenv("PUBLIC") or "C:\\Users\\Public"
-    local pd = os.getenv("ProgramData") or "C:\\ProgramData"
-    local drv = os.getenv("SystemDrive") or "C:"
-    for _, d in ipairs({ pub .. "\\KR_MP_Bin", pd .. "\\KR_MP_Bin", drv .. "\\KR_MP_Bin" }) do
-        if is_ascii_path(d) then out[#out + 1] = d end
-    end
-    return out
-end
+local function init_win32(self) return win_util.attach_win32(self) end
+local get_base_dir = win_util.get_base_dir
+local get_save_dir = win_util.get_save_dir
+local is_ascii_path = win_util.is_ascii_path
+local ascii_cache_dirs = win_util.ascii_cache_dirs
+local file_exists = win_util.file_exists
+local is_windows = win_util.is_windows
+local now_sec = win_util.now_sec
 
 local function detect_windows_frpc_arch()
     local pa = tostring(os.getenv("PROCESSOR_ARCHITECTURE") or ""):upper()
@@ -157,29 +109,6 @@ local function detect_windows_frpc_arch()
     if pa == "AMD64" or paw == "AMD64" then return "windows_amd64" end
     if pa == "ARM64" or paw == "ARM64" then return "windows_arm64" end
     return "windows_386"
-end
-
-local function file_exists(path)
-    if type(path) ~= "string" or #path == 0 then return false end
-    local f = io.open(path, "rb")
-    if f then
-        f:close()
-        return true
-    end
-    return false
-end
-
-local function is_windows()
-    if proto.is_android() then return false end
-    local ok_ffi, ffi = pcall(require, "ffi")
-    return ok_ffi and ffi and ffi.os == "Windows"
-end
-
-local function now_sec()
-    if love and love.timer and love.timer.getTime then
-        return love.timer.getTime()
-    end
-    return os.clock()
 end
 
 -- === Privacy Masking & Export Address Utilities ===

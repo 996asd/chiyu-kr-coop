@@ -387,93 +387,114 @@ function boot:on_keypressed(key, isrepeat)
     return false
 end
 
-function boot:on_hud_action(action_id, arg)
-    self:log("HUD ACTION: %s", tostring(action_id))
-    if action_id == "hide" then
+local function save_lobby_prefs(self)
+    if self.lobby and self.lobby.save_prefs then
+        self.lobby:save_prefs()
+    end
+end
+
+local HUD_ACTIONS = {
+    hide = function(self)
         overlay.visible = not overlay.visible
         if not overlay.visible then
             overlay.voice_panel_open = false
             overlay:show_toast("已收起为悬浮小标：点击小标展开，按住小标可自由拖动位置", 2.6)
         end
-    elseif action_id == "show" then
-        overlay.visible = true
-    elseif action_id == "hud_mini_moved" then
-        if self.lobby and self.lobby.save_prefs then
-            self.lobby:save_prefs()
+    end,
+    show = function() overlay.visible = true end,
+    hud_mini_moved = save_lobby_prefs,
+    lobby = function(self)
+        if self.lobby then self.lobby:toggle() end
+    end,
+    mp_send_gold = function(self, arg)
+        if self.lockstep and self.lockstep:is_active() then
+            local amt = (tonumber(arg) == 200) and 200 or 50
+            self.lockstep:queue_local_command({ op = "SEND_GOLD", amount = amt })
         end
-    elseif action_id == "lobby" and self.lobby then
-        self.lobby:toggle()
-    elseif action_id == "mp_send_gold" and self.lockstep and self.lockstep:is_active() then
-        local amt = (tonumber(arg) == 200) and 200 or 50
-        self.lockstep:queue_local_command({ op = "SEND_GOLD", amount = amt })
-    elseif action_id == "mp_cycle_delay" and self.lockstep and self.lockstep:is_active() then
-        self.lockstep:request_cycle_delay()
-    elseif action_id == "mp_return_lobby" and self.lobby then
-        overlay.voice_panel_open = false
-        self.lobby:return_to_lobby()
-    elseif action_id == "mp_speed" and self.lockstep and self.lockstep:is_active() then
-        self.lockstep:request_toggle_speed()
-    elseif action_id == "mp_pause" and self.lockstep and self.lockstep:is_active() then
-        self.lockstep:request_toggle_pause()
-    elseif action_id == "mp_tower_marks" and self.coop then
+    end,
+    mp_cycle_delay = function(self)
+        if self.lockstep and self.lockstep:is_active() then self.lockstep:request_cycle_delay() end
+    end,
+    mp_return_lobby = function(self)
+        if self.lobby then
+            overlay.voice_panel_open = false
+            self.lobby:return_to_lobby()
+        end
+    end,
+    mp_speed = function(self)
+        if self.lockstep and self.lockstep:is_active() then self.lockstep:request_toggle_speed() end
+    end,
+    mp_pause = function(self)
+        if self.lockstep and self.lockstep:is_active() then self.lockstep:request_toggle_pause() end
+    end,
+    mp_tower_marks = function(self)
+        if not self.coop then return end
         self.coop.show_tower_marks = not self.coop.show_tower_marks
-        if self.lobby and self.lobby.save_prefs then
-            self.lobby:save_prefs()
-        end
+        save_lobby_prefs(self)
         overlay:show_toast(self.coop.show_tower_marks and "已开启：防御塔底座红蓝归属标志" or "已关闭：防御塔归属标志（纯净画面，仅对你自己生效）", 2.0)
-    elseif action_id == "mp_voice_mode" and self.voice then
+    end,
+    mp_voice_mode = function(self)
+        if not self.voice then return end
         if not self.voice.supported then
             overlay:show_toast("当前环境不支持内置语音连麦。", 2.2)
-        else
-            self.voice:cycle_mode()
-            if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
-            overlay:show_toast(self.voice:get_mode_toast(), 2.4)
+            return
         end
-    elseif action_id == "mp_voice_set_mode" and self.voice and type(arg) == "string" then
-        if self.voice.supported then
+        self.voice:cycle_mode()
+        save_lobby_prefs(self)
+        overlay:show_toast(self.voice:get_mode_toast(), 2.4)
+    end,
+    mp_voice_set_mode = function(self, arg)
+        if self.voice and self.voice.supported and type(arg) == "string" then
             self.voice:set_mode(arg)
-            if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
+            save_lobby_prefs(self)
         end
-    elseif action_id == "mp_voice_mic_down" and self.voice then
-        self.voice:step_mic_gain(-0.2)
-        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
-    elseif action_id == "mp_voice_mic_up" and self.voice then
-        self.voice:step_mic_gain(0.2)
-        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
-    elseif action_id == "mp_voice_mic_set" and self.voice and tonumber(arg) then
-        self.voice:set_mic_gain(tonumber(arg))
-        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
-    elseif action_id == "mp_voice_peer_down" and self.voice then
-        self.voice:step_peer_volume(-0.2)
-        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
-    elseif action_id == "mp_voice_peer_up" and self.voice then
-        self.voice:step_peer_volume(0.2)
-        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
-    elseif action_id == "mp_voice_peer_set" and self.voice and tonumber(arg) then
-        self.voice:set_peer_volume(tonumber(arg))
-        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
-    elseif action_id == "mp_voice_peer_mute" and self.voice then
-        self.voice:toggle_peer_mute()
-        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
-    elseif action_id == "mp_voice_style_set" and self.voice and type(arg) == "string" then
-        self.voice:set_indicator_style(arg)
-        if self.lobby and self.lobby.save_prefs then self.lobby:save_prefs() end
-    elseif action_id == "mp_voice_ptt_down" and self.voice then
-        self.voice:set_touch_ptt(true)
-    elseif action_id == "mp_voice_ptt_up" and self.voice then
-        self.voice:set_touch_ptt(false)
-    elseif action_id == "mp_leave" and self.lobby then
-        overlay.voice_panel_open = false
-        self.lobby:leave_room()
-    elseif action_id == "record" and self.replay then
-        self.replay:start_record()
-    elseif action_id == "replay" and self.replay then
-        self.replay:start_replay()
-    elseif action_id == "stop" and self.replay then
-        self.replay:stop_current()
-    elseif action_id == "speed" and self.replay then
-        self.replay:cycle_replay_speed()
-    end
+    end,
+    mp_voice_mic_down = function(self)
+        if self.voice then self.voice:step_mic_gain(-0.2); save_lobby_prefs(self) end
+    end,
+    mp_voice_mic_up = function(self)
+        if self.voice then self.voice:step_mic_gain(0.2); save_lobby_prefs(self) end
+    end,
+    mp_voice_mic_set = function(self, arg)
+        if self.voice and tonumber(arg) then self.voice:set_mic_gain(tonumber(arg)); save_lobby_prefs(self) end
+    end,
+    mp_voice_peer_down = function(self)
+        if self.voice then self.voice:step_peer_volume(-0.2); save_lobby_prefs(self) end
+    end,
+    mp_voice_peer_up = function(self)
+        if self.voice then self.voice:step_peer_volume(0.2); save_lobby_prefs(self) end
+    end,
+    mp_voice_peer_set = function(self, arg)
+        if self.voice and tonumber(arg) then self.voice:set_peer_volume(tonumber(arg)); save_lobby_prefs(self) end
+    end,
+    mp_voice_peer_mute = function(self)
+        if self.voice then self.voice:toggle_peer_mute(); save_lobby_prefs(self) end
+    end,
+    mp_voice_style_set = function(self, arg)
+        if self.voice and type(arg) == "string" then self.voice:set_indicator_style(arg); save_lobby_prefs(self) end
+    end,
+    mp_voice_ptt_down = function(self)
+        if self.voice then self.voice:set_touch_ptt(true) end
+    end,
+    mp_voice_ptt_up = function(self)
+        if self.voice then self.voice:set_touch_ptt(false) end
+    end,
+    mp_leave = function(self)
+        if self.lobby then
+            overlay.voice_panel_open = false
+            self.lobby:leave_room()
+        end
+    end,
+    record = function(self) if self.replay then self.replay:start_record() end end,
+    replay = function(self) if self.replay then self.replay:start_replay() end end,
+    stop = function(self) if self.replay then self.replay:stop_current() end end,
+    speed = function(self) if self.replay then self.replay:cycle_replay_speed() end end,
+}
+
+function boot:on_hud_action(action_id, arg)
+    self:log("HUD ACTION: %s", tostring(action_id))
+    local fn = HUD_ACTIONS[action_id]
+    if fn then fn(self, arg) end
 end
 
 function boot:init(source)

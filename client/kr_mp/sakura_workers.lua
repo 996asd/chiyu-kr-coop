@@ -377,50 +377,14 @@ local function md5_file(path)
     return h:final(), total
 end
 
-pcall(ffi.cdef, [=[
-    void* InternetOpenA(const char* lpszAgent, uint32_t dwAccessType, const char* lpszProxy, const char* lpszProxyBypass, uint32_t dwFlags);
-    void* InternetOpenUrlA(void* hInternet, const char* lpszUrl, const char* lpszHeaders, uint32_t dwHeadersLength, uint32_t dwFlags, uintptr_t dwContext);
-    int32_t HttpQueryInfoA(void* hRequest, uint32_t dwInfoLevel, void* lpBuffer, uint32_t* lpdwBufferLength, uint32_t* lpdwIndex);
-    int32_t InternetReadFile(void* hFile, void* lpBuffer, uint32_t dwNumberOfBytesToRead, uint32_t* lpdwNumberOfBytesRead);
-    int32_t InternetCloseHandle(void* hInternet);
-    int32_t InternetSetOptionA(void* hInternet, uint32_t dwOption, void* lpBuffer, uint32_t dwBufferLength);
-]=])
-local ok_lib, wi = pcall(ffi.load, "wininet")
-if not ok_lib or not wi then
-    ch:push({ seq = seq, stage = "error", ok = false, err = "无法加载 Windows 网络组件 (wininet)" })
-    return
+local ok_w, win_util = pcall(require, "kr_mp.win_util")
+local wi, hNet, FLAGS, werr
+if ok_w and win_util then
+    wi, hNet, FLAGS, werr = win_util.open_wininet("KR-MP-SakuraInstaller/2.4", 15000)
 end
-
-local hNet = wi.InternetOpenA("KR-MP-SakuraInstaller/2.3", 0, nil, nil, 0)
-if hNet == nil then
-    ch:push({ seq = seq, stage = "error", ok = false, err = "初始化网络句柄失败" })
+if not wi or hNet == nil then
+    ch:push({ seq = seq, kind = dl_kind, stage = "error", ok = false, err = werr or "无法加载 Windows 网络组件 (wininet)" })
     return
-end
-local timeout = ffi.new("uint32_t[1]", 15000)
-pcall(wi.InternetSetOptionA, hNet, 2, timeout, 4)
-pcall(wi.InternetSetOptionA, hNet, 6, timeout, 4)
-
-local FLAGS = bit.bor(0x00800000, 0x80000000, 0x04000000) -- SECURE | RELOAD | NO_CACHE_WRITE
-
-local function http_get_text(url)
-    local hUrl = wi.InternetOpenUrlA(hNet, url, "Accept: application/json\r\n", 26, FLAGS, 0)
-    if hUrl == nil then return nil, 0 end
-    local code = ffi.new("uint32_t[1]", 0)
-    local clen = ffi.new("uint32_t[1]", 4)
-    wi.HttpQueryInfoA(hUrl, 0x20000013, code, clen, nil)
-    local chunks, total = {}, 0
-    local buf = ffi.new("uint8_t[8192]")
-    local bread = ffi.new("uint32_t[1]")
-    while total < 1048576 do
-        bread[0] = 0
-        local r = wi.InternetReadFile(hUrl, buf, 8192, bread)
-        local n = tonumber(bread[0]) or 0
-        if r == 0 or n <= 0 then break end
-        chunks[#chunks + 1] = ffi.string(buf, n)
-        total = total + n
-    end
-    wi.InternetCloseHandle(hUrl)
-    return table.concat(chunks), tonumber(code[0]) or 0
 end
 
 ch:push({ seq = seq, kind = dl_kind, stage = "meta", done = 0, total = 0 })
@@ -431,7 +395,7 @@ for _, url in ipairs({
     "https://api.natfrp.com/v4/system/clients",
     "https://natfrp-api.globalslb.net/v4/system/clients",
 }) do
-    local body, code = http_get_text(url)
+    local body, code = win_util.wininet_get_text(wi, hNet, FLAGS, url, "Accept: application/json\r\n", 1048576)
     if body and code >= 200 and code < 300 then
         local decoded = proto.decode(body)
         if type(decoded) == "table" and type(decoded[root_key]) == "table" then

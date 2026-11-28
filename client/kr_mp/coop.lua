@@ -157,6 +157,63 @@ function coop:is_active()
     return self.active
 end
 
+function coop:is_slot_override_bypassed()
+    return self._bypass_slot_override == true
+end
+
+function coop:with_slot_bypass(fn)
+    local prev = self._bypass_slot_override
+    self._bypass_slot_override = true
+    local ok, r1, r2 = pcall(fn)
+    self._bypass_slot_override = prev
+    if not ok then error(r1) end
+    return r1, r2
+end
+
+function coop:get_active_power_actor()
+    return self._active_power_actor or self.local_pid or 1
+end
+
+function coop:get_active_g4_branch()
+    return self._active_g4_branch
+end
+
+function coop:get_active_g5_branch()
+    return self._active_g5_branch
+end
+
+function coop:with_power_context(actor_pid, fn)
+    local prev_actor = self._active_power_actor
+    local prev_g4 = self._active_g4_branch
+    local prev_g5 = self._active_g5_branch
+    self._active_power_actor = actor_pid
+    local spec = self:get_player_reinf_spec(actor_pid)
+    self._active_g4_branch = (spec and spec.gen == 4 and spec.branch) or nil
+    self._active_g5_branch = (spec and spec.gen == 5 and spec.branch) or nil
+    local ok, res = pcall(fn)
+    self._active_power_actor = prev_actor
+    self._active_g4_branch = prev_g4
+    self._active_g5_branch = prev_g5
+    return ok, res
+end
+
+function coop:with_g5_branch(branch, fn)
+    local prev = self._active_g5_branch
+    self._active_g5_branch = branch
+    local ok, res = pcall(fn)
+    self._active_g5_branch = prev
+    return ok, res
+end
+
+function coop:get_tick_reserved_gold(pid)
+    local res = self._tick_reserved_gold
+    if not res then return 0 end
+    if self.econ_mode == "shared" then
+        return (res[1] or 0) + (res[2] or 0)
+    end
+    return res[pid] or 0
+end
+
 function coop:get_slot_override()
     if self.active and self.slot_snapshot and not self._bypass_slot_override then
         return deep_copy(self.slot_snapshot)
@@ -166,50 +223,47 @@ end
 
 -- Ensure storage.active_slot_idx always points to a REAL disk save slot without clobbering
 -- an existing active slot (e.g. Android auto-created Slot 2/3 while Slot 1 is empty).
--- Must run with _bypass_slot_override=true so Co-op snapshot/save-suppression hooks do not
+-- Must run inside with_slot_bypass so Co-op snapshot/save-suppression hooks do not
 -- mask a missing disk file or block initial slot creation.
 function coop:ensure_valid_disk_slot()
     local ok_st, storage = pcall(require, "storage")
     if not ok_st or type(storage) ~= "table" then return nil end
-    local prev_bypass = self._bypass_slot_override
-    self._bypass_slot_override = true
-    local chosen_idx = nil
-    local ok_find = pcall(function()
+    local ok_find, chosen_idx = pcall(self.with_slot_bypass, self, function()
+        local chosen = nil
         local cur = storage.active_slot_idx
         if cur and storage:load_slot(cur) then
-            chosen_idx = cur
+            chosen = cur
         else
             for i = 1, 3 do
                 if storage:load_slot(i) then
-                    chosen_idx = i
+                    chosen = i
                     break
                 end
             end
         end
-        if not chosen_idx then
+        if not chosen then
             if love and love.filesystem and love.filesystem.createDirectory then
                 pcall(love.filesystem.createDirectory, "fl_save")
             end
             storage:create_slot(1)
             if storage:load_slot(1) then
-                chosen_idx = 1
+                chosen = 1
             end
         end
-        if chosen_idx and storage.active_slot_idx ~= chosen_idx then
-            storage:set_active_slot(chosen_idx)
+        if chosen and storage.active_slot_idx ~= chosen then
+            storage:set_active_slot(chosen)
         end
+        return chosen
     end)
-    self._bypass_slot_override = prev_bypass
     return ok_find and chosen_idx or nil
 end
 
 function coop:build_host_slot_snapshot(heroes, towers, room_loadout)
     local storage = require("storage")
     local chosen_idx = self:ensure_valid_disk_slot()
-    local prev_bypass = self._bypass_slot_override
-    self._bypass_slot_override = true
-    local raw = (chosen_idx and storage:load_slot(chosen_idx, true)) or storage:load_slot(nil, true) or {}
-    self._bypass_slot_override = prev_bypass
+    local raw = self:with_slot_bypass(function()
+        return (chosen_idx and storage:load_slot(chosen_idx, true)) or storage:load_slot(nil, true) or {}
+    end)
     local snap = deep_copy(raw)
 
     -- Keep packet compact by trimming bulky history tables not needed during battle

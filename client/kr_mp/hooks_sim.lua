@@ -72,25 +72,24 @@ local function wrap_g5_reinforcements(hooks, E)
     hooks.wrap_once(g5_tpl.main_script, "insert", "g5_reinf_br", function(orig_g5_ins)
         return function(this_g5, st_g5, script_g5)
             local br = hooks:is_mp_active() and hooks.coop.max_tech
-                and (this_g5._mp_g5_branch or hooks.coop._active_g5_branch) or nil
+                and (this_g5._mp_g5_branch or hooks.coop:get_active_g5_branch()) or nil
             if br == "dark" or br == "royal" then
-                local prev_br = hooks.coop._active_g5_branch
                 local saved_re1 = E.entities["re_current_1"]
                 local saved_re2 = E.entities["re_current_2"]
-                hooks.coop._active_g5_branch = br
-                if br == "dark" then
-                    local t_sa = E:get_template("soldier_reinforcement_shadow_archer_01")
-                    if t_sa then E:set_template("re_current_1", t_sa) end
-                else
-                    local t_rm1 = E:get_template("soldier_reinforcement_rebel_militia_01")
-                    local t_rm2 = E:get_template("soldier_reinforcement_rebel_militia_02")
-                    if t_rm1 then E:set_template("re_current_1", t_rm1) end
-                    if t_rm2 then E:set_template("re_current_2", t_rm2) end
-                end
-                local ok_g, res_g = pcall(orig_g5_ins, this_g5, st_g5, script_g5)
+                local ok_g, res_g = hooks.coop:with_g5_branch(br, function()
+                    if br == "dark" then
+                        local t_sa = E:get_template("soldier_reinforcement_shadow_archer_01")
+                        if t_sa then E:set_template("re_current_1", t_sa) end
+                    else
+                        local t_rm1 = E:get_template("soldier_reinforcement_rebel_militia_01")
+                        local t_rm2 = E:get_template("soldier_reinforcement_rebel_militia_02")
+                        if t_rm1 then E:set_template("re_current_1", t_rm1) end
+                        if t_rm2 then E:set_template("re_current_2", t_rm2) end
+                    end
+                    return orig_g5_ins(this_g5, st_g5, script_g5)
+                end)
                 if saved_re1 then E.entities["re_current_1"] = saved_re1 end
                 if saved_re2 then E.entities["re_current_2"] = saved_re2 end
-                hooks.coop._active_g5_branch = prev_br
                 if not ok_g then error(res_g) end
                 return res_g
             end
@@ -519,7 +518,8 @@ local function step_mp_update(hooks, self_sim, d, dt)
         return
     end
     if os.getenv("KR_MP_AUTO_COOP_FAST") == "1" then
-        for _ = 1, 15 do
+        -- Cap to 8 ticks/frame (<=160 turns/s @ 60fps) so fast CPUs stay safely below Go server's 200 msg/s rate limit
+        for _ = 1, 8 do
             if d.paused or not hooks.lockstep:is_running() then break end
             if not hooks.lockstep:can_step_tick((d.tick or 0) + 1) then break end
             d.dt = TICK_LENGTH

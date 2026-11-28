@@ -1,13 +1,13 @@
 {
-  "version": "2.4.5",
+  "version": "2.4.6",
   "protocol": 3,
   "fl_version": "8.2.0",
-  "released_at": "2026-11-27",
-  "notes": "v2.4.5 手机端退出闪退（game_gui.lua:3599 nil slot）根治与退房回大厅修复：1) 修复手机端新装直接进联机当 2P 时，因 1 号存档槽未建立而 active_slot_idx 被指向幽灵槽位导致退局崩溃的问题，改为自动复用已有真实磁盘存档槽（不污染空 1 号档）并在全空时穿透写保护建真实槽；2) 修复断线或退出房间后仍滞留战斗画面与暂停菜单的问题，退局立即隐藏 PauseView、安全切回 slots 并自动打开联机大厅；3) 为 storage:load_slot() 无参活跃槽读取增加防空兜底（同时保留显式槽号探测行为），并升级 game_gui 按实例追踪 Hook，防止语言切换或重载后丢 Hook（手机端大厅点「一键更新」2 秒热更生效，免重装 APK）。",
+  "released_at": "2026-11-28",
+  "notes": "v2.4.6 全代码库模块化重构与零屎山架构升级：1) 抽离共享非阻塞 TCP 行协议流引擎 tcp_stream.lua，统一局域网/樱花直连与公网中继服的异步 DNS、握手、防 HoL 语音队列、O(N) 分帧、心跳与 12s 看门狗；2) 抽离共享单点语音编解码器 voice_codec.lua 与 WinMM 线程 voice_winmm.lua，PC 与手机端逐位共用同一套 16kHz IMA-ADPCM 实现；3) 抽离共享 Windows FFI/WinINet 工具 win_util.lua 与大厅网络状态机 lobby_net.lua，拆分 518 行 overlay:draw 及 27 分支 HUD 路由与锁步消息路由为表驱动；4) 为 coop.lua 跨模块状态增加异常必复原上下文护栏，并将 Go 服务端 1,408 行 room.go 拆分为高内聚 4 文件（零协议变动，PC/手机端一键更新平滑升级）。",
   "download_gitee": "https://gitee.com/chiyu-studio/chiyu-kr-coop/releases",
   "download_github": "https://github.com/996asd/chiyu-kr-coop/releases",
-  "server_win_sha256": "7B1A7940CB3CD0FBFFEF075CBF55CF9D236281C6C13A44E8BE3533C8F213A0E7",
-  "server_win_size": 6985728,
-  "server_linux_sha256": "AFFD041268D2EC816BDA264E1C060876CA571E6FC139BD366AE07912B39DF872",
+  "server_win_sha256": "539BF784DD25DF152054E2E0F835831CBBD59A25FFBDDE6B84455D0FD30D41FC",
+  "server_win_size": 6985216,
+  "server_linux_sha256": "60E1A54913CBC30437CFE7A76B257C435FBC3EB39C16D3294D62CAA08382A957",
   "server_linux_size": 6787232
 }

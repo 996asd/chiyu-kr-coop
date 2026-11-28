@@ -52,25 +52,32 @@ kr-mp-mod/
 │       ├── hooks_gui_guards.lua  # UI 到仿真泄露隔离（trigger_deselect/menu_shown/PauseView/DragEntityView 保护）
 │       ├── commands.lua        # 表驱动指令队列与执行器（HANDLERS[op]，含单点价格/坐标量化）
 │       ├── lockstep.lua        # 60Hz 帧同步状态机（LOAD_DONE 屏障、1x/2x 倍速、断线保局、对称 DESYNC_DIAG、高速追帧重连）
-│       ├── coop.lua            # 2P 合作层（双英雄归属、独立/共享经济账本、红蓝塔权、动态技能槽归属、世界标签与打点渲染）
+│       ├── coop.lua            # 2P 合作层（双英雄归属、独立/共享经济账本、红蓝塔权、上下文护栏、世界标签与打点渲染）
+│       ├── coop_loadout.lua    # 2P 战前军械配置（天灾/援军/满科技补丁、G4/G5 分支模板与双端资源预加载）
+│       ├── stage_flow.lua      # 战后自动下一关、原地重开与双人表决流转器
 │       ├── catalog.lua         # FL 8.2.0 完整中文目录（201 关 + 105 英雄 + 59 座防御塔）
 │       ├── fonts.lua           # 复用内置 HarmonyOS_Sans_SC.ttf 的字号缓存器
 │       ├── ui_assets.lua       # 皇家战桌铁皮羊皮纸/木纹/蜡封/缩略图/声波等复用 UI 组件库
-│       ├── lobby_ui.lua        # 联机大厅核心状态机、局域网/樱花/公网房间通信、热续传与不断线返回战桌
+│       ├── lobby_ui.lua        # 联机大厅核心状态机、房间消息路由（MSG_HANDLERS）、开局与不断线返回战桌
+│       ├── lobby_net.lua       # 局域网/樱花/公网连接动作、自动重连定时器与表驱动传输事件分发
 │       ├── lobby_prefs.lua     # 偏好与上次房间配置持久化、直连/公网重连会话、樱花电信/移动线路切换与剪贴板工具
 │       ├── lobby_input.lua     # 大厅键盘/鼠标输入与表驱动按钮分发（BTN_HANDLERS）
 │       ├── lobby_draw.lua      # 皇家战桌首页与备战房间主渲染器
-│       ├── lobby_draw_modals.lua # 新手教程 / 201 关 / 105 英雄 / 59 选 12 塔 / 语音调音弹窗渲染器
+│       ├── lobby_draw_modals.lua # 新手教程 / 201 关 / 105 英雄 / 59 选 12 塔 / 战前军械 / 语音调音弹窗渲染器
 │       ├── lobby_draw_sakura.lua # 樱花映射专属助手弹窗（免密钥感知/官方下载进度/4步新手向导/翻页节点/防窥打码）
 │       ├── lobby_draw_server.lua # 傻瓜式一键开服助手弹窗（本机零成本开17780服/樱花17780联动/云服1行命令）
+│       ├── win_util.lua        # 共享 Windows FFI / 路径 / WinINet 网络工具（sakura / server_host / updater 单点复用）
 │       ├── sakura.lua          # 樱花映射深度适配（只读状态与日志感知、官方安装器一键下载、三线测速、OpenAPI v4、无窗 frpc 托管）
 │       ├── sakura_workers.lua  # 樱花后台 love.thread 线程脚本（三线测速 / OpenAPI v4 / 官方安装器流式下载与 MD5 校验）
 │       ├── server_host.lua     # 本机公网中继服一键下载校验、无窗托管启停（退游戏保活）与樱花 17780 联动
 │       ├── autotest.lua        # M1/M2 多进程自动化联机回归测试驱动（与正式 UI 完全解耦）
 │       ├── overlay.lua         # 顶部居中紧凑中文 HUD（金币/延迟/校验/倍速/暂停/转50金/语音调音/追帧进度条）
-│       ├── voice.lua           # 内置低延迟双向连麦语音（ADPCM/按V/自由麦/闭麦/混音增益/声波状态）
+│       ├── voice.lua           # 内置低延迟双向连麦语音控制状态机与安卓 LÖVE Audio 后端
+│       ├── voice_codec.lua     # 共享 RFC 4648 Base64 与 16kHz IMA-ADPCM 编解码（PC/安卓逐位互通单点实现）
+│       ├── voice_winmm.lua     # Windows WinMM 独立采集/播放 love.thread 线程脚本
 │       ├── transport.lua       # 局域网与公网统一传输层抽象
-│       ├── net_lan.lua         # 局域网 TCP + UDP 17778 广播自动发现
+│       ├── tcp_stream.lua      # 共享非阻塞 DNS + TCP 行协议流引擎（防 HoL 语音队列、O(N) 分帧、心跳与 12s 看门狗）
+│       ├── net_lan.lua         # 局域网/樱花直连 TCP + UDP 17778 广播自动发现
 │       ├── net_online.lua      # 公网 Go 中继服 TCP 客户端
 │       ├── updater.lua         # love.thread + WinINet/LuaHTTPS 后台检查与 SHA-256 增量热更新（Gitee 主源 / GitHub 备源）
 │       ├── replay.lua          # M0 单机录制/回放确定性验证器（F6/F7/F8）
@@ -78,18 +85,29 @@ kr-mp-mod/
 ├── server/                     # 零依赖 Go 公网大厅与帧中继服务端
 │   ├── go.mod
 │   ├── protocol.go             # 协议结构（原样透传 Lua JSON，SetEscapeHTML(false)）
-│   ├── room.go                 # 房间状态机、历史帧缓存与高速追帧重连计算、定时清理
+│   ├── room.go                 # Hub/Room/Seat 核心结构、IP 限流、房间列表与过期清理
+│   ├── room_lobby.go           # 消息分发、大厅建房/加房/更新/房客配置与返回战桌
+│   ├── room_match.go           # 开局同步、LOAD_DONE 屏障、帧转发、连关流转与语音/诊断透传
+│   ├── room_reconnect.go       # 断线保局、大厅/对局高速追帧重连与补帧
+│   ├── security_test.go        # 服务端防 OOM / IP 限流 / 大厅重连 / 直接连关单元测试
 │   └── main.go                 # 非阻塞 TCP 连接循环 + 可选 HTTP /health 探针
 ├── tools/                      # 构建、测试、安装、社区报错与修复脚本
 │   ├── sync_client.ps1         # 同步 client/ -> D:\FL8.2.0\（本机 FL 8.2.0 测试目录）
 │   ├── generate_manifest.ps1   # 生成 client/kr_mp/manifest.json
 │   ├── build_server.ps1        # 编译 Windows + Linux 静态单文件服务端
+│   ├── build_android_apk.py    # 安卓 FL 8.2.0 联机整合 APK 构建工具
 │   ├── package_release.ps1     # 打包轻量客户端包 & 完整服务端包到 dist/
+│   ├── publish_release.ps1     # GitHub + Gitee 双平台自动推送与 Release 附件发布脚本
+│   ├── setup_release_tokens.ps1 # 维护者本机发行版发布 Token 配置助手
+│   ├── setup_sandbox.ps1       # 从原始 FL 8.2.0 压缩包初始化独立沙盒目录
 │   ├── check_replay.py         # 对比两份每 30 帧哈希日志，精确定位首帧分叉字段
+│   ├── run_m0.ps1              # M0 单机录制/回放确定性回归测试
 │   ├── run_m1_dual.ps1         # 局域网双开自动联机回归测试
 │   ├── run_m2_test.ps1         # 公网三进程（含 960 帧强退追帧重连 + 混搭卡组 + 2x 倍速）回归测试
+│   ├── run_m4_sakura_test.ps1  # 樱花映射热续传/冷重连自动化回归测试
 │   ├── collect_bug_report.ps1  # 群友双击：一键打包报错日志、哈希与 AI 提问词
 │   ├── install_patch.ps1       # 离线补丁安装器（自动找目录 / SHA-256 校验 / 自动建桌面快捷方式 / 可选下载官方樱花）
+│   ├── uninstall_patch.ps1     # 一键干净卸载联机外挂补丁脚本
 │   ├── onekey_install.ps1      # 在线/离线统一懒人安装器（支持 irm|iex 与 AI 智能体 -AutoFind -Silent 静默全自动安装）
 │   ├── deploy_server.sh        # Linux 云服务器 1 行全自动开服脚本（自动下载校验 + systemd 常驻 + 防火墙放行）
 │   ├── export_my_fix.ps1       # 群友双击：比对 manifest.json 一键导出精简修复补丁包

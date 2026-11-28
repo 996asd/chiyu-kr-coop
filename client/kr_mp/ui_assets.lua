@@ -1114,188 +1114,160 @@ end
 
 -- === Tactile Ironhide Button Renderer ===
 -- Supports styles: "battle" (3D glossy emerald CTA), "wood", "crimson", "parchment", "azure", "input", "hero_tile", "tower_tile"
+local function draw_input_button(G, T, b, hover, font_map, r)
+    local focused = b.focused == true
+    G.setColor(255, 252, 242, 252)
+    G.rectangle("fill", b.x, b.y, b.w, b.h, r, r)
+    G.setColor(96, 62, 24, 52)
+    G.rectangle("fill", b.x + 2, b.y + 1, b.w - 4, 4, 2, 2)
+    local bc = focused and { 196, 118, 22, 255 } or (hover and { 156, 102, 42, 255 } or { 138, 96, 46, 225 })
+    G.setColor(bc[1], bc[2], bc[3], bc[4])
+    G.setLineWidth(focused and 2.2 or 1.6)
+    G.rectangle("line", b.x, b.y, b.w, b.h, r, r)
+
+    local f = (b.small and font_map.small) or font_map.main
+    local fh = f and ui.font_h(f) or 13
+    ui.text(b.label or "", b.x + 9, b.y + (b.h - fh) * 0.5, b.placeholder and T.ink_muted or T.ink_text, f, b.w - 18, "left")
+end
+
+local function draw_tile_checkmark(G, font_map, x, y, bg_col, rim_col)
+    G.setColor(bg_col[1], bg_col[2], bg_col[3], 255)
+    G.rectangle("fill", x, y, 14, 14, 4, 4)
+    G.setColor(rim_col[1], rim_col[2], rim_col[3], rim_col[4] or 240)
+    G.setLineWidth(1)
+    G.rectangle("line", x, y, 14, 14, 4, 4)
+    local cf = font_map.tiny_bold or font_map.tiny
+    local cfh = cf and ui.font_h(cf) or 11
+    ui.text("√", x, y + (14 - cfh) * 0.5, { 255, 255, 255, 255 }, cf, 14, "center")
+end
+
+local function draw_hero_tile_button(G, T, b, hover, font_map, r)
+    local sel = b.selected == true
+    local top_c = sel and (b.is_p1 and { 210, 232, 252, 255 } or { 252, 218, 218, 255 })
+        or (hover and { 255, 248, 228, 255 } or { 248, 236, 206, 250 })
+    local bot_c = sel and (b.is_p1 and { 182, 214, 248, 255 } or { 244, 194, 196, 255 })
+        or (hover and { 244, 224, 180, 255 } or { 234, 212, 168, 250 })
+    G.setColor(48, 26, 8, 55)
+    G.rectangle("fill", b.x + 1, b.y + 2, b.w, b.h, r, r)
+    ui.draw_vgrad_rect(b.x, b.y, b.w, b.h, top_c, bot_c, r)
+
+    local bc = sel and (b.is_p1 and T.p1_border or T.p2_border)
+        or (hover and { 126, 76, 26, 255 } or { 164, 124, 68, 225 })
+    G.setColor(bc[1], bc[2], bc[3], bc[4])
+    G.setLineWidth(sel and 2.4 or (hover and 1.8 or 1.3))
+    G.rectangle("line", b.x, b.y, b.w, b.h, r, r)
+
+    local isz = b.icon_size or (b.h - 10)
+    ui.draw_hero_portrait(b.hero_idx, b.x + 5, b.y + math.floor((b.h - isz) * 0.5), isz, isz, {
+        radius = 5, pad = 1, border = sel and bc or { 112, 74, 34, 235 }, border_w = 1.5,
+    })
+    local tx = b.x + isz + 9
+    local tw = math.max(10, b.x + b.w - tx - (sel and 19 or 4))
+    local lbl = b.label or ""
+    local f = font_map.small_bold or font_map.small or font_map.main
+    if f and font_map.tiny and ui.font_w(f, lbl) > tw then f = font_map.tiny end
+    local fh = f and ui.font_h(f) or 12
+    ui.text(lbl, tx, b.y + b.h * 0.5 - fh - 1, T.ink_text, f)
+    if b.sub_label and font_map.tiny then
+        ui.text(b.sub_label, tx, b.y + b.h * 0.5 + 3, T.ink_sub, font_map.tiny)
+    end
+    if sel then
+        draw_tile_checkmark(G, font_map, b.x + b.w - 17, b.y + 4, b.is_p1 and T.p1_top or T.p2_top, { 255, 240, 190, 240 })
+    end
+end
+
+local function draw_tower_tile_button(G, T, b, hover, font_map, r)
+    local sel = b.selected == true
+    local top_c = sel and { 222, 242, 206, 255 } or (hover and { 255, 248, 228, 255 } or { 246, 232, 198, 245 })
+    local bot_c = sel and { 196, 228, 174, 255 } or (hover and { 242, 220, 174, 255 } or { 232, 210, 164, 245 })
+    G.setColor(48, 26, 8, 48)
+    G.rectangle("fill", b.x + 1, b.y + 2, b.w, b.h, r, r)
+    ui.draw_vgrad_rect(b.x, b.y, b.w, b.h, top_c, bot_c, r)
+
+    local bc = sel and { 42, 122, 52, 255 } or (hover and { 126, 76, 26, 255 } or { 166, 126, 70, 220 })
+    G.setColor(bc[1], bc[2], bc[3], bc[4])
+    G.setLineWidth(sel and 2.2 or (hover and 1.7 or 1.3))
+    G.rectangle("line", b.x, b.y, b.w, b.h, r, r)
+
+    local isz = b.icon_size or (b.h - 10)
+    ui.draw_tower_icon(b.tower_idx, b.x + 5, b.y + math.floor((b.h - isz) * 0.5), isz, isz, {
+        radius = 5, pad = 1, bg = { 34, 19, 9, 250 },
+        border = sel and T.gold_mid or { 118, 82, 42, 230 }, border_w = 1.4,
+    })
+    local tx = b.x + isz + 10
+    local tw = math.max(10, b.x + b.w - tx - (sel and 19 or 4))
+    local lbl = b.label or ""
+    local f = font_map.small_bold or font_map.small or font_map.main
+    if f and font_map.tiny and ui.font_w(f, lbl) > tw then f = font_map.tiny end
+    local fh = f and ui.font_h(f) or 12
+    ui.text(lbl, tx, b.y + b.h * 0.5 - fh, T.ink_text, f, tw, "left")
+    if b.sub_label and font_map.tiny then
+        ui.text(b.sub_label, tx, b.y + b.h * 0.5 + 2, sel and { 34, 108, 42, 255 } or T.ink_muted, font_map.tiny, tw, "left")
+    end
+    if sel then
+        draw_tile_checkmark(G, font_map, b.x + b.w - 17, b.y + 4, { 44, 138, 56, 255 }, { 255, 248, 220, 240 })
+    end
+end
+
+local SPECIAL_BUTTON_DRAWERS = {
+    input = draw_input_button,
+    hero_tile = draw_hero_tile_button,
+    tower_tile = draw_tower_tile_button,
+}
+
+local function resolve_sculpted_palette(style, b, hover, disabled, T)
+    if style == "battle" then
+        if disabled then
+            return 4, { 132, 124, 110, 235 }, { 96, 88, 76, 235 }, { 62, 56, 48, 240 }, { 56, 48, 38, 240 }, { 226, 220, 206, 210 }, { 30, 24, 16, 160 }
+        end
+        return 4, hover and { 122, 234, 96, 255 } or T.emerald_top, hover and { 46, 144, 34, 255 } or T.emerald_bot,
+            { 24, 66, 16, 255 }, T.emerald_ink, { 255, 254, 244, 255 }, { 12, 46, 8, 235 }
+    elseif style == "crimson" then
+        return 3, hover and { 236, 98, 86, 255 } or T.crimson_top, hover and { 164, 42, 36, 255 } or T.crimson_bot,
+            { 76, 16, 14, 255 }, T.crimson_ink, { 255, 244, 238, 255 }, { 54, 8, 6, 225 }
+    elseif style == "azure" then
+        return 3, hover and { 62, 128, 204, 255 } or { 46, 108, 178, 255 }, hover and { 36, 84, 144, 255 } or { 28, 68, 120, 255 },
+            { 16, 40, 74, 255 }, { 18, 42, 76, 255 }, { 244, 250, 255, 255 }, { 10, 24, 48, 225 }
+    elseif style == "parchment" then
+        local act = b.active or b.selected
+        return 2,
+            act and { 222, 242, 206, 255 } or (hover and { 255, 250, 234, 255 } or { 252, 242, 218, 255 }),
+            act and { 192, 226, 170, 255 } or (hover and { 244, 224, 182, 255 } or { 234, 210, 162, 255 }),
+            act and { 42, 104, 46, 255 } or { 126, 86, 38, 255 },
+            act and { 38, 114, 48, 255 } or { 138, 96, 44, 255 },
+            b.fg or T.ink_text, nil
+    end
+    local act = b.active or b.selected
+    return 3,
+        act and { 162, 104, 46, 255 } or (hover and { 150, 98, 56, 255 } or { 132, 85, 50, 255 }),
+        act and { 114, 68, 26, 255 } or (hover and { 92, 54, 28, 255 } or { 74, 42, 20, 255 }),
+        { 34, 17, 6, 255 }, { 34, 17, 6, 255 }, { 255, 240, 202, 255 }, { 22, 10, 3, 220 }
+end
+
 function ui.draw_button(b, hover, font_map)
-    local G = love.graphics
-    local T = ui.THEME
+    local G, T = love.graphics, ui.THEME
     local r = b.radius or 7
     local style = b.style or "wood"
+    local special = SPECIAL_BUTTON_DRAWERS[style]
+    if special then
+        special(G, T, b, hover, font_map, r)
+        return
+    end
+
     local disabled = b.disabled == true
-
-    -- 1. Recessed Parchment Input Box
-    if style == "input" then
-        local focused = b.focused == true
-        G.setColor(255, 252, 242, 252)
-        G.rectangle("fill", b.x, b.y, b.w, b.h, r, r)
-        -- Inner top shadow
-        G.setColor(96, 62, 24, 52)
-        G.rectangle("fill", b.x + 2, b.y + 1, b.w - 4, 4, 2, 2)
-        local bc = focused and { 196, 118, 22, 255 } or (hover and { 156, 102, 42, 255 } or { 138, 96, 46, 225 })
-        G.setColor(bc[1], bc[2], bc[3], bc[4])
-        G.setLineWidth(focused and 2.2 or 1.6)
-        G.rectangle("line", b.x, b.y, b.w, b.h, r, r)
-
-        local f = (b.small and font_map.small) or font_map.main
-        local fh = f and ui.font_h(f) or 13
-        local ty = b.y + (b.h - fh) * 0.5
-        local tc = b.placeholder and T.ink_muted or T.ink_text
-        ui.text(b.label or "", b.x + 9, ty, tc, f, b.w - 18, "left")
-        return
-    end
-
-    -- 2. Hero Codex Vertical Card Button
-    if style == "hero_tile" then
-        local sel = b.selected == true
-        local top_c = sel and (b.is_p1 and { 210, 232, 252, 255 } or { 252, 218, 218, 255 })
-            or (hover and { 255, 248, 228, 255 } or { 248, 236, 206, 250 })
-        local bot_c = sel and (b.is_p1 and { 182, 214, 248, 255 } or { 244, 194, 196, 255 })
-            or (hover and { 244, 224, 180, 255 } or { 234, 212, 168, 250 })
-        G.setColor(48, 26, 8, 55)
-        G.rectangle("fill", b.x + 1, b.y + 2, b.w, b.h, r, r)
-        ui.draw_vgrad_rect(b.x, b.y, b.w, b.h, top_c, bot_c, r)
-
-        local bc = sel and (b.is_p1 and T.p1_border or T.p2_border)
-            or (hover and { 126, 76, 26, 255 } or { 164, 124, 68, 225 })
-        G.setColor(bc[1], bc[2], bc[3], bc[4])
-        G.setLineWidth(sel and 2.4 or (hover and 1.8 or 1.3))
-        G.rectangle("line", b.x, b.y, b.w, b.h, r, r)
-
-        -- Square crisp portrait on left
-        local isz = b.icon_size or (b.h - 10)
-        ui.draw_hero_portrait(b.hero_idx, b.x + 5, b.y + math.floor((b.h - isz) * 0.5), isz, isz, {
-            radius = 5, pad = 1, border = sel and bc or { 112, 74, 34, 235 }, border_w = 1.5,
-        })
-        local tx = b.x + isz + 9
-        local tw = math.max(10, b.x + b.w - tx - (sel and 19 or 4))
-        local lbl = b.label or ""
-        local f = font_map.small_bold or font_map.small or font_map.main
-        if f and font_map.tiny and ui.font_w(f, lbl) > tw then
-            f = font_map.tiny
-        end
-        local fh = f and ui.font_h(f) or 12
-        ui.text(lbl, tx, b.y + b.h * 0.5 - fh - 1, T.ink_text, f)
-        if b.sub_label and font_map.tiny then
-            ui.text(b.sub_label, tx, b.y + b.h * 0.5 + 3, T.ink_sub, font_map.tiny)
-        end
-        if sel then
-            local bx, by = b.x + b.w - 17, b.y + 4
-            local pcol = b.is_p1 and T.p1_top or T.p2_top
-            G.setColor(pcol[1], pcol[2], pcol[3], 255)
-            G.rectangle("fill", bx, by, 14, 14, 4, 4)
-            G.setColor(255, 240, 190, 240)
-            G.setLineWidth(1)
-            G.rectangle("line", bx, by, 14, 14, 4, 4)
-            local cf = font_map.tiny_bold or font_map.tiny
-            local cfh = cf and ui.font_h(cf) or 11
-            ui.text("√", bx, by + (14 - cfh) * 0.5, { 255, 255, 255, 255 }, cf, 14, "center")
-        end
-        return
-    end
-
-    -- 3. Tower Armory Medallion Card Button
-    if style == "tower_tile" then
-        local sel = b.selected == true
-        local top_c = sel and { 222, 242, 206, 255 } or (hover and { 255, 248, 228, 255 } or { 246, 232, 198, 245 })
-        local bot_c = sel and { 196, 228, 174, 255 } or (hover and { 242, 220, 174, 255 } or { 232, 210, 164, 245 })
-        G.setColor(48, 26, 8, 48)
-        G.rectangle("fill", b.x + 1, b.y + 2, b.w, b.h, r, r)
-        ui.draw_vgrad_rect(b.x, b.y, b.w, b.h, top_c, bot_c, r)
-
-        local bc = sel and { 42, 122, 52, 255 } or (hover and { 126, 76, 26, 255 } or { 166, 126, 70, 220 })
-        G.setColor(bc[1], bc[2], bc[3], bc[4])
-        G.setLineWidth(sel and 2.2 or (hover and 1.7 or 1.3))
-        G.rectangle("line", b.x, b.y, b.w, b.h, r, r)
-
-        local isz = b.icon_size or (b.h - 10)
-        ui.draw_tower_icon(b.tower_idx, b.x + 5, b.y + math.floor((b.h - isz) * 0.5), isz, isz, {
-            radius = 5, pad = 1, bg = { 34, 19, 9, 250 },
-            border = sel and T.gold_mid or { 118, 82, 42, 230 }, border_w = 1.4,
-        })
-        local tx = b.x + isz + 10
-        local tw = math.max(10, b.x + b.w - tx - (sel and 19 or 4))
-        local lbl = b.label or ""
-        local f = font_map.small_bold or font_map.small or font_map.main
-        if f and font_map.tiny and ui.font_w(f, lbl) > tw then
-            f = font_map.tiny
-        end
-        local fh = f and ui.font_h(f) or 12
-        ui.text(lbl, tx, b.y + b.h * 0.5 - fh, T.ink_text, f, tw, "left")
-        if b.sub_label and font_map.tiny then
-            local sc = sel and { 34, 108, 42, 255 } or T.ink_muted
-            ui.text(b.sub_label, tx, b.y + b.h * 0.5 + 2, sc, font_map.tiny, tw, "left")
-        end
-        if sel then
-            local bx, by = b.x + b.w - 17, b.y + 4
-            G.setColor(44, 138, 56, 255)
-            G.rectangle("fill", bx, by, 14, 14, 4, 4)
-            G.setColor(255, 248, 220, 240)
-            G.setLineWidth(1)
-            G.rectangle("line", bx, by, 14, 14, 4, 4)
-            local cf = font_map.tiny_bold or font_map.tiny
-            local cfh = cf and ui.font_h(cf) or 11
-            ui.text("√", bx, by + (14 - cfh) * 0.5, { 255, 255, 255, 255 }, cf, 14, "center")
-        end
-        return
-    end
-
-    -- 4. Sculpted 3D Ironhide Battle / Wood / Crimson / Parchment / Azure Buttons
-    local top_c, bot_c, lip_c, rim_c, fg_c, sh_c
-    local bevel_h = 3
-    if style == "battle" then
-        bevel_h = 4
-        if disabled then
-            top_c, bot_c = { 132, 124, 110, 235 }, { 96, 88, 76, 235 }
-            lip_c, rim_c = { 62, 56, 48, 240 }, { 56, 48, 38, 240 }
-            fg_c, sh_c = { 226, 220, 206, 210 }, { 30, 24, 16, 160 }
-        else
-            top_c = hover and { 122, 234, 96, 255 } or T.emerald_top
-            bot_c = hover and { 46, 144, 34, 255 } or T.emerald_bot
-            lip_c, rim_c = { 24, 66, 16, 255 }, T.emerald_ink
-            fg_c, sh_c = { 255, 254, 244, 255 }, { 12, 46, 8, 235 }
-        end
-    elseif style == "crimson" then
-        top_c = hover and { 236, 98, 86, 255 } or T.crimson_top
-        bot_c = hover and { 164, 42, 36, 255 } or T.crimson_bot
-        lip_c, rim_c = { 76, 16, 14, 255 }, T.crimson_ink
-        fg_c, sh_c = { 255, 244, 238, 255 }, { 54, 8, 6, 225 }
-    elseif style == "azure" then
-        top_c = hover and { 62, 128, 204, 255 } or { 46, 108, 178, 255 }
-        bot_c = hover and { 36, 84, 144, 255 } or { 28, 68, 120, 255 }
-        lip_c, rim_c = { 16, 40, 74, 255 }, { 18, 42, 76, 255 }
-        fg_c, sh_c = { 244, 250, 255, 255 }, { 10, 24, 48, 225 }
-    elseif style == "parchment" then
-        bevel_h = 2
-        local act = b.active or b.selected
-        top_c = act and { 222, 242, 206, 255 } or (hover and { 255, 250, 234, 255 } or { 252, 242, 218, 255 })
-        bot_c = act and { 192, 226, 170, 255 } or (hover and { 244, 224, 182, 255 } or { 234, 210, 162, 255 })
-        lip_c = act and { 42, 104, 46, 255 } or { 126, 86, 38, 255 }
-        rim_c = act and { 38, 114, 48, 255 } or { 138, 96, 44, 255 }
-        fg_c = b.fg or T.ink_text
-        sh_c = nil
-    else -- "wood"
-        local act = b.active or b.selected
-        top_c = act and { 162, 104, 46, 255 } or (hover and { 150, 98, 56, 255 } or { 132, 85, 50, 255 })
-        bot_c = act and { 114, 68, 26, 255 } or (hover and { 92, 54, 28, 255 } or { 74, 42, 20, 255 })
-        lip_c, rim_c = { 34, 17, 6, 255 }, { 34, 17, 6, 255 }
-        fg_c, sh_c = { 255, 240, 202, 255 }, { 22, 10, 3, 220 }
-    end
-
+    local bevel_h, top_c, bot_c, lip_c, rim_c, fg_c, sh_c = resolve_sculpted_palette(style, b, hover, disabled, T)
     if b.fg then fg_c = b.fg end
 
-    -- Physical 3D bottom extrusion bevel + drop shadow
     G.setColor(0, 0, 0, 72)
     G.rectangle("fill", b.x + 1, b.y + bevel_h + 2, b.w, b.h, r, r)
     G.setColor(lip_c[1], lip_c[2], lip_c[3], lip_c[4])
     G.rectangle("fill", b.x, b.y + bevel_h, b.w, b.h, r, r)
-
-    -- Main gradient face
     ui.draw_vgrad_rect(b.x, b.y, b.w, b.h, top_c, bot_c, r)
 
-    -- Signature Ironhide glossy cartoon specular bar on battle/crimson/azure/wood
     if not disabled then
         if style == "battle" then
             G.setColor(238, 255, 208, 76)
             G.rectangle("fill", b.x + 8, b.y + 3, b.w - 16, math.max(5, math.floor(b.h * 0.30)), r - 2, r - 2)
-            -- Twin hammered gold rivets only on wide primary battle plaques (never crowd compact buttons!)
             if b.w >= 200 and b.rivets ~= false then
                 ui.draw_brass_rivet(b.x + 22, b.y + b.h * 0.5, 4.5)
                 ui.draw_brass_rivet(b.x + b.w - 22, b.y + b.h * 0.5, 4.5)
@@ -1309,12 +1281,10 @@ function ui.draw_button(b, hover, font_map)
         end
     end
 
-    -- Comic ink outer contour
     G.setColor(rim_c[1], rim_c[2], rim_c[3], rim_c[4])
     G.setLineWidth(style == "battle" and 2.4 or 1.8)
     G.rectangle("line", b.x, b.y, b.w, b.h, r, r)
 
-    -- Crisp centered label (supports multi-line \n; uses bold on dark/colored 3D buttons for crisp contrast)
     local use_bold = (style ~= "parchment")
     local f
     if b.large and font_map.title then
@@ -1331,8 +1301,7 @@ function ui.draw_button(b, hover, font_map)
     local lines = 1
     for _ in lbl:gmatch("\n") do lines = lines + 1 end
     local fh = f and ui.font_h(f) or 13
-    local total_h = fh * lines + (lines - 1) * 2
-    local ty = b.y + (b.h - total_h) * 0.5
+    local ty = b.y + (b.h - (fh * lines + (lines - 1) * 2)) * 0.5
     if sh_c then
         ui.print_shadow(lbl, b.x + 4, ty, fg_c, b.w - 8, "center", sh_c, f)
     else

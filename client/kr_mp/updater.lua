@@ -120,61 +120,17 @@ end
 local sha256_hex = assert(loadstring(SHA256_LUA_SRC .. "\nreturn kr_sha256_hex"))()
 updater.sha256_hex = sha256_hex
 
-local HTTP_FETCH_SRC = [===[
+local win_util = require("kr_mp.win_util")
+
+local HTTP_FETCH_SRC = win_util.WININET_THREAD_GET_SRC .. [===[
 local function kr_http_fetch(url, max_bytes)
     max_bytes = max_bytes or (2 * 1024 * 1024)
     local errs = {}
 
     -- 1. Windows WinINet (zero console popup, native TLS)
-    local ok_ffi, ffi = pcall(require, "ffi")
-    if ok_ffi and ffi and ffi.os == "Windows" then
-        local ok_bit, bit = pcall(require, "bit")
-        if ok_bit then
-            pcall(ffi.cdef, [=[
-                void* InternetOpenA(const char* lpszAgent, uint32_t dwAccessType, const char* lpszProxy, const char* lpszProxyBypass, uint32_t dwFlags);
-                void* InternetOpenUrlA(void* hInternet, const char* lpszUrl, const char* lpszHeaders, uint32_t dwHeadersLength, uint32_t dwFlags, uintptr_t dwContext);
-                int32_t InternetReadFile(void* hFile, void* lpBuffer, uint32_t dwNumberOfBytesToRead, uint32_t* lpdwNumberOfBytesRead);
-                int32_t InternetCloseHandle(void* hInternet);
-                int32_t InternetSetOptionA(void* hInternet, uint32_t dwOption, void* lpBuffer, uint32_t dwBufferLength);
-            ]=])
-            local ok_lib, wininet = pcall(ffi.load, "wininet")
-            if ok_lib and wininet then
-                local hNet = wininet.InternetOpenA("KR-MP-Updater/2.2", 0, nil, nil, 0)
-                if hNet ~= nil then
-                    local timeout = ffi.new("uint32_t[1]", 6000)
-                    pcall(wininet.InternetSetOptionA, hNet, 2, timeout, 4)
-                    pcall(wininet.InternetSetOptionA, hNet, 6, timeout, 4)
-                    local flags = bit.bor(0x80000000, 0x04000000, 0x00000100)
-                    local hUrl = wininet.InternetOpenUrlA(hNet, url, nil, 0, flags, 0)
-                    if hUrl ~= nil then
-                        local chunks, total = {}, 0
-                        local buf = ffi.new("uint8_t[8192]")
-                        local bytes_read = ffi.new("uint32_t[1]")
-                        while total < max_bytes do
-                            bytes_read[0] = 0
-                            local res = wininet.InternetReadFile(hUrl, buf, 8192, bytes_read)
-                            local n = tonumber(bytes_read[0]) or 0
-                            if res == 0 or n <= 0 then break end
-                            chunks[#chunks + 1] = ffi.string(buf, n)
-                            total = total + n
-                        end
-                        wininet.InternetCloseHandle(hUrl)
-                        wininet.InternetCloseHandle(hNet)
-                        local body = table.concat(chunks)
-                        if #body > 0 then return body, "wininet" end
-                        errs[#errs + 1] = "wininet_empty"
-                    else
-                        wininet.InternetCloseHandle(hNet)
-                        errs[#errs + 1] = "wininet_openurl_fail"
-                    end
-                else
-                    errs[#errs + 1] = "wininet_open_fail"
-                end
-            else
-                errs[#errs + 1] = "wininet_load_fail"
-            end
-        end
-    end
+    local w_body, w_tag = kr_wininet_get(url, max_bytes, "KR-MP-Updater/2.4", 6000)
+    if w_body then return w_body, "wininet" end
+    if w_tag then errs[#errs + 1] = w_tag end
 
     -- 2. Android / LÖVE 12 built-in LuaHTTPS
     local ok_hs, https = pcall(require, "https")

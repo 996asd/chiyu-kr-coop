@@ -411,7 +411,7 @@ local function install_misc_determinism_hooks(hooks)
     local storage = require("storage")
     hooks.wrap_once(storage, "load_slot", "det_storage", function(orig_load_slot)
         return function(self_s, idx, force)
-            local bypass = hooks.coop and hooks.coop._bypass_slot_override == true
+            local bypass = hooks.coop and hooks.coop:is_slot_override_bypassed()
             if not bypass then
                 if hooks.coop then
                     local mp_snap = hooks.coop:get_slot_override()
@@ -447,7 +447,7 @@ local function install_misc_determinism_hooks(hooks)
 
     hooks.wrap_once(storage, "save_slot", "det_storage", function(orig_save_slot)
         return function(self_s, data_table, idx, should_sync)
-            local bypass = hooks.coop and hooks.coop._bypass_slot_override == true
+            local bypass = hooks.coop and hooks.coop:is_slot_override_bypassed()
             if not bypass and ((hooks.coop and hooks.coop:is_active()) or (hooks.replay and hooks.replay:is_replaying())) then
                 return true -- never overwrite disk save during Co-op or replay
             end
@@ -468,7 +468,7 @@ local function install_misc_determinism_hooks(hooks)
         hooks.wrap_once(psel, "get", "coop_psel", function(orig_get)
             return function(user_data, slot)
                 if hooks:is_mp_active() and slot == 2 then
-                    local actor = hooks.coop._active_power_actor or hooks.coop.local_pid or 1
+                    local actor = hooks.coop:get_active_power_actor()
                     local spec = hooks.coop:get_player_reinf_spec(actor)
                     if spec and spec.option_id and psel.options and psel.options[spec.option_id] then
                         return psel.options[spec.option_id], spec.option_id
@@ -492,17 +492,15 @@ local function install_misc_determinism_hooks(hooks)
     if ok_gu and type(gen_up) == "table" then
         hooks.wrap_once(gen_up, "g4_reinforcement_branch", "coop_reinf_br", function(orig_g4_br)
             return function(user_data)
-                if hooks:is_mp_active() and hooks.coop._active_g4_branch then
-                    return hooks.coop._active_g4_branch
-                end
+                local g4_br = hooks:is_mp_active() and hooks.coop:get_active_g4_branch() or nil
+                if g4_br then return g4_br end
                 return orig_g4_br(user_data)
             end
         end)
         hooks.wrap_once(gen_up, "g5_reinforcement_branch", "coop_reinf_br", function(orig_g5_br)
             return function(user_data)
-                if hooks:is_mp_active() and hooks.coop._active_g5_branch then
-                    return hooks.coop._active_g5_branch
-                end
+                local g5_br = hooks:is_mp_active() and hooks.coop:get_active_g5_branch() or nil
+                if g5_br then return g5_br end
                 return orig_g5_br(user_data)
             end
         end)
@@ -521,20 +519,18 @@ local function install_misc_determinism_hooks(hooks)
         end)
         hooks.wrap_once(UP, "get_upgrade", "coop_up", function(orig_get_u)
             return function(self_up, name)
-                if hooks:is_mp_active() and hooks.coop.max_tech and hooks.coop._active_g5_branch then
-                    local br = hooks.coop._active_g5_branch
-                    if br == "dark" then
-                        if name == "reinforcements_shadow_archer" or name == "reinforcements_power_trio_dark" then
-                            return (ok_gu and gen_up and gen_up.get and gen_up.get(name)) or orig_get_u(self_up, name)
-                        elseif name == "reinforcements_rebel_militia" or name == "reinforcements_power_trio" then
-                            return nil
-                        end
-                    elseif br == "royal" then
-                        if name == "reinforcements_rebel_militia" or name == "reinforcements_power_trio" then
-                            return (ok_gu and gen_up and gen_up.get and gen_up.get(name)) or orig_get_u(self_up, name)
-                        elseif name == "reinforcements_shadow_archer" or name == "reinforcements_power_trio_dark" then
-                            return nil
-                        end
+                local br = (hooks:is_mp_active() and hooks.coop.max_tech) and hooks.coop:get_active_g5_branch() or nil
+                if br == "dark" then
+                    if name == "reinforcements_shadow_archer" or name == "reinforcements_power_trio_dark" then
+                        return (ok_gu and gen_up and gen_up.get and gen_up.get(name)) or orig_get_u(self_up, name)
+                    elseif name == "reinforcements_rebel_militia" or name == "reinforcements_power_trio" then
+                        return nil
+                    end
+                elseif br == "royal" then
+                    if name == "reinforcements_rebel_militia" or name == "reinforcements_power_trio" then
+                        return (ok_gu and gen_up and gen_up.get and gen_up.get(name)) or orig_get_u(self_up, name)
+                    elseif name == "reinforcements_shadow_archer" or name == "reinforcements_power_trio_dark" then
+                        return nil
                     end
                 end
                 return orig_get_u(self_up, name)

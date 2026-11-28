@@ -1,23 +1,10 @@
 -- KR-MP Online Relay Transport (M2: Non-blocking DNS + Non-blocking TCP to Go Public Relay Server)
 local socket = require("socket")
 local proto = require("kr_mp.proto")
+local tcp_stream = require("kr_mp.tcp_stream")
 
 local net_online = {}
 net_online.__index = net_online
-
-local WATCHDOG_SEC = tonumber(os.getenv("KR_MP_WATCHDOG_SEC")) or 12.0
-
-local DNS_WORKER_CODE = [[
-local channel_name, seq, host = ...
-local ch = love.thread.getChannel(channel_name)
-local ok, sock = pcall(require, "socket")
-if not ok or not sock or not sock.dns then
-    ch:push({ seq = seq, host = host, ip = nil, err = "no_socket_dns" })
-    return
-end
-local ip, err = sock.dns.toip(host)
-ch:push({ seq = seq, host = host, ip = ip, err = err })
-]]
 
 function net_online.new(boot)
     local self = setmetatable({}, net_online)
@@ -38,11 +25,7 @@ function net_online.new(boot)
         and love.thread.getChannel("kr_mp_online_dns") or nil
     self.host = proto.DEFAULT_ONLINE_HOST
     self.port = proto.DEFAULT_ONLINE_PORT
-    self.recv_buf = ""
-    self.send_queue = {}
-    self.voice_queue = {}
-    self.active_chunk = nil
-    self.send_offset = 1
+    tcp_stream.reset_io_buffers(self)
     self.voice_dropped = 0
     self.last_error = nil
     self.last_ping_ts = 0
@@ -78,11 +61,7 @@ function net_online:close()
     self.connect_target_host = nil
     self.connect_target_port = nil
     self.connect_target_ip = nil
-    self.recv_buf = ""
-    self.send_queue = {}
-    self.voice_queue = {}
-    self.active_chunk = nil
-    self.send_offset = 1
+    tcp_stream.reset_io_buffers(self)
     self.last_recv_ts = 0
     self.pending_disconnect_reason = nil
 end
@@ -96,55 +75,25 @@ function net_online:format_connect_error(target_host, target_port, cerr)
     return string.format("连接 %s:%d 失败：%s", target_host, target_port, hint)
 end
 
+function net_online:_mark_connected(sock, host, port, resolved_ip)
+    self.sock = sock
+    self.host = host
+    self.port = port
+    self.state = "connected"
+    self:log("Connected to Online Relay Server %s:%d (ip=%s)", tostring(host), tonumber(port) or 0, tostring(resolved_ip))
+end
+
 function net_online:begin_tcp_connect(connect_ip, target_host, target_port)
-    local c, err = socket.tcp()
-    if not c then
-        self.last_error = "TCP 初始化失败: " .. tostring(err)
-        self.state = "idle"
-        return false, self.last_error
-    end
-
-    c:settimeout(0)
-    local ok, cerr = c:connect(connect_ip, target_port)
-    if ok == 1 then
-        pcall(c.setoption, c, "tcp-nodelay", true)
-        pcall(c.setoption, c, "keepalive", true)
-        self.sock = c
-        self.connecting_sock = nil
-        self.host = target_host
-        self.port = target_port
-        self.state = "connected"
-        self.recv_buf = ""
-        self.send_queue = {}
-        self.voice_queue = {}
-        self.active_chunk = nil
-        self.send_offset = 1
-        local now = socket.gettime()
-        self.last_ping_ts = now
-        self.last_recv_ts = now
-        self.last_error = nil
-        self:log("Connected to Online Relay Server %s:%d (ip=%s)", target_host, target_port, connect_ip)
+    local status, res = tcp_stream.begin_nonblocking_connect(self, connect_ip, target_host, target_port, 5.0)
+    if status == "connected" then
+        self:_mark_connected(res, target_host, target_port, connect_ip)
         return true, "connected"
-    end
-
-    if cerr == "timeout" or cerr == "Operation already in progress" or cerr == "already in progress" then
-        local now = socket.gettime()
-        self.connecting_sock = c
-        self.connect_target_host = target_host
-        self.connect_target_port = target_port
-        self.connect_target_ip = connect_ip
-        self.connect_started_ts = now
-        self.connect_deadline = now + 5.0
-        self.connect_saw_peer = (c:getpeername() ~= nil)
-        self.state = "connecting"
-        self.last_error = nil
+    elseif status == "connecting" then
         return true, "connecting"
     end
-
-    pcall(c.close, c)
-    self.last_error = self:format_connect_error(target_host, target_port, cerr)
+    self.last_error = (type(res) == "string" and res:match("^TCP ")) and res or self:format_connect_error(target_host, target_port, res)
     self.state = "idle"
-    self:log("Connect server %s:%d (%s) failed: %s", target_host, target_port, connect_ip, tostring(cerr))
+    self:log("Connect server %s:%d (%s) failed: %s", target_host, target_port, connect_ip, tostring(res))
     return false, self.last_error
 end
 
@@ -168,22 +117,10 @@ function net_online:connect(host, port, silent_fail)
         return self:begin_tcp_connect(target_host, target_host, target_port)
     end
 
-    -- Non-blocking DNS lookup via love.thread so main loop never freezes
-    if love and love.thread and love.thread.newThread and self.dns_channel then
-        self.connect_seq = self.connect_seq + 1
-        local seq = self.connect_seq
-        local ok_th, th = pcall(love.thread.newThread, DNS_WORKER_CODE)
-        if ok_th and th then
-            self.state = "resolving"
-            self.connect_started_ts = socket.gettime()
-            self.connect_deadline = self.connect_started_ts + 5.0
-            self.last_error = nil
-            th:start("kr_mp_online_dns", seq, target_host)
-            return true, "resolving"
-        end
+    if tcp_stream.start_async_dns(self, "kr_mp_online_dns", target_host, 5.0) then
+        return true, "resolving"
     end
 
-    -- Fallback synchronous DNS if love.thread unavailable
     local resolved, derr = socket.dns.toip(target_host)
     if not resolved then
         self.last_error = string.format("域名解析失败 (%s)：请检查服务器/樱花映射地址", target_host)
@@ -199,60 +136,21 @@ function net_online:get_server_addr()
 end
 
 function net_online:is_lockstep_waiting()
-    return self.boot ~= nil and self.boot.lockstep ~= nil and self.boot.lockstep.waiting_for_peer == true
+    return tcp_stream.is_lockstep_waiting(self)
 end
 
 function net_online:send(msg)
-    if not self.sock or self.state ~= "connected" then
-        return false
-    end
-    if msg and msg.t == "VOICE" then
-        if #self.send_queue > 2 or #self.voice_queue >= 2 or self:is_lockstep_waiting() then
-            self.voice_dropped = (self.voice_dropped or 0) + 1
-            return false
-        end
-        self.voice_queue[#self.voice_queue + 1] = proto.encode(msg)
-        self:flush_send()
-        return true
-    end
-    local raw = proto.encode(msg)
-    self.send_queue[#self.send_queue + 1] = raw
-    self:flush_send()
-    return true
+    return tcp_stream.send(self, self.sock, msg, function(err)
+        self:log("TCP send error: %s", tostring(err))
+        self:handle_disconnect(err)
+    end)
 end
 
 function net_online:flush_send()
-    if not self.sock then return end
-    while self.active_chunk or #self.send_queue > 0 or #self.voice_queue > 0 do
-        if not self.active_chunk then
-            if #self.send_queue > 0 then
-                self.active_chunk = table.remove(self.send_queue, 1)
-                self.send_offset = 1
-            elseif #self.voice_queue > 0 then
-                if self:is_lockstep_waiting() then
-                    self.voice_dropped = (self.voice_dropped or 0) + #self.voice_queue
-                    self.voice_queue = {}
-                    break
-                end
-                self.active_chunk = table.remove(self.voice_queue, 1)
-                self.send_offset = 1
-            end
-        end
-        local sent, err, partial = self.sock:send(self.active_chunk, self.send_offset)
-        if sent then
-            self.active_chunk = nil
-            self.send_offset = 1
-        elseif err == "timeout" then
-            if partial and partial >= self.send_offset then
-                self.send_offset = partial + 1
-            end
-            break
-        else
-            self:log("TCP send error: %s", tostring(err))
-            self:handle_disconnect(err)
-            break
-        end
-    end
+    tcp_stream.flush_send(self, self.sock, function(err)
+        self:log("TCP send error: %s", tostring(err))
+        self:handle_disconnect(err)
+    end)
 end
 
 function net_online:handle_disconnect(reason)
@@ -261,11 +159,7 @@ function net_online:handle_disconnect(reason)
         pcall(self.sock.close, self.sock)
         self.sock = nil
     end
-    self.recv_buf = ""
-    self.send_queue = {}
-    self.voice_queue = {}
-    self.active_chunk = nil
-    self.send_offset = 1
+    tcp_stream.reset_io_buffers(self)
     self.last_recv_ts = 0
     self.state = "closed"
     self.last_error = "Server disconnected: " .. tostring(reason)
@@ -287,26 +181,14 @@ function net_online:fail_pending_connect(events, raw_err, display_err)
     self.connect_saw_peer = false
     self.last_error = display_err or self:format_connect_error(host, port, raw_err)
     self:log("Connect server %s:%d (%s) failed: %s", tostring(host), tonumber(port) or 0, tostring(ip), tostring(raw_err))
-    events[#events + 1] = {
-        type = "server_connect_failed",
-        reason = self.last_error,
-        silent = silent,
-    }
+    events[#events + 1] = { type = "server_connect_failed", reason = self.last_error, silent = silent }
 end
 
 function net_online:poll()
     local events = {}
     local now = socket.gettime()
-    -- Protect 12s watchdog against local main-thread stalls (e.g., FL level load/unload texture GC)
-    if self.last_poll_ts > 0 then
-        local gap = now - self.last_poll_ts
-        if gap > 1.5 and self.last_recv_ts > 0 then
-            self.last_recv_ts = self.last_recv_ts + gap
-        end
-    end
-    self.last_poll_ts = now
+    tcp_stream.protect_watchdog_stall(self, now)
 
-    -- Flush any async disconnect triggered earlier during send() outside poll()
     if self.pending_disconnect_reason then
         local r = self.pending_disconnect_reason
         self.pending_disconnect_reason = nil
@@ -314,87 +196,33 @@ function net_online:poll()
         return events
     end
 
-    -- 0a. Async DNS completion
     if self.state == "resolving" then
-        if self.dns_channel then
-            while true do
-                local res = self.dns_channel:pop()
-                if not res then break end
-                if res.seq == self.connect_seq then
-                    if not res.ip then
-                        local msg = string.format("域名解析失败 (%s)：请检查服务器/樱花映射地址", tostring(self.connect_target_host))
-                        self:fail_pending_connect(events, res.err or "dns_failed", msg)
-                        return events
-                    end
-                    self:log("Resolved server %s -> %s", tostring(self.connect_target_host), tostring(res.ip))
-                    local ok, st = self:begin_tcp_connect(res.ip, self.connect_target_host, self.connect_target_port)
-                    if not ok then
-                        events[#events + 1] = {
-                            type = "server_connect_failed",
-                            reason = self.last_error or tostring(st),
-                            silent = self.connect_silent,
-                        }
-                        return events
-                    elseif st == "connected" then
-                        events[#events + 1] = { type = "server_connected" }
-                    end
-                    break
-                end
+        local dns_st, val = tcp_stream.poll_dns(self, now)
+        if dns_st == "resolved" then
+            self:log("Resolved server %s -> %s", tostring(self.connect_target_host), tostring(val))
+            local ok, st = self:begin_tcp_connect(val, self.connect_target_host, self.connect_target_port)
+            if not ok then
+                events[#events + 1] = { type = "server_connect_failed", reason = self.last_error or tostring(st), silent = self.connect_silent }
+            elseif st == "connected" then
+                events[#events + 1] = { type = "server_connected" }
             end
-        end
-        if self.state == "resolving" and now >= self.connect_deadline then
+        elseif dns_st == "failed" then
+            local msg = string.format("域名解析失败 (%s)：请检查服务器/樱花映射地址", tostring(self.connect_target_host))
+            self:fail_pending_connect(events, val, msg)
+        elseif dns_st == "timeout" then
             local msg = string.format("域名解析超时 (%s)：请检查网络或服务器地址", tostring(self.connect_target_host))
             self:fail_pending_connect(events, "dns_timeout", msg)
         end
         return events
     end
 
-    -- 0b. Non-blocking TCP handshake poll (0ms main-thread overhead)
     if self.state == "connecting" and self.connecting_sock then
-        local c = self.connecting_sock
-        local _, writable = socket.select(nil, { c }, 0)
-        local peer = c:getpeername()
-        if peer then
-            self.connect_saw_peer = true
-        end
-
-        if writable and #writable > 0 then
-            if peer then
-                pcall(c.setoption, c, "tcp-nodelay", true)
-                pcall(c.setoption, c, "keepalive", true)
-                c:settimeout(0)
-                self.sock = c
-                self.connecting_sock = nil
-                self.host = self.connect_target_host
-                self.port = self.connect_target_port
-                self.state = "connected"
-                self.recv_buf = ""
-                self.send_queue = {}
-                self.voice_queue = {}
-                self.active_chunk = nil
-                self.send_offset = 1
-                self.last_ping_ts = now
-                self.last_recv_ts = now
-                self.last_error = nil
-                self:log("Connected to Online Relay Server %s:%d (ip=%s)",
-                    tostring(self.host), tonumber(self.port) or 0, tostring(self.connect_target_ip))
-                events[#events + 1] = { type = "server_connected" }
-                return events
-            else
-                self:fail_pending_connect(events, "connection refused")
-                return events
-            end
-        end
-
-        -- On Windows Winsock, a failed non-blocking connect clears getpeername() without firing writefds
-        if not peer and (self.connect_saw_peer or (now - self.connect_started_ts) >= 0.08) then
-            self:fail_pending_connect(events, "connection refused")
-            return events
-        end
-
-        if now >= self.connect_deadline then
-            self:fail_pending_connect(events, "timeout")
-            return events
+        local c_st, val = tcp_stream.poll_connect(self, now)
+        if c_st == "connected" then
+            self:_mark_connected(val, self.connect_target_host, self.connect_target_port, self.connect_target_ip)
+            events[#events + 1] = { type = "server_connected" }
+        elseif c_st == "refused" or c_st == "timeout" then
+            self:fail_pending_connect(events, val)
         end
         return events
     end
@@ -403,7 +231,6 @@ function net_online:poll()
         return events
     end
 
-    -- 1. Flush outgoing TCP queue
     self:flush_send()
     if not self.sock or self.state ~= "connected" then
         local r = self.pending_disconnect_reason or self.last_error or "send_failed"
@@ -412,81 +239,19 @@ function net_online:poll()
         return events
     end
 
-    -- 2. Non-blocking TCP receive (O(N) chunked concat for large RECONNECT_STATE bursts)
-    local chunks = nil
-    local closed_during_read = false
-    for _ = 1, 64 do
-        if not self.sock then break end
-        local data, err, partial = self.sock:receive(16384)
-        local chunk = data or partial
-        if chunk and #chunk > 0 then
-            self.last_recv_ts = now
-            if not chunks then
-                chunks = (#self.recv_buf > 0) and { self.recv_buf, chunk } or { chunk }
-            else
-                chunks[#chunks + 1] = chunk
-            end
-        end
-        if err == "closed" then
+    local disc = tcp_stream.pump_connected(self, function() return self.sock end, now, events, {
+        on_closed = function()
             self:log("Online server connection closed")
             self:handle_disconnect("closed")
-            closed_during_read = true
-            break
-        elseif err == "timeout" or not data then
-            break
-        end
-    end
-    if chunks then
-        self.recv_buf = (#chunks == 1) and chunks[1] or table.concat(chunks)
-    end
-
-    -- 3. Newline-delimited JSON framing (cursor-based O(N))
-    if #self.recv_buf > 0 then
-        local pos = 1
-        while true do
-            local nl = self.recv_buf:find("\n", pos, true)
-            if not nl then break end
-            local line = self.recv_buf:sub(pos, nl - 1)
-            pos = nl + 1
-            if #line > 0 then
-                local msg, derr = proto.decode(line)
-                if msg then
-                    if msg.t == "PING" then
-                        self:send({ t = "PONG", ts = msg.ts })
-                    elseif msg.t == "PONG" and type(msg.ts) == "number" then
-                        self.rtt_ms = math.floor((socket.gettime() - msg.ts) * 1000 + 0.5)
-                    else
-                        events[#events + 1] = { type = "msg", msg = msg }
-                    end
-                else
-                    self:log("Malformed server msg: %s", tostring(derr))
-                end
-            end
-        end
-        if pos > 1 then
-            self.recv_buf = self.recv_buf:sub(pos)
-        end
-    end
-
-    if closed_during_read then
-        self.pending_disconnect_reason = nil
-        events[#events + 1] = { type = "server_disconnected", reason = "closed" }
-        return events
-    end
-
-    -- 4. 12s dead-link watchdog
-    if self.sock and self.state == "connected" and self.last_recv_ts > 0 and (now - self.last_recv_ts) >= WATCHDOG_SEC then
-        self:log("Dead-link watchdog timeout (%.1fs without inbound bytes); closing server socket", now - self.last_recv_ts)
-        self:handle_disconnect("watchdog_timeout")
-        self.pending_disconnect_reason = nil
-        events[#events + 1] = { type = "server_disconnected", reason = "watchdog_timeout" }
-        return events
-    end
-
-    -- 5. Periodic RTT & keepalive ping every 1.5s
-    if self.sock and self.state == "connected" and now - self.last_ping_ts >= 1.5 then
-        self.last_ping_ts = now
-        self:send({ t = "PING", ts = now })
+        end,
+        on_malformed = function(derr) self:log("Malformed server msg: %s", tostring(derr)) end,
+        on_watchdog = function(elapsed)
+            self:log("Dead-link watchdog timeout (%.1fs without inbound bytes); closing server socket", elapsed)
+            self:handle_disconnect("watchdog_timeout")
+        end,
+    })
+    if disc then
+        events[#events + 1] = { type = "server_disconnected", reason = disc }
     end
 
     return events

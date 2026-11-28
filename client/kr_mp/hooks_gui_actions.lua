@@ -547,6 +547,79 @@ local function install_pick_and_tower_hooks(hooks, game_gui, deps)
     end)
 end
 
+local POW_HOTKEY_CHECKS = {
+    { "pow_1", 1, "1" },
+    { "pow_2", 2, "2" },
+    { "pow_3", 3, "3" },
+    { "pow_a", "a", "a" },
+    { "pow_s", "s", "s" },
+}
+
+local function handle_mp_hotkey(hooks, self_gui, key, ks, ok_ss, ss_mod, match_sc)
+    if key == "space" or (ks and key == ks.pause) then
+        if hooks.lockstep then hooks.lockstep:request_toggle_pause() end
+        return true
+    end
+    for i = 1, #POW_HOTKEY_CHECKS do
+        local sc_name, slot_id, fallback_k = POW_HOTKEY_CHECKS[i][1], POW_HOTKEY_CHECKS[i][2], POW_HOTKEY_CHECKS[i][3]
+        if match_sc(sc_name) or ((not ok_ss or not ss_mod or not ss_mod.matches) and key == fallback_k) then
+            if slot_id == "a" or slot_id == "s" then return true end
+            if slot_id == 3 then
+                local ult_slot = hooks.coop.local_ult_slot
+                if not ult_slot then return true end
+                local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, ult_slot)
+                if not ok_p then power_deny_toast(hooks, ult_slot, owner, reason); return true end
+                if ult_slot == "a" and self_gui.power_a and not self_gui.power_a.hidden and not self_gui.power_a:is_disabled() then
+                    self_gui.power_a:toggle_selection()
+                    return true
+                end
+                break
+            end
+            local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, slot_id)
+            if not ok_p then power_deny_toast(hooks, slot_id, owner, reason); return true end
+            break
+        end
+    end
+    local hero_cycle_key = (ok_ss and ss_mod and ss_mod.key and ss_mod.key(ks, "hero_cycle", 1, KEYPRESS_HERO_MAIN)) or KEYPRESS_HERO_MAIN
+    if hero_cycle_key and key == hero_cycle_key then
+        local my_hid = hooks.coop.hero_ids[hooks.coop.local_pid]
+        local my_h = my_hid and self_gui.game and self_gui.game.store and self_gui.game.store.entities[my_hid]
+        if my_h and not (my_h.health and my_h.health.dead) then
+            if self_gui.selected_entity == my_h then
+                self_gui:deselect_entity()
+            else
+                self_gui:deselect_all()
+                self_gui:select_entity(my_h)
+            end
+        end
+        return true
+    end
+    return false
+end
+
+local function cycle_durax_clones(hooks, self_gui, ks)
+    local st = self_gui.game and self_gui.game.store
+    if not (st and st.entities) then return end
+    local list = {}
+    for _, ent in pairs(st.entities) do
+        if ent and ent.template_name == "hero_durax_clone" and not ent._kr_mp_local
+            and ent.ui and ent.ui.can_click and not (ent.health and ent.health.dead)
+            and (not hooks:is_mp_active() or hooks.coop:can_control_hero(hooks.coop.local_pid, ent)) then
+            list[#list + 1] = ent
+        end
+    end
+    if #list == 0 then return end
+    table.sort(list, function(a, b) return (a.id or 0) < (b.id or 0) end)
+    local sel_idx = nil
+    for i = 1, #list do
+        if list[i] == self_gui.selected_entity then sel_idx = i; break end
+    end
+    self_gui:deselect_entity()
+    local next_idx = ((sel_idx or (ks and ks._last_durax_clone_idx) or 0) % #list) + 1
+    if ks then ks._last_durax_clone_idx = next_idx end
+    self_gui:select_entity(list[next_idx])
+end
+
 local function install_wave_and_hotkey_hooks(hooks, game_gui)
     if NextWaveButton then
         hooks.wrap_once(NextWaveButton, "on_click", "gui_act", function(orig_nw)
@@ -570,108 +643,30 @@ local function install_wave_and_hotkey_hooks(hooks, game_gui)
 
     hooks.wrap_once(game_gui, "keypressed", "gui_act", function(orig_gui_key)
         return function(self_gui, key, isrepeat)
-            if hooks:is_sync_active() then
-                if hooks.replay and hooks.replay:is_replaying() then
-                    if key == "escape" then
-                        return orig_gui_key(self_gui, key, isrepeat)
-                    end
-                    return false
-                end
-                local ks = self_gui.key_shortcuts
-                local ok_ss, ss_mod = pcall(require, "shortcut_settings")
-                local function match_sc(action_name)
-                    return ok_ss and ss_mod and ss_mod.matches and ks and ss_mod.matches(ks, action_name, key) == true
-                end
-                if hooks:is_mp_active() then
-                    if key == "space" or (ks and key == ks.pause) then
-                        if hooks.lockstep then hooks.lockstep:request_toggle_pause() end
-                        return true
-                    end
-                    local pow_checks = {
-                        { "pow_1", 1, "1" },
-                        { "pow_2", 2, "2" },
-                        { "pow_3", 3, "3" },
-                        { "pow_a", "a", "a" },
-                        { "pow_s", "s", "s" },
-                    }
-                    for i = 1, #pow_checks do
-                        local sc_name, slot_id, fallback_k = pow_checks[i][1], pow_checks[i][2], pow_checks[i][3]
-                        if match_sc(sc_name) or ((not ok_ss or not ss_mod or not ss_mod.matches) and key == fallback_k) then
-                            -- In Co-op, Slot 3 always maps to local player's own hero ult (hidden slots a/s disabled)
-                            if slot_id == "a" or slot_id == "s" then
-                                return true
-                            end
-                            if slot_id == 3 then
-                                local ult_slot = hooks.coop.local_ult_slot
-                                if not ult_slot then
-                                    return true
-                                end
-                                local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, ult_slot)
-                                if not ok_p then
-                                    power_deny_toast(hooks, ult_slot, owner, reason)
-                                    return true
-                                end
-                                if ult_slot == "a" and self_gui.power_a and not self_gui.power_a.hidden and not self_gui.power_a:is_disabled() then
-                                    self_gui.power_a:toggle_selection()
-                                    return true
-                                end
-                                break
-                            end
-                            local ok_p, owner, reason = hooks.coop:can_use_power(hooks.coop.local_pid, slot_id)
-                            if not ok_p then
-                                power_deny_toast(hooks, slot_id, owner, reason)
-                                return true
-                            end
-                            break
-                        end
-                    end
-                    local hero_cycle_key = (ok_ss and ss_mod and ss_mod.key and ss_mod.key(ks, "hero_cycle", 1, KEYPRESS_HERO_MAIN)) or KEYPRESS_HERO_MAIN
-                    if hero_cycle_key and key == hero_cycle_key then
-                        local my_hid = hooks.coop.hero_ids[hooks.coop.local_pid]
-                        local my_h = my_hid and self_gui.game and self_gui.game.store and self_gui.game.store.entities[my_hid]
-                        if my_h and not (my_h.health and my_h.health.dead) then
-                            if self_gui.selected_entity == my_h then
-                                self_gui:deselect_entity()
-                            else
-                                self_gui:deselect_all()
-                                self_gui:select_entity(my_h)
-                            end
-                        end
-                        return true
-                    end
-                end
-                -- Intercept durax_clone hotkey without mutating e.ui.clicked = true locally
-                if match_sc("durax_clone") then
-                    local st = self_gui.game and self_gui.game.store
-                    if st and st.entities then
-                        local list = {}
-                        for _, ent in pairs(st.entities) do
-                            if ent and ent.template_name == "hero_durax_clone" and not ent._kr_mp_local
-                                and ent.ui and ent.ui.can_click and not (ent.health and ent.health.dead)
-                                and (not hooks:is_mp_active() or hooks.coop:can_control_hero(hooks.coop.local_pid, ent)) then
-                                list[#list + 1] = ent
-                            end
-                        end
-                        table.sort(list, function(a, b) return (a.id or 0) < (b.id or 0) end)
-                        if #list > 0 then
-                            local sel_idx = nil
-                            for i = 1, #list do
-                                if list[i] == self_gui.selected_entity then sel_idx = i; break end
-                            end
-                            self_gui:deselect_entity()
-                            local next_idx = ((sel_idx or (ks and ks._last_durax_clone_idx) or 0) % #list) + 1
-                            if ks then ks._last_durax_clone_idx = next_idx end
-                            self_gui:select_entity(list[next_idx])
-                        end
-                    end
-                    return true
-                end
-                local wave_key = (ks and ks.wave) or KEYPRESS_NEXTWAVE or "w"
-                if (key == KEYPRESS_RETURN or (not DEBUG and key == wave_key) or match_sc("wave"))
-                    and self_gui.next_wave_button and not self_gui.next_wave_button:is_disabled() then
-                    hooks:submit_command({ op = "SEND_WAVE" })
-                    return true
-                end
+            if not hooks:is_sync_active() then
+                return orig_gui_key(self_gui, key, isrepeat)
+            end
+            if hooks.replay and hooks.replay:is_replaying() then
+                if key == "escape" then return orig_gui_key(self_gui, key, isrepeat) end
+                return false
+            end
+            local ks = self_gui.key_shortcuts
+            local ok_ss, ss_mod = pcall(require, "shortcut_settings")
+            local function match_sc(action_name)
+                return ok_ss and ss_mod and ss_mod.matches and ks and ss_mod.matches(ks, action_name, key) == true
+            end
+            if hooks:is_mp_active() and handle_mp_hotkey(hooks, self_gui, key, ks, ok_ss, ss_mod, match_sc) then
+                return true
+            end
+            if match_sc("durax_clone") then
+                cycle_durax_clones(hooks, self_gui, ks)
+                return true
+            end
+            local wave_key = (ks and ks.wave) or KEYPRESS_NEXTWAVE or "w"
+            if (key == KEYPRESS_RETURN or (not DEBUG and key == wave_key) or match_sc("wave"))
+                and self_gui.next_wave_button and not self_gui.next_wave_button:is_disabled() then
+                hooks:submit_command({ op = "SEND_WAVE" })
+                return true
             end
             return orig_gui_key(self_gui, key, isrepeat)
         end

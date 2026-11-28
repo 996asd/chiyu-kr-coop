@@ -49,19 +49,26 @@ local function get_stage_clean_title(level_idx)
     return catalog.get_stage_label(level_idx)
 end
 
+local GLOBAL_MODAL_TITLES = {
+    guide = "新手指南 · 1分钟开黑",
+    sakura = "樱花映射助手 · SakuraFrp",
+    server_host = "一键开服助手 · 自建公网大厅",
+}
+
+local ROOM_MODAL_TITLES = {
+    stages = "战役舆图 · 选择关卡",
+    hero1 = "英雄殿 · 选 1P 主将",
+    hero2 = "英雄殿 · 选 2P 队友",
+    towers = "皇家军械库 · 59选12",
+    powers = "战前军械 · 天灾 / 援军 / 科技",
+    voice = "语音调音 · 麦克风设置",
+}
+
 local function resolve_banner_title(lobby)
-    if lobby.sub_modal == "guide" then return "新手指南 · 1分钟开黑"
-    elseif lobby.sub_modal == "sakura" then return "樱花映射助手 · SakuraFrp"
-    elseif lobby.sub_modal == "server_host" then return "一键开服助手 · 自建公网大厅"
-    elseif lobby.view == "home" then return "联机酒馆 · 冒险驿站"
-    elseif lobby.sub_modal == "stages" then return "战役舆图 · 选择关卡"
-    elseif lobby.sub_modal == "hero1" then return "英雄殿 · 选 1P 主将"
-    elseif lobby.sub_modal == "hero2" then return "英雄殿 · 选 2P 队友"
-    elseif lobby.sub_modal == "towers" then return "皇家军械库 · 59选12"
-    elseif lobby.sub_modal == "powers" then return "战前军械 · 天灾 / 援军 / 科技"
-    elseif lobby.sub_modal == "voice" then return "语音调音 · 麦克风设置"
-    end
-    return "双人同盟 · 皇家战桌"
+    local global_t = GLOBAL_MODAL_TITLES[lobby.sub_modal]
+    if global_t then return global_t end
+    if lobby.view == "home" then return "联机酒馆 · 冒险驿站" end
+    return ROOM_MODAL_TITLES[lobby.sub_modal] or "双人同盟 · 皇家战桌"
 end
 
 local function mask_if_private(lobby, addr)
@@ -891,26 +898,30 @@ function M.draw(lobby)
         font_map = font_map, add_btn = add_btn,
     }
 
-    if lobby.sub_modal == "guide" then
-        modals.draw_guide(ctx)
-    elseif lobby.sub_modal == "sakura" then
-        sakura_modal.draw(ctx)
-    elseif lobby.sub_modal == "server_host" then
-        server_modal.draw(ctx)
+    local global_drawers = {
+        guide = modals.draw_guide,
+        sakura = sakura_modal.draw,
+        server_host = server_modal.draw,
+    }
+    local room_drawers = {
+        stages = modals.draw_stages,
+        hero1 = modals.draw_heroes,
+        hero2 = modals.draw_heroes,
+        towers = modals.draw_towers,
+        powers = modals.draw_powers,
+    }
+
+    local g_draw = global_drawers[lobby.sub_modal]
+    if g_draw then
+        g_draw(ctx)
     elseif lobby.view == "home" then
         draw_home(ctx)
         ui.text("赤羽的王国保卫战联机器 · 永久免费开源（仅适配 FL 8.2.0 · 严禁倒卖，如付费购买请立刻退款）",
             ctx.cx, py + ph - 33, { 146, 42, 28, 250 }, font_map.small_bold, ctx.cw, "center")
-    elseif lobby.sub_modal == "stages" then
-        modals.draw_stages(ctx)
-    elseif lobby.sub_modal == "hero1" or lobby.sub_modal == "hero2" then
-        modals.draw_heroes(ctx)
-    elseif lobby.sub_modal == "towers" then
-        modals.draw_towers(ctx)
-    elseif lobby.sub_modal == "powers" then
-        modals.draw_powers(ctx)
     elseif lobby.sub_modal == "voice" and lobby.voice then
         modals.draw_voice(ctx)
+    elseif room_drawers[lobby.sub_modal] then
+        room_drawers[lobby.sub_modal](ctx)
     else
         draw_room(ctx)
     end
