@@ -476,9 +476,9 @@ local function draw_home(ctx)
     local is_sakura = (tab == "sakura")
     local is_lan = (tab == "lan")
     local is_online = (tab == "online")
-    add_btn("tab_sakura", "樱花联机", cx, y, 104, 28, is_sakura and "wood" or "parchment", { small = true, active = is_sakura })
-    add_btn("tab_lan", "局域网", cx + 110, y, 84, 28, is_lan and "wood" or "parchment", { small = true, active = is_lan })
-    add_btn("tab_online", "公网服务器", cx + 200, y, 108, 28, is_online and "wood" or "parchment", { small = true, active = is_online })
+    add_btn("tab_sakura", "樱花联机", cx, y, 96, 28, is_sakura and "wood" or "parchment", { small = true, active = is_sakura })
+    add_btn("tab_lan", "局域网", cx + 102, y, 76, 28, is_lan and "wood" or "parchment", { small = true, active = is_lan })
+    add_btn("tab_online", "公网服务器", cx + 184, y, 100, 28, is_online and "wood" or "parchment", { small = true, active = is_online })
 
     local upd_lbl, upd_w, upd_style
     if updater.ota_applied then
@@ -498,12 +498,26 @@ local function draw_home(ctx)
     else
         upd_lbl, upd_w, upd_style = "检查更新", 76, "parchment"
     end
-    add_btn("check_update", upd_lbl, cx + cw - upd_w, y + 1, upd_w, 26, upd_style, { tiny = true })
-    local guide_w = 78
-    add_btn("open_guide", "新手教程", cx + cw - upd_w - guide_w - 6, y + 1, guide_w, 26,
+    local upd_x = cx + cw - upd_w
+    add_btn("check_update", upd_lbl, upd_x, y + 1, upd_w, 26, upd_style, { tiny = true })
+    local guide_w = 74
+    local guide_x = upd_x - 6 - guide_w
+    add_btn("open_guide", "新手教程", guide_x, y + 1, guide_w, 26,
         (not lobby.seen_guide) and "azure" or "parchment", { tiny = true, tab = 1 })
-    ui.text(string.format("FL %s · v%s · F10", tostring(KR_FL_VERSION), proto.MOD_VERSION),
-        cx + 314, y + 7, T.ink_muted, fm.tiny, cw - 320 - upd_w - guide_w - 8, "right")
+    local diag = lobby.boot and lobby.boot.diagnostics
+    local has_issue = (diag ~= nil and (diag.has_unread_issue == true or diag.prev_issue_fname ~= nil))
+    local rep_w = has_issue and 78 or 72
+    local rep_x = guide_x - 6 - rep_w
+    add_btn("export_report", has_issue and "报错反馈!" or "报错反馈", rep_x, y + 1, rep_w, 26,
+        has_issue and "crimson" or "parchment", { tiny = true })
+    local ver_x = cx + 288
+    local ver_w = rep_x - ver_x - 8
+    if ver_w >= 64 then
+        local ver_txt = (ver_w >= 146)
+            and string.format("FL %s · v%s · F10", tostring(KR_FL_VERSION), proto.MOD_VERSION)
+            or string.format("v%s · F10", tostring(proto.MOD_VERSION))
+        ui.text(ver_txt, ver_x, y + 7, T.ink_muted, fm.tiny, ver_w, "right")
+    end
 
     y = y + 36
     G.setColor(T.parchment_line[1], T.parchment_line[2], T.parchment_line[3], 130)
@@ -828,21 +842,29 @@ local function draw_room(ctx)
     local tray_h = draw_room_armory_tray(ctx, y, is_host)
     y = y + tray_h + 11
 
-    -- Row 4: Start / Ready CTA + Leave Button
-    local cta_h, close_w = 42, 122
+    -- Row 4: Start / Ready CTA + Bug Report + Leave Button
+    local cta_h, close_w, rep_w = 42, 112, 96
+    local diag = lobby.boot and lobby.boot.diagnostics
+    local has_issue = (diag ~= nil and (diag.has_unread_issue == true or diag.prev_issue_fname ~= nil))
+    local main_w = cw - close_w - rep_w - 20
+    local rep_x = cx + main_w + 10
     local disc_lbl = lobby.transport:is_online() and "公网连接断开 · 重连中..." or "已与房主断开连接"
     if is_host then
         local can_start = link_ok and lobby.peer_connected
         local start_lbl = (lobby.transport:is_online() and not link_ok) and disc_lbl
             or (lobby.peer_connected and "出征守关！" or "等待 2P 队友加入...")
         add_btn("start_match", start_lbl,
-            cx, y, cw - close_w - 12, cta_h, "battle", { large = true, disabled = not can_start, radius = 9 })
+            cx, y, main_w, cta_h, "battle", { large = true, disabled = not can_start, radius = 9 })
+        add_btn("export_report", has_issue and "报错反馈!" or "报错反馈",
+            rep_x, y, rep_w, cta_h, has_issue and "crimson" or "parchment", { small = true, radius = 9 })
         add_btn("leave_room", "关闭房间", cx + cw - close_w, y, close_w, cta_h, "crimson", { radius = 9 })
     else
         local ready_lbl = (not link_ok) and disc_lbl
             or (lobby.local_ready and "已就绪 · 等待房主开局" or "点击准备就绪！")
         add_btn("toggle_ready", ready_lbl,
-            cx, y, cw - close_w - 12, cta_h, "battle", { large = true, disabled = not link_ok, radius = 9 })
+            cx, y, main_w, cta_h, "battle", { large = true, disabled = not link_ok, radius = 9 })
+        add_btn("export_report", has_issue and "报错反馈!" or "报错反馈",
+            rep_x, y, rep_w, cta_h, has_issue and "crimson" or "parchment", { small = true, radius = 9 })
         add_btn("leave_room", "离开房间", cx + cw - close_w, y, close_w, cta_h, "crimson", { radius = 9 })
     end
 end
@@ -890,10 +912,6 @@ function M.draw(lobby)
 
     ui.begin_transform(scale, ox, oy)
     ui.draw_ironhide_war_table(px, py, pw, ph, resolve_banner_title(lobby), font_map.banner)
-    local diag = lobby.boot and lobby.boot.diagnostics
-    local has_issue = (diag ~= nil and (diag.has_unread_issue == true or diag.prev_issue_fname ~= nil))
-    add_btn("export_report", has_issue and "报错反馈!" or "报错反馈", px + pw - 104, py - 8, 76, 26,
-        has_issue and "crimson" or "wood", { tiny = true, radius = 7 })
     add_btn("close", "×", px + pw - 22, py - 10, 32, 30, "crimson", { large = true, radius = 8 })
 
     local ctx = {

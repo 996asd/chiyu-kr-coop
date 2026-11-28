@@ -201,7 +201,7 @@ local function check_buttons_geom(tag, btns, px, py, pw, ph)
     local overlaps, oobs = 0, 0
     for i = 1, #btns do
         local a = btns[i]
-        local allow_badge = (a.id == "close" or a.id == "export_report")
+        local allow_badge = (a.id == "close")
         if not allow_badge then
             if a.x < px - 1 or a.y < py - 1 or (a.x + a.w) > (px + pw + 1) or (a.y + a.h) > (py + ph + 1) then
                 oobs = oobs + 1
@@ -273,7 +273,7 @@ local function run_sakura_modal_case(tag, sk_override, lobby_override)
             local tx1, tx2 = lx, lx + math.min(ltw, llim)
             local ty1, ty2 = ly, ly + lines * lh
             for _, b in ipairs(lobby.buttons) do
-                if b.id ~= "close" and b.id ~= "export_report" then
+                if b.id ~= "close" then
                     local ox = math.min(tx2, b.x + b.w) - math.max(tx1, b.x)
                     local oy = math.min(ty2, b.y + b.h) - math.max(ty1, b.y)
                     local inside_btn = (ly >= b.y - 3 and (ly + lh) <= (b.y + b.h + 5) and lx >= b.x - 4 and (lx + llim) <= (b.x + b.w + 8))
@@ -377,7 +377,7 @@ local function run_home_case(tag, sk_override)
             local tx1, tx2 = lx, lx + math.min(ltw, llim)
             local ty1, ty2 = ly, ly + lines * lh
             for _, b in ipairs(lobby.buttons) do
-                if b.id ~= "close" and b.id ~= "export_report" then
+                if b.id ~= "close" then
                     local ox = math.min(tx2, b.x + b.w) - math.max(tx1, b.x)
                     local oy = math.min(ty2, b.y + b.h) - math.max(ty1, b.y)
                     local inside_btn = (ly >= b.y - 3 and (ly + lh) <= (b.y + b.h + 5) and lx >= b.x - 4 and (lx + llim) <= (b.x + b.w + 8))
@@ -469,7 +469,7 @@ local function run_server_modal_case(tag, sh_override, sk_override)
             local lh = math.ceil(lsz * 1.45)
             local tx1, tx2, ty1, ty2 = lx, lx + math.min(ltw, llim), ly, ly + lines * lh
             for _, b in ipairs(lobby.buttons) do
-                if b.id ~= "close" and b.id ~= "export_report" then
+                if b.id ~= "close" then
                     local ox = math.min(tx2, b.x + b.w) - math.max(tx1, b.x)
                     local oy = math.min(ty2, b.y + b.h) - math.max(ty1, b.y)
                     local inside_btn = (ly >= b.y - 3 and (ly + lh) <= (b.y + b.h + 5) and lx >= b.x - 4 and (lx + llim) <= (b.x + b.w + 8))
@@ -714,14 +714,24 @@ do
     lobby_input.handle_button(mock_host, { id = "copy_net_info" })
     check("lan_host_copies_real_lan_ip", copied_val == "192.168.1.88:17777", tostring(copied_val))
 
-    -- I9: Verify Layer 3 Report Modal geometry (idle / error / done states: zero OOB, zero overlap)
+    -- I9: Verify Layer 3 Report Modal geometry across ALL states (idle / sending / error / done / active_ok)
+    --     plus Home widest-top-bar & Room host/guest export_report button placement (zero OOB, zero overlap)
     for _, st in ipairs({
-        { tag = "report_modal_idle",  upload = { state = "idle",  note = "", server_addr = "127.0.0.1:17780" } },
-        { tag = "report_modal_error", upload = { state = "error", note = "测试", server_addr = "127.0.0.1:17780", err = "连接超时" } },
-        { tag = "report_modal_done",  upload = { state = "done",  note = "测试", server_addr = "127.0.0.1:17780", code = "R-4K9A", bytes = 26800 } },
+        { tag = "report_modal_idle",      upload = { state = "idle",       note = "", server_addr = "127.0.0.1:17780" }, active_ok = false },
+        { tag = "report_modal_active_ok", upload = { state = "idle",       note = "", server_addr = "127.0.0.1:17780" }, active_ok = true },
+        { tag = "report_modal_sending",   upload = { state = "sending",    note = "测试", server_addr = "127.0.0.1:17780" }, active_ok = false },
+        { tag = "report_modal_error",     upload = { state = "error",      note = "测试", server_addr = "127.0.0.1:17780", err = "连接超时，目标服务器未响应" }, active_ok = false },
+        { tag = "report_modal_done",      upload = { state = "done",       note = "测试", server_addr = "127.0.0.1:17780", code = "R-4K9A", bytes = 26800 }, active_ok = false },
     }) do
         local rl = make_mock_lobby({ mask_addr = sakura.mask_addr })
         rl.sub_modal = "report"
+        if st.active_ok then
+            rl.server_connected = true
+            rl.server_report_ok = true
+            rl.transport.is_online = function() return true end
+            rl.transport.is_connected = function() return true end
+            rl.transport.get_server_addr = function() return "relay.example.com:17780" end
+        end
         rl.boot = {
             diagnostics = {
                 upload = st.upload,
@@ -736,6 +746,54 @@ do
         drawn_texts = {}
         lobby_draw.draw(rl)
         check_buttons_geom(st.tag, rl.buttons, 0, 0, 780, 486)
+    end
+
+    -- Widest Home top bar (has_issue=true + updater has_update=true)
+    local updater = require("kr_mp.updater")
+    local orig_hu, orig_lv = updater.has_update, updater.latest_version
+    updater.has_update, updater.latest_version = true, "2.5.9"
+    local hl = make_mock_lobby({ mask_addr = sakura.mask_addr, get_host_share_addr = function() return nil, nil, false end })
+    hl.sub_modal = nil
+    hl.boot = { diagnostics = { has_unread_issue = true } }
+    hl.buttons = {}
+    lobby_draw.draw(hl)
+    check_buttons_geom("home_top_bar_widest", hl.buttons, 0, 0, 780, 486)
+    local found_home_rep = false
+    for _, b in ipairs(hl.buttons) do
+        if b.id == "export_report" then found_home_rep = true end
+    end
+    check("home_has_export_report_btn", found_home_rep, "missing export_report on home top bar")
+    updater.has_update, updater.latest_version = orig_hu, orig_lv
+
+    -- Room screen (host & guest): verify export_report in Row 4 has zero overlap / zero OOB
+    for _, role in ipairs({ "host", "guest" }) do
+        local rml = make_mock_lobby({ mask_addr = sakura.mask_addr, get_host_share_addr = function() return nil, nil, false end })
+        rml.sub_modal = nil
+        rml.view = "room"
+        rml.role = role
+        rml.local_pid = (role == "host") and 1 or 2
+        rml.peer_connected = true
+        rml.peer_ready = true
+        rml.local_ready = true
+        rml.transport.get_rtt_ms = function() return 18 end
+        rml.transport.is_port_drifted = function() return false end
+        rml.ensure_room_defaults = function() end
+        rml.normalize_delay_turns = function(v) return tonumber(v) or 2 end
+        rml.DELAY_LABELS = { [2] = "缓冲:局域网100ms", [4] = "缓冲:樱花200ms" }
+        rml.room = {
+            level_idx = 101, level_difficulty = 2, econ_mode = "independent",
+            tower_mode = "owned", input_delay_turns = 2,
+            heroes = { 1, 2 }, towers = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 },
+        }
+        rml.boot = { diagnostics = { has_unread_issue = (role == "guest") } }
+        rml.buttons = {}
+        lobby_draw.draw(rml)
+        check_buttons_geom("room_" .. role .. "_report_btn", rml.buttons, 0, 0, 780, 486)
+        local found_room_rep = false
+        for _, b in ipairs(rml.buttons) do
+            if b.id == "export_report" then found_room_rep = true end
+        end
+        check("room_" .. role .. "_has_export_report", found_room_rep, "missing export_report in room")
     end
 end
 
