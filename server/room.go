@@ -81,6 +81,7 @@ type Hub struct {
 	reconnectGrace      time.Duration
 	lobbyReconnectGrace time.Duration
 	startedAt           time.Time
+	reports             *ReportStore
 }
 
 func NewHub(maxRooms int, reconnectGrace time.Duration) *Hub {
@@ -195,23 +196,39 @@ func (h *Hub) UnregisterClient(c *Client) {
 	}
 }
 
-func (h *Hub) Stats() map[string]any {
+func (h *Hub) SetReportStore(store *ReportStore) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.reports = store
+}
+
+func (h *Hub) ReportsEnabled() bool {
+	return h.reports != nil && h.reports.Enabled()
+}
+
+func (h *Hub) Stats() map[string]any {
+	h.mu.Lock()
 	activeMatches := 0
 	for _, r := range h.rooms {
 		if r.Status != "lobby" {
 			activeMatches++
 		}
 	}
-	return map[string]any{
-		"server_ver":     ServerVersion,
-		"proto":          ProtocolVer,
-		"uptime_sec":     int(time.Since(h.startedAt).Seconds()),
-		"clients":        len(h.clients),
-		"rooms":          len(h.rooms),
-		"active_matches": activeMatches,
+	stats := map[string]any{
+		"server_ver":      ServerVersion,
+		"proto":           ProtocolVer,
+		"uptime_sec":      int(time.Since(h.startedAt).Seconds()),
+		"clients":         len(h.clients),
+		"rooms":           len(h.rooms),
+		"active_matches":  activeMatches,
+		"reports_enabled": h.ReportsEnabled(),
 	}
+	rs := h.reports
+	h.mu.Unlock()
+	if rs != nil && rs.Enabled() {
+		stats["reports_count"] = rs.Count()
+	}
+	return stats
 }
 
 func (h *Hub) RunJanitor(stop <-chan struct{}) {

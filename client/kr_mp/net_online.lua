@@ -6,7 +6,7 @@ local tcp_stream = require("kr_mp.tcp_stream")
 local net_online = {}
 net_online.__index = net_online
 
-function net_online.new(boot)
+function net_online.new(boot, dns_channel_name)
     local self = setmetatable({}, net_online)
     self.boot = boot
     self.role = "online"
@@ -21,8 +21,10 @@ function net_online.new(boot)
     self.connect_target_port = nil
     self.connect_target_ip = nil
     self.connect_silent = false
+    self.dns_channel_name = (type(dns_channel_name) == "string" and #dns_channel_name > 0)
+        and dns_channel_name or "kr_mp_online_dns"
     self.dns_channel = (love and love.thread and love.thread.getChannel)
-        and love.thread.getChannel("kr_mp_online_dns") or nil
+        and love.thread.getChannel(self.dns_channel_name) or nil
     self.host = proto.DEFAULT_ONLINE_HOST
     self.port = proto.DEFAULT_ONLINE_PORT
     tcp_stream.reset_io_buffers(self)
@@ -117,7 +119,7 @@ function net_online:connect(host, port, silent_fail)
         return self:begin_tcp_connect(target_host, target_host, target_port)
     end
 
-    if tcp_stream.start_async_dns(self, "kr_mp_online_dns", target_host, 5.0) then
+    if tcp_stream.start_async_dns(self, self.dns_channel_name or "kr_mp_online_dns", target_host, 5.0) then
         return true, "resolving"
     end
 

@@ -15,6 +15,11 @@ func (h *Hub) HandleMessage(c *Client, msg *IncomingMsg) {
 		c.Send(map[string]any{"t": "PONG", "ts": msg.Ts})
 		return
 	}
+	// BUG_REPORT persists JSON to disk under ReportStore's own lock so it NEVER stalls 60Hz match relay!
+	if msg.Type == "BUG_REPORT" {
+		h.handleBugReport(c, msg)
+		return
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -59,6 +64,36 @@ func (h *Hub) HandleMessage(c *Client, msg *IncomingMsg) {
 	default:
 		c.Send(map[string]any{"t": "ERROR", "msg": "Unknown message type: " + msg.Type})
 	}
+}
+
+func (h *Hub) handleBugReport(c *Client, msg *IncomingMsg) {
+	h.mu.Lock()
+	rs := h.reports
+	h.mu.Unlock()
+	if rs == nil || !rs.Enabled() {
+		c.Send(map[string]any{
+			"t":   "BUG_REPORT_ERR",
+			"msg": "当前公网中继服未开启云端报错收集，请改用「本地导出 (.json)」把文件发给作者。",
+		})
+		return
+	}
+	sum, err := rs.Save(c.remoteIP, msg.Note, msg.Report)
+	if err != nil {
+		log.Printf("[REPORT] Rejected upload from client %d (%s): %v", c.id, c.remoteIP, err)
+		c.Send(map[string]any{
+			"t":   "BUG_REPORT_ERR",
+			"msg": err.Error(),
+		})
+		return
+	}
+	log.Printf("[REPORT] Saved #%s (%d bytes, level=%d, reason=%s, crash=%v, desync=%d) from %s",
+		sum.Code, sum.Bytes, sum.LevelIdx, sum.Reason, sum.HasCrash, sum.DesyncTick, c.remoteIP)
+	c.Send(map[string]any{
+		"t":           "BUG_REPORT_OK",
+		"code":        sum.Code,
+		"bytes":       sum.Bytes,
+		"received_at": sum.ReceivedAt,
+	})
 }
 
 func (h *Hub) onReturnLobbyLocked(c *Client, msg *IncomingMsg) {
@@ -138,6 +173,7 @@ func (h *Hub) onHelloLocked(c *Client, msg *IncomingMsg) {
 		"guest_stage_ok":     true,
 		"lobby_reconnect_ok": true,
 		"direct_next_ok":     true,
+		"report_ok":          h.ReportsEnabled(),
 		"client_id":          c.id,
 		"rooms":              h.buildRoomListLocked(),
 	})

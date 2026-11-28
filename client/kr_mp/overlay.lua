@@ -522,6 +522,17 @@ local function draw_battle_status_row(G, T, font_map, s, x, y, w, is_p1, has_cat
             end
             ui.print_shadow(rmsg, x + 16, y + 43, T.gold_bright, w - 98, "left", nil, font_map.tiny_bold)
             add_btn("mp_abort_reconnect", "放弃等待", x + w - 80, y + 39, 64, 20, "crimson", { tiny = true })
+        elseif s.mp_phase == "DESYNC" then
+            if s.mp_report_ok then
+                ui.print_shadow(string.format("%s · 帧 %d · 校验 #%s", phase_cn, tick, hash_hex),
+                    x + 16, y + 43, T.gold_bright, w - 166, "left", nil, font_map.tiny_bold)
+                add_btn("mp_upload_report", "上传码", x + w - 146, y + 39, 58, 20, "battle", { tiny = true })
+                add_btn("mp_export_report", "导出本地", x + w - 84, y + 39, 68, 20, "azure", { tiny = true })
+            else
+                ui.print_shadow(string.format("%s · 帧 %d · 校验 #%s", phase_cn, tick, hash_hex),
+                    x + 16, y + 43, T.gold_bright, w - 106, "left", nil, font_map.tiny_bold)
+                add_btn("mp_export_report", "导出报错", x + w - 88, y + 39, 72, 20, "azure", { tiny = true })
+            end
         else
             local wt = show_wait_alert and "网络波动，正在等待队友指令..." or phase_cn
             ui.print_shadow(string.format("%s · 帧 %d · 校验 #%s", wt, tick, hash_hex),

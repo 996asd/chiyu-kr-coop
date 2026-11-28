@@ -14,7 +14,7 @@ local server_host = {
     DEFAULT_PORT = proto.DEFAULT_ONLINE_PORT or 17780,
     DEFAULT_HTTP_PORT = 17781,
     VPS_DEPLOY_CMD = "curl -fsSL https://gitee.com/chiyu-studio/chiyu-kr-coop/raw/main/tools/deploy_server.sh | sudo bash",
-    BUILTIN_WIN_SHA256 = "539BF784DD25DF152054E2E0F835831CBBD59A25FFBDDE6B84455D0FD30D41FC",
+    BUILTIN_WIN_SHA256 = "B6BCB1B63192D573366C256B8AD7731DEFFD7AFD772D366A5A34AE376B7E4F00",
 
     boot = nil,
     overlay = nil,

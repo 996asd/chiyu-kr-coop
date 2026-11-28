@@ -107,6 +107,7 @@ local lobby = {
     server_guest_stage_ok = false,
     server_lobby_reconnect_ok = false,
     server_direct_next_ok = false,
+    server_report_ok = false,
     _pending_chain_stage = nil,
     online_reconnecting_room = false,
     online_reconnect_attempt = 0,
@@ -522,11 +523,25 @@ function MSG_HANDLERS.SERVER_HELLO(self, msg)
     self.server_guest_stage_ok = (msg.guest_stage_ok == true)
     self.server_lobby_reconnect_ok = (msg.lobby_reconnect_ok == true)
     self.server_direct_next_ok = (msg.direct_next_ok == true)
+    self.server_report_ok = (msg.report_ok == true)
     self.online_rooms = msg.rooms or {}
     updater:note_server_version(msg.server_ver)
-    self.boot:log("[LOBBY] Server hello OK (ver=%s, voice_ok=%s, guest_stage=%s, direct_next=%s, rooms=%d)",
-        tostring(msg.server_ver), tostring(self.server_voice_ok), tostring(self.server_guest_stage_ok), tostring(self.server_direct_next_ok), #self.online_rooms)
+    self.boot:log("[LOBBY] Server hello OK (ver=%s, voice_ok=%s, guest_stage=%s, direct_next=%s, report_ok=%s, rooms=%d)",
+        tostring(msg.server_ver), tostring(self.server_voice_ok), tostring(self.server_guest_stage_ok),
+        tostring(self.server_direct_next_ok), tostring(self.server_report_ok), #self.online_rooms)
     self:flush_pending_online_action()
+end
+
+function MSG_HANDLERS.BUG_REPORT_OK(self, msg)
+    if self.boot and self.boot.diagnostics then
+        self.boot.diagnostics:on_cloud_upload_ok(msg)
+    end
+end
+
+function MSG_HANDLERS.BUG_REPORT_ERR(self, msg)
+    if self.boot and self.boot.diagnostics then
+        self.boot.diagnostics:on_cloud_upload_err(msg and msg.msg or "服务端拒绝接收")
+    end
 end
 
 function MSG_HANDLERS.ROOM_LIST(self, msg)

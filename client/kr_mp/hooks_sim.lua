@@ -662,7 +662,14 @@ local function step_mp_update(hooks, self_sim, d, dt)
         if main and main.handler and main.handler.active_item ~= game then
             return
         end
-        for _ = 1, 30 do
+        local max_step = 30
+        if hooks.lockstep.blackbox_replay then
+            local env_sp = tonumber(os.getenv("KR_MP_BLACKBOX_SPEED"))
+            if env_sp and env_sp >= 1 then
+                max_step = math.min(60, math.floor(env_sp))
+            end
+        end
+        for _ = 1, max_step do
             if d.paused or not hooks.lockstep:is_catching_up() then break end
             if not hooks.lockstep:can_step_tick((d.tick or 0) + 1) then break end
             d.dt = TICK_LENGTH

@@ -213,9 +213,27 @@ func main() {
 	maxConns := flag.Int("max-conns", 500, "Maximum concurrent TCP client connections")
 	maxPerIP := flag.Int("max-per-ip", 16, "Maximum concurrent TCP connections per non-loopback IP")
 	maxRoomsPerIP := flag.Int("max-rooms-per-ip", 4, "Maximum concurrent rooms per non-loopback IP")
+	reportDir := flag.String("report-dir", "reports", "Directory to persist opt-in player bug reports (empty disables)")
+	reportMaxFiles := flag.Int("report-max-files", defaultReportMaxFiles, "Maximum rolling bug report files retained on disk")
+	reportMaxBytes := flag.Int("report-max-bytes", defaultReportMaxBytes, "Maximum bytes accepted per bug report upload")
+	reportRateHour := flag.Int("report-rate-hour", defaultReportMaxPerHour, "Maximum bug report uploads per non-loopback IP per hour")
+	reportAdminToken := flag.String("report-admin-token", "", "Optional Bearer/?token= for remote HTTP /reports access (loopback always allowed)")
 	flag.Parse()
 
 	hub := NewHubWithLimits(*maxRooms, *maxConns, *maxPerIP, *maxRoomsPerIP, time.Duration(*graceSec)*time.Second)
+	reportStore, rErr := NewReportStore(ReportStoreConfig{
+		Dir:        *reportDir,
+		MaxFiles:   *reportMaxFiles,
+		MaxBytes:   *reportMaxBytes,
+		MaxPerHour: *reportRateHour,
+		AdminToken: *reportAdminToken,
+	})
+	if rErr != nil {
+		log.Printf("[KR-MP SERVER] Warning: failed to initialize report store (%v); cloud bug reports disabled", rErr)
+	} else {
+		hub.SetReportStore(reportStore)
+	}
+
 	stopJanitor := make(chan struct{})
 	go hub.RunJanitor(stopJanitor)
 
@@ -225,8 +243,11 @@ func main() {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(hub.Stats())
 		})
+		if reportStore != nil && reportStore.Enabled() {
+			reportStore.RegisterHTTP(mux)
+		}
 		go func() {
-			log.Printf("[KR-MP SERVER] HTTP health listening on %s/health", *httpAddr)
+			log.Printf("[KR-MP SERVER] HTTP status listening on %s (/health, /reports)", *httpAddr)
 			if err := http.ListenAndServe(*httpAddr, mux); err != nil {
 				log.Printf("[KR-MP SERVER] HTTP error: %v", err)
 			}
@@ -240,8 +261,8 @@ func main() {
 	defer ln.Close()
 
 	log.Printf("=== KR-MP Public Lobby & Frame-Relay Server v%s (proto=%d) ===", ServerVersion, ProtocolVer)
-	log.Printf("[KR-MP SERVER] Listening on TCP %s | Reconnect Grace: %ds | Max Rooms: %d",
-		*addr, *graceSec, *maxRooms)
+	log.Printf("[KR-MP SERVER] Listening on TCP %s | Reconnect Grace: %ds | Max Rooms: %d | Reports: %v (dir=%s max=%d)",
+		*addr, *graceSec, *maxRooms, hub.ReportsEnabled(), *reportDir, *reportMaxFiles)
 
 	// Graceful shutdown on Ctrl+C / SIGTERM
 	sigCh := make(chan os.Signal, 1)

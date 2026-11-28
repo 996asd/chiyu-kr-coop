@@ -77,6 +77,8 @@ systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 install -m 0755 "$TMP_BIN" "$BIN_PATH"
 
 echo "[3/4] 正在配置 systemd 开机自启守护服务..."
+REPORT_DIR="/var/lib/kr-mp-server/reports"
+mkdir -p "$REPORT_DIR"
 cat >/etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=KR-MP Public Relay Server (FL 8.2.0 Co-op)
@@ -85,7 +87,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${BIN_PATH} -addr :${TCP_PORT} -http 127.0.0.1:${HTTP_PORT} -grace ${GRACE_SEC}
+WorkingDirectory=/var/lib/kr-mp-server
+ExecStart=${BIN_PATH} -addr :${TCP_PORT} -http 127.0.0.1:${HTTP_PORT} -grace ${GRACE_SEC} -report-dir ${REPORT_DIR}
 Restart=always
 RestartSec=3
 LimitNOFILE=65535

@@ -2,6 +2,7 @@
 local overlay = require("kr_mp.overlay")
 local proto = require("kr_mp.proto")
 local fonts = require("kr_mp.fonts")
+local diagnostics = require("kr_mp.diagnostics")
 
 local boot = {
     initialized = false,
@@ -12,6 +13,8 @@ local boot = {
     log_file = nil,
     smoke_frames = 0,
     smoke_mode = false,
+    overlay = overlay,
+    diagnostics = diagnostics,
     transport = nil,
     coop = nil,
     lockstep = nil,
@@ -29,6 +32,9 @@ function boot:log(fmt, ...)
     local ts = os.date("%H:%M:%S")
     local line = string.format("[%s][KR-MP] %s", ts, msg)
     print(line)
+    if self.diagnostics then
+        self.diagnostics:record_log(line)
+    end
     if self.log_file then
         self.log_file:write(line .. "\n")
         self.log_file:flush()
@@ -103,6 +109,9 @@ function boot:wrap_love_callbacks()
         end
         if self.voice then
             self.voice:update(dt, self.lobby, self.coop)
+        end
+        if self.diagnostics and self.diagnostics.update then
+            self.diagnostics:update(dt)
         end
         if orig_update then orig_update(dt, ...) end
         self:on_update(dt)
@@ -231,6 +240,9 @@ function boot:wrap_love_callbacks()
         if self.voice then
             self.voice:shutdown()
         end
+        if self.diagnostics and self.diagnostics.shutdown then
+            self.diagnostics:shutdown()
+        end
         -- Do NOT send LEAVE_ROOM on window close so Online matches retain their 300s reconnect window!
         if self.transport then
             self.transport:close()
@@ -250,6 +262,16 @@ function boot:wrap_love_callbacks()
     love.errhand = function(msg)
         local tb = debug.traceback(tostring(msg), 2)
         self:log("!!! LUA CRASH !!!\n%s", tb)
+        local crash_banner = ""
+        if self.diagnostics then
+            local ok_c, cpath, banner = pcall(self.diagnostics.on_crash, self.diagnostics, tb)
+            if ok_c and type(banner) == "string" then
+                crash_banner = banner
+            end
+            if ok_c and cpath then
+                self:log("[DIAG] Auto-saved crash black-box report: %s", tostring(cpath))
+            end
+        end
         if self.log_file then
             self.log_file:flush()
             self.log_file:close()
@@ -258,10 +280,11 @@ function boot:wrap_love_callbacks()
         if self.smoke_mode or (os.getenv("KR_MP_AUTO_VERIFY") == "1")
             or (os.getenv("KR_MP_AUTO_COOP") ~= nil)
             or (os.getenv("KR_MP_AUTO_M2") ~= nil)
-            or (os.getenv("KR_MP_AUTO_SAKURA") ~= nil) then
+            or (os.getenv("KR_MP_AUTO_SAKURA") ~= nil)
+            or (os.getenv("KR_MP_BLACKBOX_AUTO_EXIT") == "1") then
             os.exit(1)
         end
-        if orig_errhand then return orig_errhand(msg) end
+        if orig_errhand then return orig_errhand(crash_banner .. tostring(msg)) end
     end
 end
 
@@ -294,6 +317,8 @@ function boot:on_update(dt)
     local st = {
         mp_active = mp_active,
         mp_online = self.transport and self.transport:is_online() or false,
+        mp_report_ok = (self.transport and self.transport:is_online()
+            and self.lobby and self.lobby.server_connected and self.lobby.server_report_ok == true) or false,
         mp_room_code = self.lobby and self.lobby.online_room_code or nil,
         mp_pid = self.coop and self.coop.local_pid or 1,
         mp_econ = self.coop and self.coop.econ_mode or "independent",
@@ -479,6 +504,14 @@ local HUD_ACTIONS = {
     mp_voice_ptt_up = function(self)
         if self.voice then self.voice:set_touch_ptt(false) end
     end,
+    mp_export_report = function(self)
+        if self.diagnostics then self.diagnostics:export_user_report("battle_hud") end
+    end,
+    mp_upload_report = function(self)
+        if self.diagnostics then
+            self.diagnostics:start_cloud_upload(self.lobby, nil, nil, "battle_desync")
+        end
+    end,
     mp_leave = function(self)
         if self.lobby then
             overlay.voice_panel_open = false
@@ -536,6 +569,7 @@ function boot:init(source)
     end
     self.log_file = io.open(log_path, "w")
     self.script_hash = proto.compute_script_hash()
+    diagnostics:init(self, overlay)
 
     local os_name = (love and love.system and love.system.getOS and love.system.getOS()) or "unknown"
     local lv_str = "?"

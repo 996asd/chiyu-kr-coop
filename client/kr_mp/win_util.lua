@@ -97,8 +97,16 @@ function M.init_win32()
         "int32_t TerminateProcess(void* hProcess, uint32_t uExitCode);",
         "void* ShellExecuteA(void* hwnd, const char* lpOperation, const char* lpFile, const char* lpParameters, const char* lpDirectory, int32_t nShowCmd);",
         "int32_t MultiByteToWideChar(uint32_t CodePage, uint32_t dwFlags, const char* lpMultiByteStr, int32_t cbMultiByte, uint16_t* lpWideCharStr, int32_t cchWideChar);",
+        "int32_t WideCharToMultiByte(uint32_t CodePage, uint32_t dwFlags, const uint16_t* lpWideCharStr, int32_t cchWideChar, char* lpMultiByteStr, int32_t cbMultiByte, const char* lpDefaultChar, int32_t* lpUsedDefaultChar);",
         "uint32_t GetFileAttributesW(const uint16_t* lpFileName);",
         "int32_t CopyFileW(const uint16_t* lpExistingFileName, const uint16_t* lpNewFileName, int32_t bFailIfExists);",
+        "int32_t CreateDirectoryW(const uint16_t* lpPathName, void* lpSecurityAttributes);",
+        "void* CreateFileW(const uint16_t* lpFileName, uint32_t dwDesiredAccess, uint32_t dwShareMode, void* lpSecurityAttributes, uint32_t dwCreationDisposition, uint32_t dwFlagsAndAttributes, void* hTemplateFile);",
+        "int32_t WriteFile(void* hFile, const void* lpBuffer, uint32_t nNumberOfBytesToWrite, uint32_t* lpNumberOfBytesWritten, void* lpOverlapped);",
+        "int32_t ReadFile(void* hFile, void* lpBuffer, uint32_t nNumberOfBytesToRead, uint32_t* lpNumberOfBytesRead, void* lpOverlapped);",
+        "int32_t DeleteFileW(const uint16_t* lpFileName);",
+        "uint32_t GetEnvironmentVariableW(const uint16_t* lpName, uint16_t* lpBuffer, uint32_t nSize);",
+        "void* ShellExecuteW(void* hwnd, const uint16_t* lpOperation, const uint16_t* lpFile, const uint16_t* lpParameters, const uint16_t* lpDirectory, int32_t nShowCmd);",
     }
     for _, decl in ipairs(cdefs) do pcall(ffi.cdef, decl) end
     local ok_k, k32 = pcall(ffi.load, "kernel32")
@@ -127,6 +135,198 @@ function M.utf8_to_wide(s)
     local buf = ffi.new("uint16_t[?]", n)
     if k32.MultiByteToWideChar(65001, 0, s, -1, buf, n) <= 0 then return nil end
     return buf
+end
+
+function M.wide_to_utf8(wbuf, wlen)
+    local ok, ffi, k32 = M.init_win32()
+    if not ok or not k32 or not ffi or wbuf == nil then return nil end
+    local len_in = tonumber(wlen) or -1
+    local n = k32.WideCharToMultiByte(65001, 0, wbuf, len_in, nil, 0, nil, nil)
+    if n <= 0 then return nil end
+    local out = ffi.new("char[?]", n)
+    local written = k32.WideCharToMultiByte(65001, 0, wbuf, len_in, out, n, nil, nil)
+    if written <= 0 then return nil end
+    if len_in < 0 and written > 0 then written = written - 1 end
+    return ffi.string(out, written)
+end
+
+function M.get_env_utf8(name)
+    if type(name) ~= "string" or #name == 0 then return nil end
+    local ok, ffi, k32 = M.init_win32()
+    if ok and k32 and ffi then
+        local wn = M.utf8_to_wide(name)
+        if wn then
+            local req = k32.GetEnvironmentVariableW(wn, nil, 0)
+            if req and req > 0 then
+                local wbuf = ffi.new("uint16_t[?]", req)
+                local got = k32.GetEnvironmentVariableW(wn, wbuf, req)
+                if got and got > 0 then
+                    return M.wide_to_utf8(wbuf, got)
+                end
+            end
+        end
+    end
+    return os.getenv(name)
+end
+
+function M.dir_exists(path)
+    if type(path) ~= "string" or #path == 0 then return false end
+    local ok, _, k32 = M.init_win32()
+    if ok and k32 then
+        local bit = require("bit")
+        local wp = M.utf8_to_wide(path:gsub("/", "\\"))
+        if wp then
+            local attr = k32.GetFileAttributesW(wp)
+            return attr ~= 0xFFFFFFFF and bit.band(attr, 0x10) ~= 0
+        end
+    end
+    return false
+end
+
+function M.ensure_dir(path)
+    if type(path) ~= "string" or #path == 0 then return false end
+    if proto.is_android() then
+        if love and love.filesystem and love.filesystem.createDirectory then
+            return pcall(love.filesystem.createDirectory, path)
+        end
+        return false
+    end
+    local norm = path:gsub("/", "\\"):gsub("\\+$", "")
+    if #norm == 0 then return false end
+    if M.dir_exists(norm) then return true end
+    local ok, _, k32 = M.init_win32()
+    if not ok or not k32 then return false end
+    local prefix = ""
+    local rest = norm
+    local drv, tail = norm:match("^(%a:)[\\/](.*)$")
+    if drv then
+        prefix = drv
+        rest = tail
+    end
+    for seg in rest:gmatch("[^\\]+") do
+        prefix = (prefix ~= "") and (prefix .. "\\" .. seg) or seg
+        if not M.dir_exists(prefix) then
+            local wp = M.utf8_to_wide(prefix)
+            if wp then pcall(k32.CreateDirectoryW, wp, nil) end
+        end
+    end
+    return M.dir_exists(norm)
+end
+
+function M.write_file_utf8(path, bytes)
+    if type(path) ~= "string" or #path == 0 or type(bytes) ~= "string" then
+        return false, "invalid_args"
+    end
+    local ok, ffi, k32 = M.init_win32()
+    if ok and k32 and ffi then
+        local norm = path:gsub("/", "\\")
+        local wp = M.utf8_to_wide(norm)
+        if wp then
+            local h = k32.CreateFileW(wp, 0x40000000, 1, nil, 2, 0x80, nil)
+            local inv = ffi.cast("void*", -1)
+            if h ~= nil and h ~= inv then
+                local ptr = ffi.cast("const uint8_t*", bytes)
+                local total = #bytes
+                local off = 0
+                local written = ffi.new("uint32_t[1]")
+                local write_ok = true
+                while off < total do
+                    written[0] = 0
+                    local chunk = math.min(65536, total - off)
+                    local r = k32.WriteFile(h, ptr + off, chunk, written, nil)
+                    local nw = tonumber(written[0]) or 0
+                    if r == 0 or nw <= 0 then
+                        write_ok = false
+                        break
+                    end
+                    off = off + nw
+                end
+                k32.CloseHandle(h)
+                if write_ok then return true, nil end
+                return false, "win32_write_failed"
+            end
+        end
+    end
+    local f, err = io.open(path, "wb")
+    if not f then return false, tostring(err) end
+    f:write(bytes)
+    f:flush()
+    f:close()
+    return true, nil
+end
+
+function M.read_file_utf8(path, max_bytes)
+    if type(path) ~= "string" or #path == 0 then return nil, "invalid_path" end
+    local ok, ffi, k32 = M.init_win32()
+    if ok and k32 and ffi then
+        local norm = path:gsub("/", "\\")
+        local wp = M.utf8_to_wide(norm)
+        if wp then
+            local h = k32.CreateFileW(wp, 0x80000000, 3, nil, 3, 0x80, nil)
+            local inv = ffi.cast("void*", -1)
+            if h ~= nil and h ~= inv then
+                local limit = tonumber(max_bytes) or (16 * 1024 * 1024)
+                local buf = ffi.new("uint8_t[16384]")
+                local bread = ffi.new("uint32_t[1]")
+                local chunks, total = {}, 0
+                while total < limit do
+                    bread[0] = 0
+                    local r = k32.ReadFile(h, buf, math.min(16384, limit - total), bread, nil)
+                    local nr = tonumber(bread[0]) or 0
+                    if r == 0 or nr <= 0 then break end
+                    chunks[#chunks + 1] = ffi.string(buf, nr)
+                    total = total + nr
+                end
+                k32.CloseHandle(h)
+                return table.concat(chunks), nil
+            end
+        end
+    end
+    local f, err = io.open(path, "rb")
+    if not f then return nil, tostring(err) end
+    local data = f:read("*a")
+    f:close()
+    return data, nil
+end
+
+function M.delete_file_utf8(path)
+    if type(path) ~= "string" or #path == 0 then return false end
+    local ok, _, k32 = M.init_win32()
+    if ok and k32 then
+        local wp = M.utf8_to_wide(path:gsub("/", "\\"))
+        if wp and k32.DeleteFileW(wp) ~= 0 then
+            return true
+        end
+    end
+    local ok_rm = os.remove(path)
+    return ok_rm == true
+end
+
+function M.get_desktop_dir()
+    if not M.is_windows() then return nil end
+    local prof = M.get_env_utf8("USERPROFILE")
+    if not prof or #prof == 0 then return nil end
+    local desk = prof:gsub("[/\\]+$", "") .. "\\Desktop"
+    if M.dir_exists(desk) then return desk end
+    local od = M.get_env_utf8("OneDrive")
+    if od and #od > 0 then
+        local odd = od:gsub("[/\\]+$", "") .. "\\Desktop"
+        if M.dir_exists(odd) then return odd end
+    end
+    return nil
+end
+
+function M.reveal_in_explorer(file_path)
+    if type(file_path) ~= "string" or #file_path == 0 then return false end
+    local ok, _, _, sh32 = M.init_win32()
+    if not ok or not sh32 then return false end
+    local norm = file_path:gsub("/", "\\")
+    local w_op = M.utf8_to_wide("open")
+    local w_exe = M.utf8_to_wide("explorer.exe")
+    local w_arg = M.utf8_to_wide('/select,"' .. norm .. '"')
+    if not (w_op and w_exe and w_arg) then return false end
+    local ok_s = pcall(sh32.ShellExecuteW, nil, w_op, w_exe, w_arg, nil, 1)
+    return ok_s == true
 end
 
 -- === Shared WinINet FFI Client (callable inside love.thread or main thread) ===

@@ -66,6 +66,9 @@ kr-mp-mod/
 │       ├── lobby_draw_modals.lua # 新手教程 / 201 关 / 105 英雄 / 59 选 12 塔 / 战前军械 / 语音调音弹窗渲染器
 │       ├── lobby_draw_sakura.lua # 樱花映射专属助手弹窗（免密钥感知/官方下载进度/4步新手向导/翻页节点/防窥打码）
 │       ├── lobby_draw_server.lua # 傻瓜式一键开服助手弹窗（本机零成本开17780服/樱花17780联动/云服1行命令）
+│       ├── lobby_draw_report.lua # 报错诊断与反馈弹窗（云端一键生成 #R-XXXX 反馈码 + 本地离线 .json 导出）
+│       ├── diagnostics.lua     # 滚存黑匣子记录、脱敏、manifest 完整性校验、崩溃自救与一键本地导出
+│       ├── diagnostics_cloud.lua # 第 3 层自愿云端报错上传引擎（复用公网连接或独立非阻塞短连，绝不打断樱花/局域网房）
 │       ├── win_util.lua        # 共享 Windows FFI / 路径 / WinINet 网络工具（sakura / server_host / updater 单点复用）
 │       ├── sakura.lua          # 樱花映射深度适配（只读状态与日志感知、官方安装器一键下载、三线测速、OpenAPI v4、无窗 frpc 托管）
 │       ├── sakura_workers.lua  # 樱花后台 love.thread 线程脚本（三线测速 / OpenAPI v4 / 官方安装器流式下载与 MD5 校验）
@@ -89,6 +92,8 @@ kr-mp-mod/
 │   ├── room_lobby.go           # 消息分发、大厅建房/加房/更新/房客配置与返回战桌
 │   ├── room_match.go           # 开局同步、LOAD_DONE 屏障、帧转发、连关流转与语音/诊断透传
 │   ├── room_reconnect.go       # 断线保局、大厅/对局高速追帧重连与补帧
+│   ├── report_store.go         # 第 3 层云端报错接收/限流/滚存/6位反馈码 (#R-XXXX) 与受保护 HTTP 检索
+│   ├── report_test.go          # 云端报错存储、限流、防路径穿越与 HTTP 鉴权单元测试
 │   ├── security_test.go        # 服务端防 OOM / IP 限流 / 大厅重连 / 直接连关单元测试
 │   └── main.go                 # 非阻塞 TCP 连接循环 + 可选 HTTP /health 探针
 ├── tools/                      # 构建、测试、安装、社区报错与修复脚本
@@ -106,6 +111,8 @@ kr-mp-mod/
 │   ├── run_m2_test.ps1         # 公网三进程（含 960 帧强退追帧重连 + 混搭卡组 + 2x 倍速）回归测试
 │   ├── run_m4_sakura_test.ps1  # 樱花映射热续传/冷重连自动化回归测试
 │   ├── collect_bug_report.ps1  # 群友双击：一键打包报错日志、哈希与 AI 提问词
+│   ├── replay_blackbox.ps1     # 维护者：读取玩家 .json 黑匣子以 30 倍速本地确定性复现（可选 DESYNC 帧深度追踪）
+│   ├── fetch_report.ps1        # 维护者：按反馈码 (#R-XXXX) 列表/拉取公网服报错速览，支持 -Replay 一键联动复现
 │   ├── install_patch.ps1       # 离线补丁安装器（自动找目录 / SHA-256 校验 / 自动建桌面快捷方式 / 可选下载官方樱花）
 │   ├── uninstall_patch.ps1     # 一键干净卸载联机外挂补丁脚本
 │   ├── onekey_install.ps1      # 在线/离线统一懒人安装器（支持 irm|iex 与 AI 智能体 -AutoFind -Silent 静默全自动安装）

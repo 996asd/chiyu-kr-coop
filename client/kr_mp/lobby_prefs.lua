@@ -321,6 +321,24 @@ function M.paste_into_field(lobby, field_name)
     elseif field_name == "pw" then
         local clean = clip:gsub("[^%w%-%_@#]", ""):sub(1, 16)
         if #clean > 0 then lobby.pw_input = clean; return true end
+    elseif field_name == "report_server" then
+        local clean = proto.sanitize_addr(clip):sub(1, 80)
+        if #clean > 0 then
+            if lobby.boot and lobby.boot.diagnostics and lobby.boot.diagnostics.upload then
+                lobby.boot.diagnostics.upload.server_addr = clean
+            end
+            lobby.overlay:show_toast("已粘贴中继服地址：" .. clean, 2.5)
+            return true
+        end
+    elseif field_name == "report_note" then
+        local clean = tostring(clip):gsub("[%z\1-\31]+", " "):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 150)
+        if #clean > 0 then
+            if lobby.boot and lobby.boot.diagnostics and lobby.boot.diagnostics.upload then
+                lobby.boot.diagnostics.upload.note = clean
+            end
+            lobby.overlay:show_toast("已粘贴报错备注。", 2.0)
+            return true
+        end
     elseif field_name == "sakura_token" then
         if lobby.sakura then
             local clean = lobby.sakura:set_token(clip)

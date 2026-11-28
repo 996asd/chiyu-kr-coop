@@ -9,6 +9,7 @@ local ui = require("kr_mp.ui_assets")
 local modals = require("kr_mp.lobby_draw_modals")
 local sakura_modal = require("kr_mp.lobby_draw_sakura")
 local server_modal = require("kr_mp.lobby_draw_server")
+local report_modal = require("kr_mp.lobby_draw_report")
 
 local M = {}
 
@@ -53,6 +54,7 @@ local GLOBAL_MODAL_TITLES = {
     guide = "新手指南 · 1分钟开黑",
     sakura = "樱花映射助手 · SakuraFrp",
     server_host = "一键开服助手 · 自建公网大厅",
+    report = "报错诊断与反馈 · 黑匣子工具",
 }
 
 local ROOM_MODAL_TITLES = {
@@ -888,6 +890,10 @@ function M.draw(lobby)
 
     ui.begin_transform(scale, ox, oy)
     ui.draw_ironhide_war_table(px, py, pw, ph, resolve_banner_title(lobby), font_map.banner)
+    local diag = lobby.boot and lobby.boot.diagnostics
+    local has_issue = (diag ~= nil and (diag.has_unread_issue == true or diag.prev_issue_fname ~= nil))
+    add_btn("export_report", has_issue and "报错反馈!" or "报错反馈", px + pw - 104, py - 8, 76, 26,
+        has_issue and "crimson" or "wood", { tiny = true, radius = 7 })
     add_btn("close", "×", px + pw - 22, py - 10, 32, 30, "crimson", { large = true, radius = 8 })
 
     local ctx = {
@@ -902,6 +908,7 @@ function M.draw(lobby)
         guide = modals.draw_guide,
         sakura = sakura_modal.draw,
         server_host = server_modal.draw,
+        report = report_modal.draw,
     }
     local room_drawers = {
         stages = modals.draw_stages,

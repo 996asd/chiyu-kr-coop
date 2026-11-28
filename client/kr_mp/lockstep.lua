@@ -44,6 +44,10 @@ local lockstep = {
     hot_resume_count = 0,
     cold_reconnect_count = 0,
     reconnect_mode = false,
+    blackbox_replay = false,
+    blackbox_expected_hashes = nil,
+    blackbox_matched = 0,
+    blackbox_mismatches = 0,
     catchup_target_turn = 0,
     catchup_target_tick = 0,
     catchup_next_send = 0,
@@ -116,6 +120,9 @@ function lockstep:close_hash_log()
 end
 
 function lockstep:reset()
+    if self.active and not self.blackbox_replay and self.boot and self.boot.diagnostics then
+        self.boot.diagnostics:on_match_end(self.phase, self)
+    end
     self:close_hash_log()
     self.active = false
     self.phase = "IDLE"
@@ -140,6 +147,10 @@ function lockstep:reset()
     self.hot_resume_count = 0
     self.cold_reconnect_count = 0
     self.reconnect_mode = false
+    self.blackbox_replay = false
+    self.blackbox_expected_hashes = nil
+    self.blackbox_matched = 0
+    self.blackbox_mismatches = 0
     self.catchup_target_turn = 0
     self.catchup_target_tick = 0
     self.catchup_next_send = 0
@@ -198,14 +209,35 @@ function lockstep:begin_loading(local_pid, cfg)
     self:log("Loading match as P%d (turn_ticks=%d, delay_turns=%d, seed=%d, online=%s)",
         self.local_pid, self.turn_ticks, self.input_delay_turns, cfg.seed or 0,
         tostring(self.transport and self.transport:is_online()))
+    if self.boot and self.boot.diagnostics then
+        local net_mode = (self.transport and self.transport:is_online()) and "online"
+            or ((self.boot.lobby and self.boot.lobby.net_tab) or "lan")
+        self.boot.diagnostics:on_match_start(local_pid, cfg, false, net_mode)
+    end
 end
 
 function lockstep:begin_reconnect(local_pid, cfg, rc)
     self:begin_loading(local_pid, cfg)
     self.reconnect_mode = true
+    self.blackbox_replay = (rc.blackbox == true)
+    if self.blackbox_replay then
+        self.blackbox_expected_hashes = rc.expected_hashes or {}
+        self.blackbox_matched = 0
+        self.blackbox_mismatches = 0
+        if self.boot and self.boot.diagnostics then
+            self.boot.diagnostics.active_match = nil
+        end
+    elseif self.boot and self.boot.diagnostics then
+        self.boot.diagnostics:mark_reconnect(true)
+    end
     local target_turn = tonumber(rc.target_turn) or (self.input_delay_turns - 1)
+    local stop_tick = (self.blackbox_replay and tonumber(rc.stop_tick)) or ((target_turn + 1) * self.turn_ticks)
+    if self.blackbox_replay then
+        local min_turn = math.ceil(stop_tick / math.max(1, self.turn_ticks)) + 1
+        if min_turn > target_turn then target_turn = min_turn end
+    end
     self.catchup_target_turn = target_turn
-    self.catchup_target_tick = (target_turn + 1) * self.turn_ticks
+    self.catchup_target_tick = stop_tick
     self.catchup_next_send = tonumber(rc.my_next_send_turn) or self.input_delay_turns
     self.reconnect_paused_after = (rc.paused == true)
     self.game_speed = (tonumber(rc.game_speed) == 2) and 2 or 1
@@ -298,6 +330,23 @@ function lockstep:start_running()
 end
 
 function lockstep:finish_catchup(tick)
+    if self.blackbox_replay then
+        self:log("BLACKBOX_REPLAY_COMPLETE tick=%d target=%d hash=%s matched=%d diffs=%d",
+            tick, self.catchup_target_tick, tostring(self.last_hash_hex),
+            self.blackbox_matched or 0, self.blackbox_mismatches or 0)
+        self:close_hash_log()
+        self.reconnect_mode = false
+        self.phase = "PAUSED"
+        if game and game.store then game.store.paused = true end
+        if self.overlay then
+            self.overlay:show_toast(string.format("黑匣子复现完成！停在第 %d 帧（匹配 %d / 差异 %d），详见日志",
+                tick, self.blackbox_matched or 0, self.blackbox_mismatches or 0), 10.0)
+        end
+        if os.getenv("KR_MP_BLACKBOX_AUTO_EXIT") == "1" and love and love.event and love.event.quit then
+            love.event.quit()
+        end
+        return
+    end
     self:log("Fast-forward catch-up COMPLETE at tick=%d (target=%d) hash=%s! Flushing lookahead turns...",
         tick, self.catchup_target_tick, tostring(self.last_hash_hex))
     if self.hash_log_file then
@@ -815,6 +864,15 @@ function MSG_HANDLERS.DESYNC_DIAG(self, msg)
     if msg.ents and msg.ents ~= "" then
         self:log("  REMOTE ENTS: %s", tostring(msg.ents))
     end
+    if self.boot and self.boot.diagnostics then
+        self.boot.diagnostics:on_desync({
+            tick = rtick,
+            remote_hash = msg.hash,
+            remote_snap = msg.snap,
+            remote_ents = msg.ents,
+            detected_by = "peer",
+        }, self)
+    end
     if self.phase ~= "DESYNC" then
         self.phase = "DESYNC"
         local st = game and game.store
@@ -834,6 +892,18 @@ function MSG_HANDLERS.DESYNC_DIAG(self, msg)
         self:log("!!! MP DESYNC REPORTED BY PEER AT TICK %s !!! local=%s", tostring(rtick or "?"), loc_hex)
         if loc_line ~= "" then self:log("  LOCAL  SNAP: %s", loc_line) end
         if ents_summary ~= "" then self:log("  LOCAL  ENTS: %s", ents_summary) end
+        if self.boot and self.boot.diagnostics then
+            self.boot.diagnostics:on_desync({
+                tick = rtick or (st and st.tick) or 0,
+                local_hash = loc_hex,
+                remote_hash = tostring(msg.hash or "?"),
+                local_snap = loc_line,
+                remote_snap = msg.snap,
+                local_ents = ents_summary,
+                remote_ents = msg.ents,
+                detected_by = "peer",
+            }, self)
+        end
         if not self.desync_diag_sent and self.transport and self.transport:is_connected() then
             self.desync_diag_sent = true
             pcall(self.transport.send, self.transport, {
@@ -975,6 +1045,20 @@ function lockstep:on_tick_end(store)
         self.pending_hash_tick = tick
         self.pending_hash_hex = snap.hash
         self.pending_hash_snap = state_hash.format_line(snap)
+        if self.boot and self.boot.diagnostics and not self.blackbox_replay then
+            self.boot.diagnostics:on_hash_checkpoint(snap, self.pending_hash_snap)
+        end
+        if self.blackbox_replay and self.blackbox_expected_hashes and self.blackbox_expected_hashes[tick] then
+            local exp_h = self.blackbox_expected_hashes[tick]
+            if snap.hash == exp_h then
+                self.blackbox_matched = (self.blackbox_matched or 0) + 1
+            else
+                self.blackbox_mismatches = (self.blackbox_mismatches or 0) + 1
+                self:log("!!! BLACKBOX HASH DIFF AT TICK %d !!! replay=%s report=%s", tick, snap.hash, exp_h)
+                self:log("  REPLAY SNAP: %s", self.pending_hash_snap)
+                self:log("  REPLAY ENTS: %s", tostring(self.local_hash_diags[tick] or ""))
+            end
+        end
 
         if self.hash_log_file then
             self.hash_log_file:write(self.pending_hash_snap .. "\n")
@@ -1044,6 +1128,17 @@ function lockstep:verify_hash_pair(tick)
         end
         if ents_summary ~= "" then
             self:log("  LOCAL  ENTS: %s", ents_summary)
+        end
+        if self.boot and self.boot.diagnostics then
+            self.boot.diagnostics:on_desync({
+                tick = tick,
+                local_hash = loc.hash,
+                remote_hash = rem,
+                local_snap = loc_line,
+                remote_snap = rem_line,
+                local_ents = ents_summary,
+                detected_by = "local",
+            }, self)
         end
         if not self.desync_diag_sent and self.transport and self.transport:is_connected() then
             self.desync_diag_sent = true

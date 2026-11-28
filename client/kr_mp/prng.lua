@@ -36,19 +36,25 @@ end
 
 local trace_rng_from = tonumber(os.getenv("KR_MP_TRACE_RNG_FROM") or "0") or 0
 local trace_rng_to = tonumber(os.getenv("KR_MP_TRACE_RNG_TO") or "0") or 0
+local trace_tick_from = tonumber(os.getenv("KR_MP_TRACE_TICK_FROM") or "0") or 0
+local trace_tick_to = tonumber(os.getenv("KR_MP_TRACE_TICK_TO") or "0") or 0
 
 local function next_u32(stream)
     stream.calls = stream.calls + 1
-    if trace_rng_from > 0 and stream == prng.sim_stream and stream.calls >= trace_rng_from and stream.calls <= trace_rng_to then
-        local info = debug.getinfo(4, "Sl")
-        local info2 = debug.getinfo(5, "Sl")
+    if (trace_rng_from > 0 or trace_tick_from > 0) and stream == prng.sim_stream then
         local tick = (game and game.store and game.store.tick) or -1
-        local msg = string.format("[TRACE_RNG] tick=%d call=%d at %s:%s <- %s:%s",
-            tick, stream.calls,
-            tostring(info and info.short_src), tostring(info and info.currentline),
-            tostring(info2 and info2.short_src), tostring(info2 and info2.currentline))
-        print(msg)
-        if prng.on_trace then prng.on_trace(msg) end
+        local match_call = (trace_rng_from > 0 and stream.calls >= trace_rng_from and stream.calls <= trace_rng_to)
+        local match_tick = (trace_tick_from > 0 and tick >= trace_tick_from and tick <= trace_tick_to)
+        if match_call or match_tick then
+            local info = debug.getinfo(4, "Sl")
+            local info2 = debug.getinfo(5, "Sl")
+            local msg = string.format("[TRACE_RNG] tick=%d call=%d at %s:%s <- %s:%s",
+                tick, stream.calls,
+                tostring(info and info.short_src), tostring(info and info.currentline),
+                tostring(info2 and info2.short_src), tostring(info2 and info2.currentline))
+            print(msg)
+            if prng.on_trace then prng.on_trace(msg) end
+        end
     end
     local t = tobit(stream.state + 0x6d2b79f5)
     stream.state = t

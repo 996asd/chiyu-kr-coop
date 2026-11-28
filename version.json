@@ -1,13 +1,13 @@
 {
-  "version": "2.4.8",
+  "version": "2.5.0",
   "protocol": 3,
   "fl_version": "8.2.0",
   "released_at": "2026-11-28",
-  "notes": "v2.4.8 深度根治长局/多代塔混搭联机画面同步异常（DESYNC）：1) 战斗仿真期内全量表 pairs() 自动确定性排序（零开销快路径跳过空表/单键/稠密数组，彻底消除 FL 8.2.0 中 475 处 pairs(this.powers) 如精灵奥术射手塔 burst/slumber 技能轮询顺序分叉、英雄技能表与 table.filter/keys 哈希序分叉），同时保持 table.clone/deepclone 原生速度；2) 将 hump.signal 事件派发改为注册顺序确定性执行，杜绝多处理器同帧竞争顺序不一致；3) 隔离 sys.render：实体初始化 random_ts 走同步仿真随机流、渲染帧率 prepare_frame 禁止回写 runs/frame_idx/sync_flag/hidden 等仿真读取字段；4) 拦截本地鼠标悬停/选中 InfoBar/TowerTooltip 调用 get_info() 时改写共享子弹模板伤害（修复星辰祭司/奥术法师5/激光塔等 6 座塔单边悬停致分叉），并在每局开局前自动还原跨局脏模板（法师连携增伤/阿什比特天赋）；5) 规范化跨平台 visible_coords.top/bottom 与单机遗留开关字段，升级每 30 帧精确同帧 DESYNC 实体诊断摘要（零协议变动，PC/手机端一键更新平滑升级）。",
+  "notes": "v2.5.0 重磅上线三层联机黑匣子日志与一键云端报错反馈系统（零协议破坏，PC/手机端无缝热更）：1)【防覆盖黑匣子与自动脱敏】新增 kr_mp_reports/ 滚存归档（自动保留最近 10 份崩溃/DESYNC 完整对局黑匣子，重开游戏绝不丢失），自动记录双端操作指令、每 30 帧哈希与文件完整性 SHA-256 校验，并在导出/上传前自动擦除樱花访问密钥、电脑用户名与外网 IP；2)【游戏内一键报错反馈弹窗 & 崩溃自救】大厅右上角新增「报错反馈」弹窗，发生闪退或不同步时自动高亮并锁定现场；PC 一键保存到桌面并弹窗选中 .json 文件，手机一键复制核心摘要与最近日志到剪贴板，蓝屏崩溃页新增中文指引并自动复制摘要；3)【云端一键生成 6 位反馈码 #R-XXXX】Go 公网中继服升级至 v2.5.0，支持玩家显式点击上传脱敏黑匣子获取 6 位短反馈码（如 #R-4K9A，自动复制发群里即可；采用独立短连接绝不打断樱花/局域网房间，服务端内置 512KB 上限、IP 防刷限流、200 份滚存淘汰与受保护本地管理接口）；4)【维护者 30 倍速离线复现闭环】新增 tools/fetch_report.ps1 与 tools/replay_blackbox.ps1，凭反馈码或 .json 黑匣子即可 30 倍速本地精确复现玩家异常帧。",
   "download_gitee": "https://gitee.com/chiyu-studio/chiyu-kr-coop/releases",
   "download_github": "https://github.com/996asd/chiyu-kr-coop/releases",
-  "server_win_sha256": "539BF784DD25DF152054E2E0F835831CBBD59A25FFBDDE6B84455D0FD30D41FC",
-  "server_win_size": 6985216,
-  "server_linux_sha256": "60E1A54913CBC30437CFE7A76B257C435FBC3EB39C16D3294D62CAA08382A957",
-  "server_linux_size": 6787232
+  "server_win_sha256": "B6BCB1B63192D573366C256B8AD7731DEFFD7AFD772D366A5A34AE376B7E4F00",
+  "server_win_size": 7031808,
+  "server_linux_sha256": "4902483C69E895ABBAB2A05D7C6DE6A3817FD77C09D42F38C375BA6B1E13576A",
+  "server_linux_size": 6832288
 }

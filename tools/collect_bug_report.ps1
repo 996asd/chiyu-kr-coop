@@ -94,6 +94,18 @@ foreach ($ln in $logNames) {
     }
 }
 
+# Also collect latest 3 auto-archived black-box reports from kr_mp_reports/
+$reportsDir = Join-Path $TargetDir "kr_mp_reports"
+if (Test-Path $reportsDir) {
+    $recentReports = Get-ChildItem $reportsDir -Filter "*.json" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne "_index.json" } |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 3
+    foreach ($rr in $recentReports) {
+        Copy-Item $rr.FullName (Join-Path $logsOut ("report_" + $rr.Name)) -Force
+        $collectedLogs += ("report_" + $rr.Name)
+    }
+}
+
 # Also check repo logs/ if running inside dev workspace
 $repoLogs = Join-Path $PkgRoot "logs"
 if (Test-Path $repoLogs) {

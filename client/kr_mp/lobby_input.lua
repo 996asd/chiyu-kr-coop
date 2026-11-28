@@ -17,7 +17,20 @@ local INPUT_BOX_IDS = {
     code_box = true,
     pw_box = true,
     sakura_token_box = true,
+    report_note_box = true,
+    report_server_box = true,
 }
+
+local function utf8_pop_char(s)
+    if type(s) ~= "string" or #s == 0 then return "" end
+    local i = #s
+    while i > 1 do
+        local b = s:byte(i)
+        if b < 128 or b >= 192 then break end
+        i = i - 1
+    end
+    return s:sub(1, i - 1)
+end
 
 local TAB_SFX_IDS = {
     tab_sakura = true, tab_lan = true, tab_online = true,
@@ -53,6 +66,43 @@ function BTN_HANDLERS.close(lobby)
     lobby.sub_modal = nil
     if lobby.overlay then lobby.overlay:clear_toast() end
 end
+
+function BTN_HANDLERS.export_report(lobby)
+    if lobby.overlay then lobby.overlay:clear_toast() end
+    local diag = lobby.boot and lobby.boot.diagnostics
+    if diag and diag.sync_modal_defaults then
+        diag:sync_modal_defaults(lobby)
+    end
+    lobby.sub_modal = (lobby.sub_modal == "report") and nil or "report"
+end
+function BTN_HANDLERS.report_local_export(lobby)
+    local diag = lobby.boot and lobby.boot.diagnostics
+    if diag then
+        diag:export_user_report("lobby_modal")
+    elseif lobby.overlay then
+        lobby.overlay:show_toast("诊断模块未就绪。", 2.0)
+    end
+end
+function BTN_HANDLERS.report_cloud_upload(lobby)
+    local diag = lobby.boot and lobby.boot.diagnostics
+    if diag then
+        diag:start_cloud_upload(lobby, diag.upload and diag.upload.server_addr, diag.upload and diag.upload.note, "lobby_modal")
+    end
+end
+function BTN_HANDLERS.report_copy_ticket(lobby)
+    local diag = lobby.boot and lobby.boot.diagnostics
+    if diag then diag:copy_last_ticket() end
+end
+function BTN_HANDLERS.report_quick_note(lobby, btn)
+    local diag = lobby.boot and lobby.boot.diagnostics
+    if diag and diag.upload and type(btn.note_text) == "string" then
+        diag.upload.note = (diag.upload.note == btn.note_text) and "" or btn.note_text
+    end
+end
+function BTN_HANDLERS.report_note_box(lobby) lobby:set_focus("report_note") end
+function BTN_HANDLERS.paste_report_note(lobby) lobby:paste_into_field("report_note") end
+function BTN_HANDLERS.report_server_box(lobby) lobby:set_focus("report_server") end
+function BTN_HANDLERS.paste_report_server(lobby) lobby:paste_into_field("report_server") end
 
 function BTN_HANDLERS.check_update(lobby)
     if updater.ota_applied then
@@ -865,6 +915,17 @@ end
 function M.textinput(lobby, t)
     if not lobby.open or not lobby.focused_field or type(t) ~= "string" then return false end
     local f = lobby.focused_field
+    if f == "report_note" then
+        local diag = lobby.boot and lobby.boot.diagnostics
+        if diag and diag.upload then
+            local clean_n = t:gsub("[%z\1-\31]", "")
+            local cur = tostring(diag.upload.note or "")
+            if #clean_n > 0 and (#cur + #clean_n) <= 150 then
+                diag.upload.note = cur .. clean_n
+            end
+        end
+        return true
+    end
     local clean_t = t:gsub("：", ":")
     for i = 1, #clean_t do
         local c = clean_t:sub(i, i)
@@ -884,6 +945,11 @@ function M.textinput(lobby, t)
         elseif f == "server" then
             if c:match("^[%d%.:a-zA-Z%-]$") and #lobby.server_input < 80 then
                 lobby.server_input = lobby.server_input .. c
+            end
+        elseif f == "report_server" then
+            local diag = lobby.boot and lobby.boot.diagnostics
+            if diag and diag.upload and c:match("^[%d%.:a-zA-Z%-]$") and #(diag.upload.server_addr or "") < 80 then
+                diag.upload.server_addr = (diag.upload.server_addr or "") .. c
             end
         elseif f == "code" then
             if c:match("^[%da-zA-Z]$") and #lobby.code_input < 6 then
@@ -930,6 +996,10 @@ function M.keypressed(lobby, key)
                 lobby.lan_ip_input = (lobby.lan_ip_input or ""):sub(1, -2)
             elseif f == "sakura_token" and lobby.sakura then lobby.sakura.token = (lobby.sakura.token or ""):sub(1, -2)
             elseif f == "server" then lobby.server_input = lobby.server_input:sub(1, -2)
+            elseif f == "report_server" and lobby.boot and lobby.boot.diagnostics and lobby.boot.diagnostics.upload then
+                lobby.boot.diagnostics.upload.server_addr = (lobby.boot.diagnostics.upload.server_addr or ""):sub(1, -2)
+            elseif f == "report_note" and lobby.boot and lobby.boot.diagnostics and lobby.boot.diagnostics.upload then
+                lobby.boot.diagnostics.upload.note = utf8_pop_char(lobby.boot.diagnostics.upload.note or "")
             elseif f == "code" then lobby.code_input = lobby.code_input:sub(1, -2)
             elseif f == "pw" then lobby.pw_input = lobby.pw_input:sub(1, -2)
             end

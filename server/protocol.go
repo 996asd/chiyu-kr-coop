@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	ServerVersion = "2.4.3"
+	ServerVersion = "2.5.0"
 	ProtocolVer   = 3
 )
 
@@ -59,6 +59,10 @@ type IncomingMsg struct {
 	// Ephemeral live voice chat frame (never stored in turn history)
 	VoiceData  string `json:"d,omitempty"`
 	VoiceLevel int    `json:"l,omitempty"`
+
+	// Layer 3: Opt-in cloud bug report upload
+	Note   string          `json:"note,omitempty"`
+	Report json.RawMessage `json:"report,omitempty"`
 }
 
 // RoomMeta extracts searchable summary fields from Room JSON for the public lobby list.

@@ -2,11 +2,15 @@
 -- Decoupled from lobby_ui.lua so production lobby code stays clean of test harness logic.
 local proto = require("kr_mp.proto")
 local catalog = require("kr_mp.catalog")
+local diagnostics = require("kr_mp.diagnostics")
+local win_util = require("kr_mp.win_util")
+local prng = require("kr_mp.prng")
 
 local autotest = {
     auto_role = nil,        -- "host" | "guest" (KR_MP_AUTO_COOP)
     auto_m2_role = nil,     -- "host" | "guest" | "guest_reconnect" (KR_MP_AUTO_M2)
     auto_sakura_role = nil, -- "host" | "guest" | "guest_cold_reconnect" (KR_MP_AUTO_SAKURA)
+    blackbox_file = nil,    -- path to kr-mp-report-v1 JSON (KR_MP_BLACKBOX_FILE)
     stage = nil,
     timer = 0,
     sent_ticks = {},
@@ -16,19 +20,30 @@ local autotest = {
 }
 
 function autotest:is_active()
-    return self.auto_role ~= nil or self.auto_m2_role ~= nil or self.auto_sakura_role ~= nil
+    return self.auto_role ~= nil or self.auto_m2_role ~= nil or self.auto_sakura_role ~= nil or self.blackbox_file ~= nil
 end
 
 function autotest:init(lobby)
     self.auto_role = nil
     self.auto_m2_role = nil
     self.auto_sakura_role = nil
+    self.blackbox_file = nil
     self.stage = nil
     self.timer = 0
     self.sent_ticks = {}
     self.saw_reconnect = false
     self.saw_hot_resume = false
     self.ui_chaos_bucket = nil
+
+    local bb_file = os.getenv("KR_MP_BLACKBOX_FILE")
+    if bb_file and #bb_file > 0 then
+        self.blackbox_file = bb_file
+        self.stage = "INIT"
+        lobby.open = false
+        prng.on_trace = function(msg) lobby.boot:log("%s", msg) end
+        lobby.boot:log("[BLACKBOX] Offline black-box replay enabled: %s", bb_file)
+        return
+    end
 
     local ar = os.getenv("KR_MP_AUTO_COOP")
     if ar == "host" or ar == "guest" then
@@ -264,6 +279,12 @@ function autotest:step_auto_coop(lobby, dt)
         local target_ticks = tonumber(os.getenv("KR_MP_TEST_TICKS")) or 1860
         local target_sync = math.max(60, math.floor(target_ticks / 30) - 2)
         if tick >= target_ticks and lobby.lockstep.sync_ok_count >= target_sync then
+            local dump_bb = os.getenv("KR_MP_DUMP_BLACKBOX_PATH")
+            if pid == 1 and dump_bb and #dump_bb > 0 and lobby.boot and lobby.boot.diagnostics then
+                local rep = lobby.boot.diagnostics:build_report("autotest", { lockstep = lobby.lockstep })
+                win_util.write_file_utf8(dump_bb, proto.encode(rep))
+                lobby.boot:log("[BLACKBOX] Dumped autotest black-box report -> %s", dump_bb)
+            end
             lobby.boot:log("AUTO_COOP_PASSED pid=%d ticks=%d sync_ok=%d gold=(P1:%d,P2:%d)",
                 pid, tick, lobby.lockstep.sync_ok_count, lobby.coop:get_player_gold(1), lobby.coop:get_player_gold(2))
             lobby.lockstep:close_hash_log()
@@ -593,8 +614,69 @@ function autotest:step_auto_sakura(lobby, dt)
     end
 end
 
+function autotest:step_blackbox(lobby, dt)
+    self.timer = self.timer + dt
+    if self.stage ~= "INIT" then return end
+    if self.timer < 0.4 then return end
+    self.stage = "LAUNCHED"
+
+    local raw, rerr = win_util.read_file_utf8(self.blackbox_file)
+    if not raw then
+        lobby.boot:log("[BLACKBOX] FAILED to read report file %s: %s", tostring(self.blackbox_file), tostring(rerr))
+        if os.getenv("KR_MP_BLACKBOX_AUTO_EXIT") == "1" then love.event.quit() end
+        return
+    end
+    local bb, doc, perr = diagnostics.parse_report_for_replay(raw)
+    if not bb then
+        lobby.boot:log("[BLACKBOX] FAILED to parse blackbox: %s", tostring(perr))
+        if os.getenv("KR_MP_BLACKBOX_AUTO_EXIT") == "1" then love.event.quit() end
+        return
+    end
+
+    local m = doc and doc.match or {}
+    local pid = tonumber(os.getenv("KR_MP_BLACKBOX_PID")) or tonumber(m.pid) or 1
+    if pid ~= 1 and pid ~= 2 then pid = 1 end
+    local turn_ticks = tonumber(bb.cfg.turn_ticks) or proto.TURN_TICKS
+    local target_turn = tonumber(bb.target_turn) or 0
+    local stop_tick = tonumber(os.getenv("KR_MP_BLACKBOX_STOP_TICK"))
+    if not stop_tick or stop_tick <= 0 then
+        local dtick = m.desync and tonumber(m.desync.tick)
+        if dtick and dtick > 0 then
+            stop_tick = dtick + 30
+        else
+            stop_tick = math.max(tonumber(m.last_tick) or 0, (target_turn + 1) * turn_ticks)
+            if stop_tick <= 0 then stop_tick = 1800 end
+        end
+    end
+
+    local expected = {}
+    if type(m.recent_hashes) == "table" then
+        for i = 1, #m.recent_hashes do
+            local line = tostring(m.recent_hashes[i] or "")
+            local tk, hx = line:match("tick=(%d+)%s+hash=([0-9A-Fa-f]+)")
+            if tk and hx then expected[tonumber(tk)] = hx:upper() end
+        end
+    end
+    if m.desync and tonumber(m.desync.tick) and type(m.desync.local_hash) == "string" then
+        expected[tonumber(m.desync.tick)] = m.desync.local_hash:upper()
+    end
+
+    lobby.boot:log("[BLACKBOX] Launching offline replay: level=%s pid=%d seed=%s turns=%d stop_tick=%d",
+        tostring(bb.cfg.level_idx), pid, tostring(bb.cfg.seed), #(bb.turns or {}), stop_tick)
+    lobby.open = false
+    lobby.coop:prepare_match(pid, bb.cfg, {
+        blackbox = true,
+        target_turn = target_turn,
+        stop_tick = stop_tick,
+        turns = bb.turns or {},
+        expected_hashes = expected,
+    })
+end
+
 function autotest:update(lobby, dt)
-    if self.auto_role then
+    if self.blackbox_file then
+        self:step_blackbox(lobby, dt)
+    elseif self.auto_role then
         self:step_auto_coop(lobby, dt)
     elseif self.auto_m2_role then
         self:step_auto_m2(lobby, dt)

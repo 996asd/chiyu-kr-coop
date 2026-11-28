@@ -83,6 +83,9 @@ function commands:flush_tick(tick, game_ref, boot_ref)
     self.executing = true
     for i = 1, #bucket do
         local cmd = bucket[i]
+        if boot_ref and boot_ref.diagnostics then
+            boot_ref.diagnostics:on_command_exec(tick, cmd)
+        end
         local ok, err = pcall(self.execute, self, cmd, game_ref, boot_ref)
         if not ok then
             if boot_ref then
