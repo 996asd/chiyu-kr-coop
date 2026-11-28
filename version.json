@@ -1,9 +1,9 @@
 {
-  "version": "2.4.7",
+  "version": "2.4.8",
   "protocol": 3,
   "fl_version": "8.2.0",
   "released_at": "2026-11-28",
-  "notes": "v2.4.7 修复 Boss 结局关蓝屏退出与崩溃后战桌界面错位断连：1) 联机胜利拦截 FL 8.2.0 全部 26 个自定义结局关（含 2 代第 37 关 kr2_end、1/3/5/6 代各 Boss 终局关）的过场漫画/职员表跳转，直接走双人结算面板与自动下一关并清理残余黑边幕布；2) 为 screen_credits / screen_comics 销毁方法加装 nil 窗口防护并拦截联机态意外切出 map/*_end 界面，杜绝卸载蓝屏崩端；3) 房主返回战桌后自动兼容 2P 发来的断线冷重连/热续传请求，直接无缝拉回当前房间对齐关卡与界面，失败时自动清理过期重连缓存并修正首局关卡提前落盘问题（零协议变动，PC/手机端一键更新平滑升级）。",
+  "notes": "v2.4.8 深度根治长局/多代塔混搭联机画面同步异常（DESYNC）：1) 战斗仿真期内全量表 pairs() 自动确定性排序（零开销快路径跳过空表/单键/稠密数组，彻底消除 FL 8.2.0 中 475 处 pairs(this.powers) 如精灵奥术射手塔 burst/slumber 技能轮询顺序分叉、英雄技能表与 table.filter/keys 哈希序分叉），同时保持 table.clone/deepclone 原生速度；2) 将 hump.signal 事件派发改为注册顺序确定性执行，杜绝多处理器同帧竞争顺序不一致；3) 隔离 sys.render：实体初始化 random_ts 走同步仿真随机流、渲染帧率 prepare_frame 禁止回写 runs/frame_idx/sync_flag/hidden 等仿真读取字段；4) 拦截本地鼠标悬停/选中 InfoBar/TowerTooltip 调用 get_info() 时改写共享子弹模板伤害（修复星辰祭司/奥术法师5/激光塔等 6 座塔单边悬停致分叉），并在每局开局前自动还原跨局脏模板（法师连携增伤/阿什比特天赋）；5) 规范化跨平台 visible_coords.top/bottom 与单机遗留开关字段，升级每 30 帧精确同帧 DESYNC 实体诊断摘要（零协议变动，PC/手机端一键更新平滑升级）。",
   "download_gitee": "https://gitee.com/chiyu-studio/chiyu-kr-coop/releases",
   "download_github": "https://github.com/996asd/chiyu-kr-coop/releases",
   "server_win_sha256": "539BF784DD25DF152054E2E0F835831CBBD59A25FFBDDE6B84455D0FD30D41FC",

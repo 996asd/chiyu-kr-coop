@@ -12,13 +12,171 @@ local function canonicalize_visible_coords(store)
     local ref_h = REF_H or 768
     local canon_w = ref_h * 16 / 9
     local panext = store.level and store.level.pan_extension
-    local cur_vc = store.visible_coords
     store.visible_coords = {
-        top = (cur_vc and cur_vc.top) or ((panext and panext.top or 0) + ref_h),
-        bottom = (cur_vc and cur_vc.bottom) or (panext and panext.bottom or 0),
+        top = (panext and panext.top or 0) + ref_h,
+        bottom = (panext and panext.bottom or 0),
         left = (ref_w - canon_w) / 2,
         right = ref_w + (canon_w - ref_w) / 2,
     }
+end
+
+local clean_tpl_backups = nil
+
+local MAGE_BRILLIANCE_BULLETS = { "bolt_1", "bolt_2", "bolt_3", "bolt_archmage", "bolt_necromancer" }
+
+local function snapshot_clean_templates(hooks, E)
+    if not E or type(E.entities) ~= "table" or type(E.get_template) ~= "function" then return end
+    local bk = {
+        _entities_ref = E.entities,
+        mage_bullets = {},
+        ashbite = {},
+        cfg_bullets = {},
+    }
+    for _, bn in ipairs(MAGE_BRILLIANCE_BULLETS) do
+        local t = E:get_template(bn)
+        if t and t.bullet then
+            bk.mage_bullets[bn] = {
+                min = t.bullet._orig_damage_min or t.bullet.damage_min,
+                max = t.bullet._orig_damage_max or t.bullet.damage_max,
+            }
+        end
+    end
+    local ba = E:get_template("bullet_ashbite")
+    if ba and ba.bullet then
+        bk.ashbite.bullet_mod = ba.bullet.mod
+        bk.ashbite.has_bullet = true
+    end
+    local aa = E:get_template("aura_ashbite_skill_a")
+    if aa and aa.aura then
+        bk.ashbite.aura_mod = aa.aura.mod
+        bk.ashbite.has_aura = true
+    end
+    local ma = E:get_template("mod_ashbite_skill_b_burn")
+    if ma and ma.dps then
+        bk.ashbite.armor_sunder = ma.dps.armor_sunder
+        bk.ashbite.has_mod = true
+    end
+    for name, t in hooks.orig_pairs(E.entities) do
+        if type(t) == "table" and type(t.bullet) == "table"
+            and (t.bullet.damage_min_config ~= nil or t.bullet.damage_max_config ~= nil) then
+            bk.cfg_bullets[name] = {
+                min = t.bullet.damage_min,
+                max = t.bullet.damage_max,
+            }
+        end
+    end
+    clean_tpl_backups = bk
+end
+
+-- Restore pristine shared template fields before sim:init so cross-match in-place mutations
+-- (mage_brilliance, hero_ashbite talents, get_info bullets) never leak across matches/restarts,
+-- while never overwriting upgrades or pre-built mage towers applied during orig_init.
+local function reset_dirty_templates(hooks, E)
+    if not E or type(E.entities) ~= "table" or type(E.get_template) ~= "function" then return end
+    if not clean_tpl_backups or clean_tpl_backups._entities_ref ~= E.entities then
+        snapshot_clean_templates(hooks, E)
+    end
+    if not clean_tpl_backups then return end
+    for _, bn in ipairs(MAGE_BRILLIANCE_BULLETS) do
+        local t = E:get_template(bn)
+        local bk = clean_tpl_backups.mage_bullets[bn]
+        if t and t.bullet and bk then
+            t.bullet.damage_min = bk.min
+            t.bullet.damage_max = bk.max
+            t.bullet._orig_damage_min = bk.min
+            t.bullet._orig_damage_max = bk.max
+        end
+    end
+    if clean_tpl_backups.ashbite.has_bullet then
+        local ba = E:get_template("bullet_ashbite")
+        if ba and ba.bullet then ba.bullet.mod = clean_tpl_backups.ashbite.bullet_mod end
+    end
+    if clean_tpl_backups.ashbite.has_aura then
+        local aa = E:get_template("aura_ashbite_skill_a")
+        if aa and aa.aura then aa.aura.mod = clean_tpl_backups.ashbite.aura_mod end
+    end
+    if clean_tpl_backups.ashbite.has_mod then
+        local ma = E:get_template("mod_ashbite_skill_b_burn")
+        if ma and ma.dps then ma.dps.armor_sunder = clean_tpl_backups.ashbite.armor_sunder end
+    end
+    for name, bk in hooks.orig_pairs(clean_tpl_backups.cfg_bullets) do
+        local t = E:get_template(name)
+        if t and t.bullet then
+            t.bullet.damage_min = bk.min
+            t.bullet.damage_max = bk.max
+        end
+    end
+end
+
+-- Dedicated deterministic wrapper for sys.render:
+-- 1) on_insert uses sim PRNG for non-local entities (so s.random_ts stays 100% synced), visual PRNG for local ones.
+-- 2) prepare_frame runs at render FPS and must NEVER mutate simulation-read sprite fields (runs/frame_idx/sync_flag/hidden).
+local function wrap_render_system(hooks, S_sys, E)
+    local rsys = S_sys and S_sys.render
+    if not rsys then return end
+    hooks.wrap_once(rsys, "on_insert", "det_render", function(orig_ins)
+        return function(self_r, entity, store)
+            local is_loc = not entity or entity._kr_mp_local or hooks.is_isolated_main_script_entity(entity)
+            if is_loc then
+                hooks.local_entity_depth = hooks.local_entity_depth + 1
+                prng:enter_visual()
+                local ok_r, res_r = pcall(orig_ins, self_r, entity, store)
+                prng:exit_visual()
+                hooks.local_entity_depth = hooks.local_entity_depth - 1
+                if not ok_r then error(res_r) end
+                return res_r
+            end
+            return orig_ins(self_r, entity, store)
+        end
+    end)
+
+    hooks.wrap_once(rsys, "prepare_frame", "det_render", function(orig_pf)
+        return function(self_r, dt, ts, store)
+            if not (hooks:is_sync_active() and store and store.entities) then
+                return orig_pf(self_r, dt, ts, store)
+            end
+            local saved = nil
+            local sn = 0
+            for id, e in hooks.orig_pairs(store.entities) do
+                if type(id) == "number" and id < hooks.LOCAL_ID_BASE and e and not e._kr_mp_local and e.render and e.render.sprites then
+                    local sprites = e.render.sprites
+                    for i = 1, #sprites do
+                        local s = sprites[i]
+                        if s and s._render_frame_name == nil then
+                            if not saved then saved = {} end
+                            sn = sn + 1
+                            saved[sn] = {
+                                s = s,
+                                runs = s.runs,
+                                frame_idx = s.frame_idx,
+                                sync_flag = s.sync_flag,
+                                hidden = s.hidden,
+                                anim_missing = s._animation_missing,
+                                state_ts = s._render_state_ts,
+                                frame_name = s.frame_name,
+                            }
+                        end
+                    end
+                end
+            end
+            local ok_p, err_p = pcall(orig_pf, self_r, dt, ts, store)
+            if saved then
+                for i = 1, sn do
+                    local r = saved[i]
+                    local s = r.s
+                    s.runs = r.runs
+                    s.frame_idx = r.frame_idx
+                    s.sync_flag = r.sync_flag
+                    s.hidden = r.hidden
+                    s._animation_missing = r.anim_missing
+                    s._render_state_ts = r.state_ts
+                    s._render_frame_name = nil
+                    s.frame_name = r.frame_name
+                end
+            end
+            if not ok_p then error(err_p) end
+        end
+    end)
 end
 
 local function wrap_visual_systems(hooks, S_sys)
@@ -627,12 +785,24 @@ function M.install_simulation(hooks)
                 hooks.replay:on_before_sim_init(store)
             end
 
+            if E and type(E.load) == "function" then
+                hooks.wrap_once(E, "load", "tpl_clean_snap", function(orig_eload)
+                    return function(self_e, ...)
+                        local res = orig_eload(self_e, ...)
+                        snapshot_clean_templates(hooks, self_e)
+                        return res
+                    end
+                end)
+            end
+
             if hooks:is_sync_active() then
                 canonicalize_visible_coords(store)
+                reset_dirty_templates(hooks, E)
             end
 
             local S_sys = require("systems")
             wrap_visual_systems(hooks, S_sys)
+            wrap_render_system(hooks, S_sys, E)
             hooks.wrap_local_ui(self_sim, "prepare_render")
             wrap_medical_kit(hooks, E)
             wrap_g5_reinforcements(hooks, E)
@@ -646,6 +816,11 @@ function M.install_simulation(hooks)
             prng:exit_sim()
             hooks.sim_exec_depth = hooks.sim_exec_depth - 1
             if not ok then error(err) end
+
+            -- Re-attach template & script_utils hooks AFTER orig_init (E:load() creates/reloads E.entities & script_utils)
+            wrap_medical_kit(hooks, E)
+            wrap_g5_reinforcements(hooks, E)
+            wrap_reinf_drag_script_utils(hooks)
 
             -- Rebuild initial sorted entity_ids from any entities inserted directly during init
             hooks.entity_ids = {}

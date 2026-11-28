@@ -29,7 +29,6 @@ local LOCAL_UI_TEMPLATES = {
 
 local VISUAL_SYSTEMS = {
     particle_system = true,
-    render = true,
     sound_events = true,
     texts = true,
     seen_tracker = true,
@@ -37,6 +36,7 @@ local VISUAL_SYSTEMS = {
 }
 
 local orig_pairs = pairs
+local orig_next = next
 local orig_coroutine_create = coroutine.create
 local wrapped_registry = setmetatable({}, { __mode = "k" })
 
@@ -44,6 +44,7 @@ local hooks = {
     LOCAL_ID_BASE = LOCAL_ID_BASE,
     VISUAL_SYSTEMS = VISUAL_SYSTEMS,
     orig_pairs = orig_pairs,
+    orig_next = orig_next,
     orig_coroutine_create = orig_coroutine_create,
 
     boot = nil,
@@ -65,6 +66,9 @@ local hooks = {
     sim_exec_depth = 0,
     local_entity_depth = 0,
     local_entity_id = LOCAL_ID_BASE,
+    in_ui_info_query = 0,
+    _ui_info_restores = nil,
+    _in_det_pairs = false,
 }
 
 function hooks.is_local_template(t)

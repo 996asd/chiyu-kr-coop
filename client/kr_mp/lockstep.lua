@@ -51,6 +51,7 @@ local lockstep = {
 
     -- Every-30-tick live checksum verification
     local_hashes = {},       -- [tick] = snap
+    local_hash_diags = {},   -- [tick] = exact-tick compact entity digest (cleared on match)
     remote_hashes = {},      -- [tick] = hash_hex
     remote_hash_snaps = {},  -- [tick] = formatted snap string (when provided)
     pending_hash_tick = nil,
@@ -144,6 +145,7 @@ function lockstep:reset()
     self.catchup_next_send = 0
     self.reconnect_paused_after = false
     self.local_hashes = {}
+    self.local_hash_diags = {}
     self.remote_hashes = {}
     self.remote_hash_snaps = {}
     self.pending_hash_tick = nil
@@ -819,7 +821,7 @@ function MSG_HANDLERS.DESYNC_DIAG(self, msg)
         if st then st.paused = true end
         local loc_snap = (rtick and self.local_hashes[rtick]) or (st and state_hash.compute(st, prng, self.coop))
         local loc_line = loc_snap and state_hash.format_line(loc_snap) or ""
-        local ents_summary = st and state_hash.build_diag_summary(st, 18) or ""
+        local ents_summary = (rtick and self.local_hash_diags[rtick]) or (st and state_hash.build_diag_summary(st, 24) or "")
         local loc_hex = loc_snap and loc_snap.hash or tostring(self.last_hash_hex)
         self.desync_info = {
             tick = rtick or (st and st.tick) or 0,
@@ -961,6 +963,15 @@ function lockstep:on_tick_end(store)
         local snap = state_hash.compute(store, prng, self.coop)
         self.last_hash_hex = snap.hash
         self.local_hashes[tick] = snap
+        self.local_hash_diags[tick] = state_hash.build_diag_summary(store, 24)
+        local stale_cutoff = tick - 300
+        if stale_cutoff > 0 then
+            for dtick in pairs(self.local_hash_diags) do
+                if type(dtick) == "number" and dtick <= stale_cutoff then
+                    self.local_hash_diags[dtick] = nil
+                end
+            end
+        end
         self.pending_hash_tick = tick
         self.pending_hash_hex = snap.hash
         self.pending_hash_snap = state_hash.format_line(snap)
@@ -1012,6 +1023,7 @@ function lockstep:verify_hash_pair(tick)
     if loc.hash == rem then
         self.sync_ok_count = self.sync_ok_count + 1
         self.local_hashes[tick] = nil
+        self.local_hash_diags[tick] = nil
         self.remote_hashes[tick] = nil
         self.remote_hash_snaps[tick] = nil
     else
@@ -1023,7 +1035,7 @@ function lockstep:verify_hash_pair(tick)
         if st then
             st.paused = true
         end
-        local ents_summary = st and state_hash.build_diag_summary(st, 18) or ""
+        local ents_summary = self.local_hash_diags[tick] or (st and state_hash.build_diag_summary(st, 24) or "")
         self:close_hash_log()
         self:log("!!! MP DESYNC DETECTED AT TICK %d !!! local=%s remote=%s", tick, loc.hash, rem)
         self:log("  LOCAL  SNAP: %s", loc_line)

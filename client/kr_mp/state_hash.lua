@@ -173,32 +173,88 @@ function state_hash.format_line(snap)
     )
 end
 
--- Compact deterministic entity digest sent on DESYNC to pinpoint exact diverging entity/field in 1 second
+local function fmt_ent_compact(id, e, mode)
+    local px = e.pos and math.floor(e.pos.x * 10 + 0.5) / 10 or 0
+    local py = e.pos and math.floor(e.pos.y * 10 + 0.5) / 10 or 0
+    local tpl = tostring(e.template_name or "?")
+    if mode == "H" then
+        local hp = e.health and math.floor((e.health.hp or 0) + 0.5) or -1
+        local lvl = (e.hero and e.hero.level) or 0
+        return string.format("#%d:%s(%.1f,%.1f,hp=%d,L=%d)", id, tpl, px, py, hp, lvl)
+    elseif mode == "E" then
+        local hp = e.health and math.floor((e.health.hp or 0) + 0.5) or -1
+        local dead = (e.health and e.health.dead) and 1 or 0
+        local ni = (e.nav_path and e.nav_path.ni) or -1
+        return string.format("#%d:%s(%.1f,%.1f,hp=%d%s%s)",
+            id, tpl, px, py, hp,
+            dead == 1 and ",DEAD" or "",
+            ni >= 0 and (",ni=" .. ni) or "")
+    elseif mode == "B" then
+        local tid = e.bullet and e.bullet.target_id
+        return string.format("#%d:%s(%.1f,%.1f%s)",
+            id, tpl, px, py, tid ~= nil and (",tid=" .. tostring(tid)) or "")
+    elseif mode == "M" then
+        local tid = e.modifier and e.modifier.target_id
+        return string.format("#%d:%s(%s)", id, tpl, tid ~= nil and ("tid=" .. tostring(tid)) or "")
+    end
+    local hp = e.health and math.floor((e.health.hp or 0) + 0.5) or -1
+    return string.format("#%d:%s(%.1f,%.1f,hp=%d)", id, tpl, px, py, hp)
+end
+
+local function append_group(parts, label, ids, entities, cap, mode)
+    local n = #ids
+    if n == 0 then return end
+    table.sort(ids)
+    local lim = math.min(n, cap)
+    local items = {}
+    for i = 1, lim do
+        local id = ids[i]
+        local e = entities[id]
+        if e then
+            items[#items + 1] = fmt_ent_compact(id, e, mode)
+        end
+    end
+    if n > lim then
+        items[#items + 1] = string.format("+(%d)", n - lim)
+    end
+    parts[#parts + 1] = label .. "[" .. table.concat(items, ",") .. "]"
+end
+
+-- Compact deterministic entity digest captured at each 30-tick hash checkpoint.
+-- Prioritizes dynamic combat entities (heroes, enemies, bullets, modifiers, recent NC) so DESYNC
+-- diagnostics pinpoint the exact diverging entity on the exact mismatch tick.
 function state_hash.build_diag_summary(store, max_items)
     if not store or not store.entities then return "" end
-    local ids = {}
-    local n = 0
+    local heroes, enemies, bullets, mods = {}, {}, {}, {}
+    local tower_cnt, soldier_cnt = 0, 0
     local extra_ids = {}
-    local en = 0
     for id, e in pairs(store.entities) do
         if type(id) == "number" and e and not e._kr_mp_local and id < LOCAL_ID_BASE then
-            if e.enemy or e.soldier or e.hero or e.tower or e.bullet or e.modifier then
-                n = n + 1
-                ids[n] = id
+            if e.hero then
+                heroes[#heroes + 1] = id
+            elseif e.enemy then
+                enemies[#enemies + 1] = id
+            elseif e.bullet then
+                bullets[#bullets + 1] = id
+            elseif e.tower then
+                tower_cnt = tower_cnt + 1
+            elseif e.soldier then
+                soldier_cnt = soldier_cnt + 1
+            elseif e.modifier then
+                mods[#mods + 1] = id
             elseif not e.particle_system then
-                en = en + 1
-                extra_ids[en] = id
+                extra_ids[#extra_ids + 1] = id
             end
         end
     end
-    table.sort(ids)
+    local en = #extra_ids
     table.sort(extra_ids)
-    local lim = math.min(n, max_items or 18)
     local parts = {
-        string.format("ms=%d/%d nc=%d",
+        string.format("t=%d ms=%d/%d nc=%d T=%d S=%d",
+            tonumber(store.tick) or 0,
             tonumber(store.entities_with_main_script_on_update_count) or 0,
             tonumber(store.entities_with_main_script_on_update_count1) or 0,
-            en),
+            en, tower_cnt, soldier_cnt),
     }
     if en > 0 then
         local nc_tail = {}
@@ -210,22 +266,11 @@ function state_hash.build_diag_summary(store, max_items)
         end
         parts[#parts + 1] = "NC[" .. table.concat(nc_tail, ",") .. "]"
     end
-    for i = 1, lim do
-        local id = ids[i]
-        local e = store.entities[id]
-        local px = e.pos and math.floor(e.pos.x * 10 + 0.5) / 10 or 0
-        local py = e.pos and math.floor(e.pos.y * 10 + 0.5) / 10 or 0
-        local hp = e.health and math.floor((e.health.hp or 0) + 0.5) or -1
-        local ni = (e.nav_path and e.nav_path.ni) or -1
-        local lvl = (e.hero and e.hero.level) or -1
-        parts[#parts + 1] = string.format("#%d:%s(%.1f,%.1f,hp=%d%s%s)",
-            id, tostring(e.template_name or "?"), px, py, hp,
-            ni >= 0 and (",ni=" .. ni) or "",
-            lvl >= 0 and (",L=" .. lvl) or "")
-    end
-    if n > lim then
-        parts[#parts + 1] = string.format("...(+%d)", n - lim)
-    end
+    local budget = max_items or 24
+    append_group(parts, "H", heroes, store.entities, math.max(4, math.floor(budget / 4)), "H")
+    append_group(parts, "E", enemies, store.entities, math.max(8, math.floor(budget / 2)), "E")
+    append_group(parts, "B", bullets, store.entities, math.max(6, math.floor(budget / 3)), "B")
+    append_group(parts, "M", mods, store.entities, 6, "M")
     return table.concat(parts, " | ")
 end
 

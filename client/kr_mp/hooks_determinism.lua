@@ -69,6 +69,317 @@ end
 
 local sso_sorted_cache = setmetatable({}, { __mode = "k" })
 
+local KEY_TYPE_RANK = {
+    number = 1,
+    string = 2,
+    boolean = 3,
+    thread = 4,
+    table = 5,
+    ["function"] = 6,
+    userdata = 7,
+    cdata = 8,
+}
+
+local function safe_key_str(k)
+    if type(k) == "table" then
+        local mt = getmetatable(k)
+        if type(mt) == "table" and rawget(mt, "__tostring") ~= nil then
+            return "table_mt"
+        end
+    end
+    return tostring(k)
+end
+
+local function make_det_key_lt(hooks)
+    local co_seq = hooks.co_seq
+    return function(a, b)
+        if a == b then return false end
+        local ta, tb = type(a), type(b)
+        if ta ~= tb then
+            return (KEY_TYPE_RANK[ta] or 9) < (KEY_TYPE_RANK[tb] or 9)
+        end
+        if ta == "number" or ta == "string" then
+            return a < b
+        elseif ta == "boolean" then
+            return (not a) and b
+        elseif ta == "thread" then
+            local sa, sb = co_seq[a] or 0, co_seq[b] or 0
+            if sa ~= sb then return sa < sb end
+            return tostring(a) < tostring(b)
+        elseif ta == "table" then
+            local ia = rawget(a, "id")
+            local ib = rawget(b, "id")
+            if type(ia) ~= "number" then ia = nil end
+            if type(ib) ~= "number" then ib = nil end
+            if ia ~= nil or ib ~= nil then
+                if ia == nil then return false end
+                if ib == nil then return true end
+                if ia ~= ib then return ia < ib end
+            end
+            local na = rawget(a, "name")
+            local nb = rawget(b, "name")
+            if type(na) ~= "string" then na = nil end
+            if type(nb) ~= "string" then nb = nil end
+            if na ~= nil or nb ~= nil then
+                if na == nil then return false end
+                if nb == nil then return true end
+                if na ~= nb then return na < nb end
+            end
+            local tna = rawget(a, "template_name")
+            local tnb = rawget(b, "template_name")
+            if type(tna) ~= "string" then tna = nil end
+            if type(tnb) ~= "string" then tnb = nil end
+            if tna ~= nil or tnb ~= nil then
+                if tna == nil then return false end
+                if tnb == nil then return true end
+                if tna ~= tnb then return tna < tnb end
+            end
+            return safe_key_str(a) < safe_key_str(b)
+        end
+        return tostring(a) < tostring(b)
+    end
+end
+
+-- Universal deterministic pairs() for arbitrary simulation tables (e.g., this.powers, this.hero.skills,
+-- modifiers, table.filter/keys/find/maxv/minv). Zero allocation fast-path for empty, 1-key, and dense 1..N arrays.
+local function sorted_generic_pairs(hooks, tbl, det_key_lt)
+    local orig_next = hooks.orig_next
+    local k1 = orig_next(tbl)
+    if k1 == nil then
+        return orig_next, tbl, nil
+    end
+    local k2 = orig_next(tbl, k1)
+    if k2 == nil then
+        return orig_next, tbl, nil
+    end
+    local list = nil
+    local n = 0
+    if k1 == 1 and k2 == 2 then
+        local expected = 2
+        local k = k2
+        while true do
+            k = orig_next(tbl, k)
+            if k == nil then
+                return orig_next, tbl, nil
+            end
+            expected = expected + 1
+            if k ~= expected then
+                list = {}
+                for i = 1, expected - 1 do
+                    list[i] = i
+                end
+                n = expected
+                list[n] = k
+                break
+            end
+        end
+        while true do
+            k = orig_next(tbl, k)
+            if k == nil then break end
+            n = n + 1
+            list[n] = k
+        end
+    else
+        list = { k1, k2 }
+        n = 2
+        local k = k2
+        while true do
+            k = orig_next(tbl, k)
+            if k == nil then break end
+            n = n + 1
+            list[n] = k
+        end
+    end
+    hooks._in_det_pairs = true
+    local ok_s = pcall(table.sort, list, det_key_lt)
+    hooks._in_det_pairs = false
+    if not ok_s then
+        table.sort(list, function(a, b) return safe_key_str(a) < safe_key_str(b) end)
+    end
+    local idx = 0
+    local function iter()
+        while idx < n do
+            idx = idx + 1
+            local k = list[idx]
+            local v = tbl[k]
+            if v ~= nil then
+                return k, v
+            end
+        end
+        return nil
+    end
+    return iter, tbl, nil
+end
+
+-- Keep E:create_entity's table.clone/deepclone hot path at native LuaJIT speed (key copy is order-independent)
+local function install_fast_table_clone_hooks(hooks)
+    pcall(require, "klua.table")
+    local orig_pairs = hooks.orig_pairs
+    if type(table.clone) == "function" then
+        hooks.wrap_once(table, "clone", "det_raw_clone", function()
+            return function(t)
+                local t2 = {}
+                for k, v in orig_pairs(t) do
+                    t2[k] = v
+                end
+                return t2
+            end
+        end)
+    end
+    if type(table.deepclone) == "function" then
+        hooks.wrap_once(table, "deepclone", "det_raw_clone", function()
+            local function fast_deepclone(t)
+                if type(t) == "table" then
+                    local out = {}
+                    for k, v in orig_pairs(t) do
+                        out[k] = fast_deepclone(v)
+                    end
+                    return out
+                end
+                return t
+            end
+            return fast_deepclone
+        end)
+    end
+end
+
+-- Make hump.signal dispatch handlers in deterministic registration order instead of function-pointer hash order
+local function install_signal_hooks(hooks)
+    local ok_sig, sig = pcall(require, "hump.signal")
+    if not ok_sig or type(sig) ~= "table" or type(sig.new) ~= "function" then return end
+    local sample = sig.new()
+    local Reg = getmetatable(sample)
+    if type(Reg) ~= "table" or type(Reg.emit) ~= "function" then return end
+
+    local orig_pairs = hooks.orig_pairs
+    local reg_orders = setmetatable({}, { __mode = "k" })
+
+    local function get_order_map(self_r)
+        local om = reg_orders[self_r]
+        if not om then
+            om = {}
+            reg_orders[self_r] = om
+        end
+        return om
+    end
+
+    local function fn_sort_key(fn)
+        if debug and debug.getinfo then
+            local info = debug.getinfo(fn, "S")
+            if info then
+                return string.format("%s:%06d", tostring(info.short_src or ""), tonumber(info.linedefined) or 0)
+            end
+        end
+        return tostring(fn)
+    end
+
+    hooks.wrap_once(Reg, "register", "det_sig", function(orig_reg)
+        return function(self_r, s, f)
+            local map = self_r[s]
+            if f ~= nil and map[f] == nil then
+                local om = get_order_map(self_r)
+                local list = om[s]
+                if not list then
+                    list = {}
+                    om[s] = list
+                end
+                list[#list + 1] = f
+            end
+            return orig_reg(self_r, s, f)
+        end
+    end)
+
+    hooks.wrap_once(Reg, "clear", "det_sig", function(orig_clear)
+        return function(self_r, ...)
+            local om = reg_orders[self_r]
+            if om then
+                local args = { ... }
+                for i = 1, select("#", ...) do
+                    om[args[i]] = nil
+                end
+            end
+            return orig_clear(self_r, ...)
+        end
+    end)
+
+    hooks.wrap_once(Reg, "emit", "det_sig", function()
+        return function(self_r, s, ...)
+            local map = rawget(self_r, s)
+            if not map then return end
+            local om = reg_orders[self_r]
+            local list = om and om[s]
+            local snap = {}
+            local sn = 0
+            local seen = {}
+            if list then
+                local write_i = 0
+                for i = 1, #list do
+                    local f = list[i]
+                    if map[f] ~= nil and not seen[f] then
+                        seen[f] = true
+                        write_i = write_i + 1
+                        list[write_i] = f
+                        sn = sn + 1
+                        snap[sn] = f
+                    end
+                end
+                for i = write_i + 1, #list do
+                    list[i] = nil
+                end
+            end
+            -- Pick up any pre-hook handlers deterministically by source:line
+            local extra = nil
+            for f in orig_pairs(map) do
+                if not seen[f] then
+                    if not extra then extra = {} end
+                    extra[#extra + 1] = f
+                end
+            end
+            if extra then
+                if #extra > 1 then
+                    table.sort(extra, function(a, b)
+                        local ka, kb = fn_sort_key(a), fn_sort_key(b)
+                        if ka ~= kb then return ka < kb end
+                        return tostring(a) < tostring(b)
+                    end)
+                end
+                om = get_order_map(self_r)
+                if not list then
+                    list = {}
+                    om[s] = list
+                end
+                for i = 1, #extra do
+                    local f = extra[i]
+                    list[#list + 1] = f
+                    sn = sn + 1
+                    snap[sn] = f
+                end
+            end
+            for i = 1, sn do
+                local f = snap[i]
+                if map[f] ~= nil then
+                    f(...)
+                end
+            end
+        end
+    end)
+
+    hooks.wrap_once(Reg, "emitPattern", "det_sig", function()
+        return function(self_r, p, ...)
+            local names = {}
+            for s in orig_pairs(self_r) do
+                if type(s) == "string" and s:match(p) then
+                    names[#names + 1] = s
+                end
+            end
+            if #names > 1 then table.sort(names) end
+            for i = 1, #names do
+                self_r:emit(names[i], ...)
+            end
+        end
+    end)
+end
+
 local function sorted_sso_pairs(hooks, tbl)
     local gen = hooks.sso_mutation_gen or 0
     local rec = sso_sorted_cache[tbl]
@@ -635,9 +946,14 @@ function M.install(hooks)
     -- 2. SSO spatial index determinism
     install_sso_hooks(hooks)
 
-    -- 3. Targeted deterministic pairs() for store.entities, waves_active, manual_wave_cos, SSO persistent_lists
+    -- 3. Deterministic pairs(): fast-path store/SSO tables + universal sim-time sorting for all hash tables
+    -- (fixes 475+ FL 8.2.0 scripts iterating pairs(this.powers), pairs(this.hero.skills), table.filter/keys, etc.)
     local orig_pairs = hooks.orig_pairs
+    local det_key_lt = make_det_key_lt(hooks)
     pairs = function(t)
+        if hooks._in_det_pairs or type(t) ~= "table" then
+            return orig_pairs(t)
+        end
         local st = hooks.active_store
         if st ~= nil then
             if t == st.entities then
@@ -654,9 +970,16 @@ function M.install(hooks)
                     return sorted_sso_pairs(hooks, t)
                 end
             end
+            if hooks.sim_exec_depth > 0 and hooks.local_entity_depth == 0 and hooks:is_sync_active() then
+                return sorted_generic_pairs(hooks, t, det_key_lt)
+            end
         end
         return orig_pairs(t)
     end
+
+    -- 3b. Native-speed raw table.clone/deepclone + deterministic hump.signal dispatch order
+    install_fast_table_clone_hooks(hooks)
+    install_signal_hooks(hooks)
 
     -- 4. Entity DB dual ID space + deterministic filter
     install_entity_db_hooks(hooks)

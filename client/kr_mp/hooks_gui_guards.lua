@@ -155,7 +155,60 @@ local function install_sim_field_guards(hooks, game_gui)
     end)
 end
 
+local function wrap_ui_info_query(hooks, tbl, method_name)
+    if type(tbl) ~= "table" then return end
+    hooks.wrap_once(tbl, method_name, "info_tpl_guard", function(orig_fn)
+        return function(...)
+            local top_level = (hooks.in_ui_info_query == 0)
+            local prev_restores = hooks._ui_info_restores
+            if top_level then
+                hooks._ui_info_restores = {}
+            end
+            hooks.in_ui_info_query = hooks.in_ui_info_query + 1
+            local ok_q, r1, r2, r3 = pcall(orig_fn, ...)
+            hooks.in_ui_info_query = hooks.in_ui_info_query - 1
+            if top_level then
+                local restores = hooks._ui_info_restores
+                hooks._ui_info_restores = prev_restores
+                if restores then
+                    for b, saved in hooks.orig_pairs(restores) do
+                        b.damage_min = saved.min
+                        b.damage_max = saved.max
+                    end
+                end
+            end
+            if not ok_q then error(r1) end
+            return r1, r2, r3
+        end
+    end)
+end
+
 local function install_local_ui_isolation(hooks, game_gui)
+    -- Prevent local UI hover/select .get_info() (e.g., tower_stargazers, tower_arcane_wizard5, tower_ray,
+    -- tower_blazing_watcher, tower_ignis_altar, tower_sandworm) from mutating shared E:get_template(...).bullet.damage_min/max
+    local ok_e, E = pcall(require, "entity_db")
+    if ok_e and type(E) == "table" then
+        hooks.wrap_once(E, "get_template", "info_tpl_guard", function(orig_gt)
+            return function(self_e, name)
+                local tpl = orig_gt(self_e, name)
+                if hooks.in_ui_info_query > 0 and tpl and type(tpl.bullet) == "table" then
+                    local restores = hooks._ui_info_restores
+                    if restores and restores[tpl.bullet] == nil then
+                        restores[tpl.bullet] = {
+                            min = tpl.bullet.damage_min,
+                            max = tpl.bullet.damage_max,
+                        }
+                    end
+                end
+                return tpl
+            end
+        end)
+    end
+    wrap_ui_info_query(hooks, InfoBar, "show")
+    wrap_ui_info_query(hooks, InfoBar, "update_stats")
+    wrap_ui_info_query(hooks, TowerTooltip, "show")
+    wrap_ui_info_query(hooks, TowerMenuTooltip, "show")
+
     hooks.wrap_local_ui(game_gui, "show_clickable_hover")
     hooks.wrap_local_ui(game_gui, "show_ghost_hover")
     hooks.wrap_local_ui(game_gui, "select_entity")

@@ -316,8 +316,12 @@ function coop:build_host_slot_snapshot(heroes, towers, room_loadout)
     snap.liuhui.enemy_count = 1
     snap.liuhui.g5_hero_dark_count = 2
     snap.liuhui.cp_mode = false
-    snap.xingyu = snap.xingyu or { balance = 0 }
-    if snap.xingyu.balance == nil then snap.xingyu.balance = 0 end
+    snap.liuhui.reinforcement_skins = 0
+    snap.liuhui.rand_creep = 0
+    snap.liuhui.g1_level10 = false
+    snap.reinforcement_count = 0
+    snap.campaign_variant = "regular"
+    snap.xingyu = { balance = 0 }
 
     local ld = type(room_loadout) == "table" and room_loadout or {}
     local want_max_tech = (ld.max_tech ~= false)
@@ -408,9 +412,10 @@ function coop:prepare_match(local_pid, cfg, reconnect_data)
     end
 
     if screen_map == nil then
-        screen_map = { user_data = deep_copy(self.slot_snapshot) }
+        screen_map = { user_data = deep_copy(self.slot_snapshot), reinforcement_skins = 0 }
     else
         screen_map.user_data = deep_copy(self.slot_snapshot)
+        screen_map.reinforcement_skins = 0
     end
 
     -- Synchronize FL 8.2.0 global difficulty multipliers identically on both clients
