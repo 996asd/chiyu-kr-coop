@@ -19,21 +19,7 @@ local function diag_now()
     return os.clock()
 end
 
-local function deep_copy(v, seen)
-    if type(v) ~= "table" then return v end
-    seen = seen or {}
-    if seen[v] then return seen[v] end
-    local out = {}
-    seen[v] = out
-    for k, val in pairs(v) do
-        local tk, tv = type(k), type(val)
-        if tk ~= "function" and tk ~= "userdata" and tk ~= "thread"
-            and tv ~= "function" and tv ~= "userdata" and tv ~= "thread" then
-            out[deep_copy(k, seen)] = deep_copy(val, seen)
-        end
-    end
-    return out
-end
+local deep_copy = proto.deep_copy
 
 function M.new_state()
     return {

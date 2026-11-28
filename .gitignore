@@ -4,6 +4,8 @@ dist/
 logs/
 replays/
 kr_mp_logs/
+kr_mp_prefs.json
+tests/.tmp*
 *.log
 *.rep
 *.exe

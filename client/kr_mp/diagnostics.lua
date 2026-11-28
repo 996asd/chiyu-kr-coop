@@ -62,21 +62,7 @@ local function ring_to_list(r, max_tail)
     return out
 end
 
-local function deep_copy(v, seen)
-    if type(v) ~= "table" then return v end
-    seen = seen or {}
-    if seen[v] then return seen[v] end
-    local out = {}
-    seen[v] = out
-    for k, val in pairs(v) do
-        local tk, tv = type(k), type(val)
-        if tk ~= "function" and tk ~= "userdata" and tk ~= "thread"
-            and tv ~= "function" and tv ~= "userdata" and tv ~= "thread" then
-            out[deep_copy(k, seen)] = deep_copy(val, seen)
-        end
-    end
-    return out
-end
+local deep_copy = proto.deep_copy
 
 local function escape_lua_pattern(s)
     return (tostring(s or ""):gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1"))

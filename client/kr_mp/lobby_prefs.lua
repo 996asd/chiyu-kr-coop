@@ -278,6 +278,144 @@ function M.copy_to_clipboard(lobby, text, toast_msg)
     return ok
 end
 
+-- === Single Source of Truth for Lobby Text Input Fields (textinput / backspace / paste / enter) ===
+
+local function get_diag_upload(lobby)
+    local diag = lobby and lobby.boot and lobby.boot.diagnostics
+    return diag and diag.upload or nil
+end
+
+local FIELD_SPECS = {
+    sakura_ip = {
+        max_len = 96,
+        char_pat = "^[%d%.:a-zA-Z%-|]$",
+        enter_btn = "join_sakura_ip",
+        get = function(lobby) return lobby.sakura_ip_input or "" end,
+        set = function(lobby, v) lobby.sakura_ip_input = v; lobby.ip_input = v end,
+        paste = function(lobby, clip)
+            local clean = proto.sanitize_addr(clip):sub(1, 96)
+            if #clean == 0 then return false end
+            lobby.sakura_ip_input = clean
+            lobby.ip_input = clean
+            M.record_recent_addr(lobby, clean)
+            M.save_prefs(lobby)
+            local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(clean) or clean
+            lobby.overlay:show_toast("已粘贴樱花联机地址：" .. shown, 3.0)
+            return true
+        end,
+    },
+    lan_ip = {
+        max_len = 80,
+        char_pat = "^[%d%.:a-zA-Z%-]$",
+        enter_btn = "join_lan_ip",
+        get = function(lobby) return lobby.lan_ip_input or "" end,
+        set = function(lobby, v) lobby.lan_ip_input = v end,
+        paste = function(lobby, clip)
+            local clean = proto.sanitize_addr(clip):sub(1, 80)
+            if #clean == 0 then return false end
+            lobby.lan_ip_input = clean
+            M.save_prefs(lobby)
+            lobby.overlay:show_toast("已粘贴局域网主机 IP：" .. clean, 2.5)
+            return true
+        end,
+    },
+    server = {
+        max_len = 80,
+        char_pat = "^[%d%.:a-zA-Z%-]$",
+        enter_btn = "connect_server",
+        get = function(lobby) return lobby.server_input or "" end,
+        set = function(lobby, v) lobby.server_input = v end,
+        paste = function(lobby, clip)
+            local clean = proto.sanitize_addr(clip):sub(1, 80)
+            if #clean == 0 then return false end
+            lobby.server_input = clean
+            M.save_prefs(lobby)
+            lobby.overlay:show_toast("已粘贴服务器/映射地址：" .. clean, 3.0)
+            return true
+        end,
+    },
+    code = {
+        max_len = 6,
+        char_pat = "^[%da-zA-Z]$",
+        upper = true,
+        enter_btn = "join_code",
+        get = function(lobby) return lobby.code_input or "" end,
+        set = function(lobby, v) lobby.code_input = v end,
+        paste = function(lobby, clip)
+            local clean = clip:upper():gsub("[^%dA-Z]", ""):sub(1, 6)
+            if #clean == 0 then return false end
+            lobby.code_input = clean
+            return true
+        end,
+    },
+    pw = {
+        max_len = 16,
+        char_pat = "^[%w%-%_@#]$",
+        get = function(lobby) return lobby.pw_input or "" end,
+        set = function(lobby, v) lobby.pw_input = v end,
+        paste = function(lobby, clip)
+            local clean = clip:gsub("[^%w%-%_@#]", ""):sub(1, 16)
+            if #clean == 0 then return false end
+            lobby.pw_input = clean
+            return true
+        end,
+    },
+    sakura_token = {
+        max_len = 96,
+        char_pat = "^[%w%-%_]$",
+        get = function(lobby) return (lobby.sakura and lobby.sakura.token) or "" end,
+        set = function(lobby, v) if lobby.sakura then lobby.sakura.token = v end end,
+        on_enter = function(lobby)
+            if lobby.sakura then
+                lobby:save_prefs()
+                lobby.sakura:refresh_api()
+            end
+        end,
+        paste = function(lobby, clip)
+            if not lobby.sakura then return false, true end
+            local clean = lobby.sakura:set_token(clip)
+            if #clean >= 8 then
+                M.save_prefs(lobby)
+                lobby.overlay:show_toast("已粘贴樱花访问密钥（已隐藏显示），正在同步账号与节点...", 2.8)
+                lobby.sakura:refresh_api()
+                return true
+            end
+            lobby.overlay:show_toast("剪贴板内容不像有效的樱花访问密钥（长度不足）。", 2.8)
+            return false, true
+        end,
+    },
+    report_server = {
+        max_len = 80,
+        char_pat = "^[%d%.:a-zA-Z%-]$",
+        get = function(lobby) local u = get_diag_upload(lobby); return (u and u.server_addr) or "" end,
+        set = function(lobby, v) local u = get_diag_upload(lobby); if u then u.server_addr = v end end,
+        paste = function(lobby, clip)
+            local clean = proto.sanitize_addr(clip):sub(1, 80)
+            if #clean == 0 then return false end
+            local u = get_diag_upload(lobby)
+            if u then u.server_addr = clean end
+            lobby.overlay:show_toast("已粘贴中继服地址：" .. clean, 2.5)
+            return true
+        end,
+    },
+    report_note = {
+        max_len = 150,
+        utf8 = true,
+        get = function(lobby) local u = get_diag_upload(lobby); return (u and u.note) or "" end,
+        set = function(lobby, v) local u = get_diag_upload(lobby); if u then u.note = v end end,
+        paste = function(lobby, clip)
+            local clean = tostring(clip):gsub("[%z\1-\31]+", " "):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 150)
+            if #clean == 0 then return false end
+            local u = get_diag_upload(lobby)
+            if u then u.note = clean end
+            lobby.overlay:show_toast("已粘贴报错备注。", 2.0)
+            return true
+        end,
+    },
+}
+FIELD_SPECS.ip = FIELD_SPECS.sakura_ip
+M.FIELD_SPECS = FIELD_SPECS
+
 function M.paste_into_field(lobby, field_name)
     if not love or not love.system or not love.system.getClipboardText then
         lobby.overlay:show_toast("当前环境不支持读取剪贴板，请手动输入。", 2.5)
@@ -288,69 +426,11 @@ function M.paste_into_field(lobby, field_name)
         lobby.overlay:show_toast("剪贴板为空！请先复制樱花映射或服务器地址。", 2.5)
         return false
     end
-    if field_name == "sakura_ip" or field_name == "ip" then
-        local clean = proto.sanitize_addr(clip):sub(1, 96)
-        if #clean > 0 then
-            lobby.sakura_ip_input = clean
-            lobby.ip_input = clean
-            M.record_recent_addr(lobby, clean)
-            M.save_prefs(lobby)
-            local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(clean) or clean
-            lobby.overlay:show_toast("已粘贴樱花联机地址：" .. shown, 3.0)
-            return true
-        end
-    elseif field_name == "lan_ip" then
-        local clean = proto.sanitize_addr(clip):sub(1, 80)
-        if #clean > 0 then
-            lobby.lan_ip_input = clean
-            M.save_prefs(lobby)
-            lobby.overlay:show_toast("已粘贴局域网主机 IP：" .. clean, 2.5)
-            return true
-        end
-    elseif field_name == "server" then
-        local clean = proto.sanitize_addr(clip):sub(1, 80)
-        if #clean > 0 then
-            lobby.server_input = clean
-            M.save_prefs(lobby)
-            lobby.overlay:show_toast("已粘贴服务器/映射地址：" .. clean, 3.0)
-            return true
-        end
-    elseif field_name == "code" then
-        local clean = clip:upper():gsub("[^%dA-Z]", ""):sub(1, 6)
-        if #clean > 0 then lobby.code_input = clean; return true end
-    elseif field_name == "pw" then
-        local clean = clip:gsub("[^%w%-%_@#]", ""):sub(1, 16)
-        if #clean > 0 then lobby.pw_input = clean; return true end
-    elseif field_name == "report_server" then
-        local clean = proto.sanitize_addr(clip):sub(1, 80)
-        if #clean > 0 then
-            if lobby.boot and lobby.boot.diagnostics and lobby.boot.diagnostics.upload then
-                lobby.boot.diagnostics.upload.server_addr = clean
-            end
-            lobby.overlay:show_toast("已粘贴中继服地址：" .. clean, 2.5)
-            return true
-        end
-    elseif field_name == "report_note" then
-        local clean = tostring(clip):gsub("[%z\1-\31]+", " "):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 150)
-        if #clean > 0 then
-            if lobby.boot and lobby.boot.diagnostics and lobby.boot.diagnostics.upload then
-                lobby.boot.diagnostics.upload.note = clean
-            end
-            lobby.overlay:show_toast("已粘贴报错备注。", 2.0)
-            return true
-        end
-    elseif field_name == "sakura_token" then
-        if lobby.sakura then
-            local clean = lobby.sakura:set_token(clip)
-            if #clean >= 8 then
-                M.save_prefs(lobby)
-                lobby.overlay:show_toast("已粘贴樱花访问密钥（已隐藏显示），正在同步账号与节点...", 2.8)
-                lobby.sakura:refresh_api()
-                return true
-            end
-            lobby.overlay:show_toast("剪贴板内容不像有效的樱花访问密钥（长度不足）。", 2.8)
-            return false
-        end
+    local spec = FIELD_SPECS[field_name]
+    if spec and spec.paste then
+        local ok, handled_toast = spec.paste(lobby, clip)
+        if ok then return true end
+        if handled_toast then return false end
     end
     lobby.overlay:show_toast("剪贴板里未识别到有效地址，请重新复制。", 2.8)
     return false

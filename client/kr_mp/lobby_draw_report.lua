@@ -211,4 +211,44 @@ function M.draw(ctx)
         cx, y + card_h + 12, T.ink_muted, fm.tiny, cw, "center")
 end
 
+-- === Co-located Report Modal Button Handlers (registered by lobby_input.lua) ===
+
+local H = {}
+
+function H.export_report(lobby)
+    if lobby.overlay then lobby.overlay:clear_toast() end
+    local diag = lobby.boot and lobby.boot.diagnostics
+    if diag and diag.sync_modal_defaults then diag:sync_modal_defaults(lobby) end
+    lobby.sub_modal = (lobby.sub_modal == "report") and nil or "report"
+end
+function H.report_local_export(lobby)
+    local diag = lobby.boot and lobby.boot.diagnostics
+    if diag then
+        diag:export_user_report("lobby_modal")
+    elseif lobby.overlay then
+        lobby.overlay:show_toast("诊断模块未就绪。", 2.0)
+    end
+end
+function H.report_cloud_upload(lobby)
+    local diag = lobby.boot and lobby.boot.diagnostics
+    if diag then
+        diag:start_cloud_upload(lobby, diag.upload and diag.upload.server_addr, diag.upload and diag.upload.note, "lobby_modal")
+    end
+end
+function H.report_copy_ticket(lobby)
+    local diag = lobby.boot and lobby.boot.diagnostics
+    if diag then diag:copy_last_ticket() end
+end
+function H.report_quick_note(lobby, btn)
+    local diag = lobby.boot and lobby.boot.diagnostics
+    if diag and diag.upload and type(btn.note_text) == "string" then
+        diag.upload.note = (diag.upload.note == btn.note_text) and "" or btn.note_text
+    end
+end
+function H.report_note_box(lobby) lobby:set_focus("report_note") end
+function H.paste_report_note(lobby) lobby:paste_into_field("report_note") end
+function H.report_server_box(lobby) lobby:set_focus("report_server") end
+function H.paste_report_server(lobby) lobby:paste_into_field("report_server") end
+
+M.BTN_HANDLERS = H
 return M

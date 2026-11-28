@@ -418,4 +418,21 @@ function proto.decode(line)
     return decode_json(line)
 end
 
+-- Safe cycle-aware deep table copy (strips functions / userdata / threads) shared across KR-MP modules.
+function proto.deep_copy(v, seen)
+    if type(v) ~= "table" then return v end
+    seen = seen or {}
+    if seen[v] then return seen[v] end
+    local out = {}
+    seen[v] = out
+    for k, val in pairs(v) do
+        local tk, tv = type(k), type(val)
+        if tk ~= "function" and tk ~= "userdata" and tk ~= "thread"
+            and tv ~= "function" and tv ~= "userdata" and tv ~= "thread" then
+            out[proto.deep_copy(k, seen)] = proto.deep_copy(val, seen)
+        end
+    end
+    return out
+end
+
 return proto

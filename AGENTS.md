@@ -51,8 +51,10 @@ kr-mp-mod/
 │       ├── hooks_gui_actions.lua # 战斗操作拦截（技能/英雄/援军拖拽/建塔升级/换塔/打点/出怪/快捷键）
 │       ├── hooks_gui_guards.lua  # UI 到仿真泄露隔离（trigger_deselect/menu_shown/PauseView/DragEntityView 保护）
 │       ├── commands.lua        # 表驱动指令队列与执行器（HANDLERS[op]，含单点价格/坐标量化）
-│       ├── lockstep.lua        # 60Hz 帧同步状态机（LOAD_DONE 屏障、1x/2x 倍速、断线保局、对称 DESYNC_DIAG、高速追帧重连）
-│       ├── coop.lua            # 2P 合作层（双英雄归属、独立/共享经济账本、红蓝塔权、上下文护栏、世界标签与打点渲染）
+│       ├── lockstep.lua        # 60Hz 帧同步状态机（LOAD_DONE 屏障、1x/2x 倍速、对称 DESYNC_DIAG）
+│       ├── lockstep_reconnect.lua # 断线保局、樱花热续传、公网/直连高速追帧重连与离线黑匣子复现
+│       ├── coop.lua            # 2P 合作层（双英雄归属、独立/共享经济账本、红蓝塔权、上下文护栏）
+│       ├── coop_draw.lua       # 2P 战场世界叠加层纯渲染（红蓝底座光弧、双英雄头顶标、地图打点波纹）
 │       ├── coop_loadout.lua    # 2P 战前军械配置（天灾/援军/满科技补丁、G4/G5 分支模板与双端资源预加载）
 │       ├── stage_flow.lua      # 战后自动下一关、原地重开与双人表决流转器
 │       ├── catalog.lua         # FL 8.2.0 完整中文目录（201 关 + 105 英雄 + 59 座防御塔）
@@ -97,6 +99,8 @@ kr-mp-mod/
 │   ├── security_test.go        # 服务端防 OOM / IP 限流 / 大厅重连 / 直接连关单元测试
 │   └── main.go                 # 非阻塞 TCP 连接循环 + 可选 HTTP /health 探针
 ├── tools/                      # 构建、测试、安装、社区报错与修复脚本
+│   ├── run_unit_tests.py       # 统一 LuaJIT 语法检查 + tests/ 全量单元测试入口
+├── tests/                      # 12 套客户端 LuaJIT 自动化单元测试（含几何防遮挡、确定性、黑匣子与云端报错）
 │   ├── sync_client.ps1         # 同步 client/ -> D:\FL8.2.0\（本机 FL 8.2.0 测试目录）
 │   ├── generate_manifest.ps1   # 生成 client/kr_mp/manifest.json
 │   ├── build_server.ps1        # 编译 Windows + Linux 静态单文件服务端

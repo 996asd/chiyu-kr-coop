@@ -1,4 +1,5 @@
 -- M0 Deterministic Recorder, Replayer & Live Checksum Verifier
+local proto = require("kr_mp.proto")
 local prng = require("kr_mp.prng")
 local state_hash = require("kr_mp.state_hash")
 local commands = require("kr_mp.commands")
@@ -24,19 +25,7 @@ local replay = {
     overlay = nil,
 }
 
-local function deep_copy(v, seen)
-    if type(v) ~= "table" then return v end
-    seen = seen or {}
-    if seen[v] then return seen[v] end
-    local out = {}
-    seen[v] = out
-    for k, val in pairs(v) do
-        if type(k) ~= "function" and type(val) ~= "function" and type(val) ~= "userdata" and type(val) ~= "thread" then
-            out[deep_copy(k, seen)] = deep_copy(val, seen)
-        end
-    end
-    return out
-end
+local deep_copy = proto.deep_copy
 
 local function serialize_lua(val, indent)
     indent = indent or ""

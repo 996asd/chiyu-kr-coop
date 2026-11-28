@@ -6,8 +6,16 @@ local loadout = require("kr_mp.coop_loadout")
 local updater = require("kr_mp.updater")
 local lobby_prefs = require("kr_mp.lobby_prefs")
 local ui = require("kr_mp.ui_assets")
+local sakura_modal = require("kr_mp.lobby_draw_sakura")
+local server_modal = require("kr_mp.lobby_draw_server")
+local report_modal = require("kr_mp.lobby_draw_report")
 
 local M = {}
+
+local function register_handlers(dst, src)
+    if type(src) ~= "table" then return end
+    for k, fn in pairs(src) do dst[k] = fn end
+end
 
 local INPUT_BOX_IDS = {
     sakura_ip_box = true,
@@ -67,42 +75,10 @@ function BTN_HANDLERS.close(lobby)
     if lobby.overlay then lobby.overlay:clear_toast() end
 end
 
-function BTN_HANDLERS.export_report(lobby)
-    if lobby.overlay then lobby.overlay:clear_toast() end
-    local diag = lobby.boot and lobby.boot.diagnostics
-    if diag and diag.sync_modal_defaults then
-        diag:sync_modal_defaults(lobby)
-    end
-    lobby.sub_modal = (lobby.sub_modal == "report") and nil or "report"
-end
-function BTN_HANDLERS.report_local_export(lobby)
-    local diag = lobby.boot and lobby.boot.diagnostics
-    if diag then
-        diag:export_user_report("lobby_modal")
-    elseif lobby.overlay then
-        lobby.overlay:show_toast("诊断模块未就绪。", 2.0)
-    end
-end
-function BTN_HANDLERS.report_cloud_upload(lobby)
-    local diag = lobby.boot and lobby.boot.diagnostics
-    if diag then
-        diag:start_cloud_upload(lobby, diag.upload and diag.upload.server_addr, diag.upload and diag.upload.note, "lobby_modal")
-    end
-end
-function BTN_HANDLERS.report_copy_ticket(lobby)
-    local diag = lobby.boot and lobby.boot.diagnostics
-    if diag then diag:copy_last_ticket() end
-end
-function BTN_HANDLERS.report_quick_note(lobby, btn)
-    local diag = lobby.boot and lobby.boot.diagnostics
-    if diag and diag.upload and type(btn.note_text) == "string" then
-        diag.upload.note = (diag.upload.note == btn.note_text) and "" or btn.note_text
-    end
-end
-function BTN_HANDLERS.report_note_box(lobby) lobby:set_focus("report_note") end
-function BTN_HANDLERS.paste_report_note(lobby) lobby:paste_into_field("report_note") end
-function BTN_HANDLERS.report_server_box(lobby) lobby:set_focus("report_server") end
-function BTN_HANDLERS.paste_report_server(lobby) lobby:paste_into_field("report_server") end
+-- Merge co-located modal handlers (SakuraFrp / 1-Click Server Host / Bug Report)
+register_handlers(BTN_HANDLERS, sakura_modal.BTN_HANDLERS)
+register_handlers(BTN_HANDLERS, server_modal.BTN_HANDLERS)
+register_handlers(BTN_HANDLERS, report_modal.BTN_HANDLERS)
 
 function BTN_HANDLERS.check_update(lobby)
     if updater.ota_applied then
@@ -191,23 +167,6 @@ end
 function BTN_HANDLERS.ip_box(lobby) lobby:set_focus("sakura_ip") end
 function BTN_HANDLERS.paste_ip(lobby) lobby:paste_into_field("sakura_ip") end
 function BTN_HANDLERS.join_ip(lobby) BTN_HANDLERS.join_sakura_ip(lobby) end
-function BTN_HANDLERS.sakura_carrier(lobby, btn)
-    local next_addr = lobby_prefs.switch_sakura_carrier(lobby.sakura_ip_input or "", btn.carrier)
-    if next_addr then
-        lobby.sakura_ip_input = next_addr
-        lobby.ip_input = next_addr
-        lobby_prefs.record_recent_addr(lobby, next_addr)
-        lobby:save_prefs()
-        local names = { default = "默认线", dx = "电信专线 (dx.)", yd = "移动专线 (yd.)" }
-        local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(next_addr) or next_addr
-        lobby.overlay:show_toast("已切至樱花" .. (names[btn.carrier] or "默认线") .. "：" .. shown, 2.5)
-    end
-end
-function BTN_HANDLERS.sakura_probe(lobby)
-    if lobby.sakura then
-        lobby.sakura:start_carrier_probe(lobby.sakura_ip_input or "")
-    end
-end
 function BTN_HANDLERS.toggle_privacy(lobby)
     lobby.privacy_mask = not lobby.privacy_mask
     lobby:save_prefs()
@@ -216,153 +175,6 @@ function BTN_HANDLERS.toggle_privacy(lobby)
             or "已关闭防窥打码：恢复明文显示连接地址。",
         2.8
     )
-end
-function BTN_HANDLERS.open_sakura(lobby)
-    if lobby.overlay then lobby.overlay:clear_toast() end
-    if lobby.sakura then
-        lobby.sakura:scan_local(true)
-        if type(lobby.sakura.token) == "string" and #lobby.sakura.token >= 8 and not lobby.sakura.user_info and not lobby.sakura.api_busy then
-            lobby.sakura:refresh_api()
-        end
-    end
-    lobby.sub_modal = "sakura"
-end
-function BTN_HANDLERS.sakura_rescan(lobby)
-    if lobby.sakura then
-        lobby.sakura:scan_local(true)
-        lobby.overlay:show_toast("已刷新本机官方樱花启动器与隧道状态。", 2.0)
-    end
-end
-function BTN_HANDLERS.sakura_launch_app(lobby, btn)
-    if lobby.sakura then
-        lobby.sakura:launch_official_launcher(btn and btn.tunnel_name)
-    end
-end
-function BTN_HANDLERS.sakura_download_official(lobby)
-    if lobby.sakura then lobby.sakura:start_official_installer_download() end
-end
-function BTN_HANDLERS.sakura_open_download_page(lobby)
-    if lobby.sakura then
-        lobby.sakura:open_url(lobby.sakura.DOWNLOAD_URL, "已在浏览器打开 SakuraFrp 官方下载页。")
-    end
-end
-function BTN_HANDLERS.sakura_open_register(lobby)
-    if lobby.sakura then
-        lobby.sakura:open_url(lobby.sakura.REGISTER_URL, "已在浏览器打开樱花注册/登录页，注册完请继续第 2 步实名。")
-    end
-end
-function BTN_HANDLERS.sakura_open_realname(lobby)
-    if lobby.sakura then
-        lobby.sakura:open_url(lobby.sakura.REALNAME_URL, "已在浏览器打开樱花实名认证页（支付宝实名，完成后点同步账号即可）。")
-    end
-end
-function BTN_HANDLERS.sakura_open_profile(lobby)
-    if lobby.sakura then
-        lobby.sakura:open_url(lobby.sakura.PROFILE_URL, "已在浏览器打开用户信息页：复制「访问密钥」后回到游戏点「粘贴并登录」！")
-    end
-end
-function BTN_HANDLERS.sakura_paste_and_sync(lobby)
-    lobby:paste_into_field("sakura_token")
-end
-function BTN_HANDLERS.sakura_toggle_wizard(lobby)
-    local sk = lobby.sakura
-    local currently_wizard = (lobby.sakura_show_wizard == true)
-        or (not (sk and sk.user_info) and lobby.sakura_wizard_dismissed ~= true)
-    if currently_wizard then
-        lobby.sakura_show_wizard = false
-        lobby.sakura_wizard_dismissed = true
-    else
-        lobby.sakura_show_wizard = true
-        lobby.sakura_wizard_dismissed = false
-    end
-end
-function BTN_HANDLERS.sakura_nodes_prev(lobby, btn)
-    if lobby.sakura then
-        local tp = math.max(1, tonumber(btn and btn.total_pages) or 1)
-        local cur = tonumber(lobby.sakura.node_page) or 1
-        lobby.sakura.node_page = (cur > 1) and (cur - 1) or tp
-    end
-end
-function BTN_HANDLERS.sakura_nodes_next(lobby, btn)
-    if lobby.sakura then
-        local tp = math.max(1, tonumber(btn and btn.total_pages) or 1)
-        local cur = tonumber(lobby.sakura.node_page) or 1
-        lobby.sakura.node_page = (cur < tp) and (cur + 1) or 1
-    end
-end
-function BTN_HANDLERS.sakura_copy_detected(lobby, btn)
-    local target = btn and btn.copy_addr
-    if not target and lobby.sakura then
-        local port = (lobby.role == "host" and lobby.transport and lobby.transport:get_port()) or proto.DEFAULT_TCP_PORT
-        local _, copy = lobby.sakura:get_host_share_addr(port)
-        target = copy
-    end
-    if target and #target > 0 then
-        local has_p2p = (select(2, proto.split_fallback_addr(target)) ~= nil)
-        local msg
-        if lobby.privacy_mask then
-            msg = has_p2p and "已复制免费 P2P + 樱花中继双地址（防窥隐藏），发给队友粘贴即可！"
-                or "已复制樱花公网联机地址（防窥隐藏），发给队友粘贴即可进房！"
-        else
-            msg = (has_p2p and "已复制 P2P+中继双地址：" or "已复制樱花联机地址：") .. target
-        end
-        lobby:copy_to_clipboard(target, msg)
-    else
-        lobby.overlay:show_toast("暂未检测到可复制的活跃樱花地址，请先启动一条 TCP 17777 隧道。", 2.8)
-    end
-end
-function BTN_HANDLERS.sakura_token_box(lobby) lobby:set_focus("sakura_token") end
-function BTN_HANDLERS.paste_sakura_token(lobby) lobby:paste_into_field("sakura_token") end
-function BTN_HANDLERS.sakura_api_refresh(lobby)
-    if lobby.sakura then lobby.sakura:refresh_api() end
-end
-function BTN_HANDLERS.sakura_token_clear(lobby)
-    if lobby.sakura then
-        lobby.sakura:stop_managed_frpc()
-        lobby.sakura:set_token("")
-        lobby:save_prefs()
-        lobby.overlay:show_toast("已清空本地保存的樱花访问密钥。", 2.2)
-    end
-end
-function BTN_HANDLERS.sakura_toggle_public(lobby)
-    if lobby.sakura then
-        lobby.sakura.public_mode = not lobby.sakura.public_mode
-        lobby.sakura:rebuild_filtered_nodes()
-        lobby:save_prefs()
-        lobby.overlay:show_toast(
-            lobby.sakura.public_mode and "已开启【公开直播合规模式】：仅推荐樱花官方允许公开招人的「多线」节点！"
-                or "已切为【熟人私密开黑模式】：可任选低负载普通/多线节点（请勿向公网大群公布普通节点地址）。",
-            3.2
-        )
-    end
-end
-function BTN_HANDLERS.sakura_start_frpc(lobby, btn)
-    if not lobby.sakura or not btn.tunnel then return end
-    local ok, err = lobby.sakura:start_managed_frpc(btn.tunnel)
-    if ok then
-        if err ~= "downloading" then
-            lobby.overlay:show_toast("正在后台通过官方独立版 frpc 启动隧道「" .. tostring(btn.tunnel.name) .. "」...", 3.0)
-        end
-    else
-        lobby.overlay:show_toast("启动隧道失败：" .. tostring(err), 3.8)
-    end
-end
-function BTN_HANDLERS.sakura_stop_frpc(lobby)
-    if lobby.sakura and lobby.sakura:stop_managed_frpc() then
-        lobby.overlay:show_toast("已停止 KR-MP 内置启动的樱花隧道。", 2.2)
-    end
-end
-function BTN_HANDLERS.sakura_use_online(lobby, btn)
-    if btn.tunnel and btn.tunnel.addr then
-        local c = btn.tunnel.p2p_addr and (btn.tunnel.p2p_addr .. "|" .. btn.tunnel.addr) or btn.tunnel.addr
-        BTN_HANDLERS.sakura_copy_detected(lobby, { copy_addr = c })
-    end
-end
-function BTN_HANDLERS.sakura_create_tunnel(lobby, btn)
-    if lobby.sakura and btn.node_id then
-        local port = (lobby.role == "host" and lobby.transport and lobby.transport:get_port()) or proto.DEFAULT_TCP_PORT
-        lobby.sakura:create_krmp_tunnel(btn.node_id, port)
-    end
 end
 function BTN_HANDLERS.use_recent_addr(lobby, btn)
     if type(btn.addr) == "string" and #btn.addr > 0 then
@@ -425,118 +237,7 @@ function BTN_HANDLERS.copy_net_info(lobby)
     end
 end
 
--- Online Home & 1-Click Self-Hosted Relay Server Modal
-function BTN_HANDLERS.open_server_host(lobby)
-    if lobby.overlay then lobby.overlay:clear_toast() end
-    if lobby.server_host then lobby.server_host:scan_local(true) end
-    if lobby.sakura then
-        lobby.sakura:scan_local(true)
-        if type(lobby.sakura.token) == "string" and #lobby.sakura.token >= 8 and not lobby.sakura.user_info and not lobby.sakura.api_busy then
-            lobby.sakura:refresh_api()
-        end
-    end
-    lobby.sub_modal = "server_host"
-end
-function BTN_HANDLERS.srv_rescan(lobby)
-    if lobby.server_host then lobby.server_host:scan_local(true) end
-    if lobby.sakura then lobby.sakura:scan_local(true) end
-    lobby.overlay:show_toast("已刷新本机服务端与樱花 17780 隧道状态。", 2.0)
-end
-function BTN_HANDLERS.srv_toggle_keep(lobby)
-    if lobby.server_host then
-        lobby.server_host.keep_running_on_exit = not lobby.server_host.keep_running_on_exit
-        lobby.overlay:show_toast(
-            lobby.server_host.keep_running_on_exit
-                and "已开启【退游戏保活】：房主游戏意外闪退时本机中继服继续运行，5 分钟内可重连！"
-                or "已关闭【退游戏保活】：退出游戏时将自动关闭本机中继服。",
-            3.0
-        )
-    end
-end
-function BTN_HANDLERS.srv_start_local(lobby)
-    if not lobby.server_host then return end
-    local ok, err = lobby.server_host:start_local_server(lobby)
-    if not ok then
-        lobby.overlay:show_toast("启动本机服失败：" .. tostring(err), 3.8)
-    end
-end
-function BTN_HANDLERS.srv_stop_local(lobby)
-    if lobby.server_host then
-        lobby.server_host:stop_local_server()
-        if lobby.transport and lobby.transport:is_online() and tostring(lobby.server_input or ""):match("^127%.0%.0%.1:") then
-            lobby.transport:close()
-            lobby.server_connected = false
-            lobby.server_handshaking = false
-        end
-        lobby.overlay:show_toast("已停止本机公网中继服 (TCP 17780)。", 2.4)
-    end
-end
-function BTN_HANDLERS.srv_connect_local(lobby)
-    local port = (lobby.server_host and lobby.server_host.DEFAULT_PORT) or proto.DEFAULT_ONLINE_PORT
-    local addr = "127.0.0.1:" .. tostring(port)
-    lobby.server_input = addr
-    lobby:save_prefs()
-    lobby.sub_modal = nil
-    if lobby.view == "home" and lobby.net_tab ~= "online" then
-        lobby:switch_tab("online")
-    end
-    lobby:connect_online_server(addr, false)
-end
-function BTN_HANDLERS.srv_copy_lan(lobby)
-    local port = (lobby.server_host and lobby.server_host.DEFAULT_PORT) or proto.DEFAULT_ONLINE_PORT
-    local ip = (lobby.server_host and lobby.server_host.lan_ip) or "127.0.0.1"
-    local addr = ip .. ":" .. tostring(port)
-    local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(addr) or addr
-    lobby:copy_to_clipboard(addr, "已复制局域网中继服地址：" .. shown .. "（同 Wi-Fi 队友贴进「公网服务器」即可）")
-end
-function BTN_HANDLERS.srv_copy_public(lobby, btn)
-    local addr = btn and btn.copy_addr
-    if type(addr) == "string" and #addr > 0 then
-        local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(addr) or addr
-        lobby:copy_to_clipboard(addr, "已复制公网大厅服地址：" .. shown .. "，发群里让水友填进「公网服务器」即可！")
-    end
-end
-function BTN_HANDLERS.srv_connect_public(lobby, btn)
-    local addr = btn and btn.addr
-    if type(addr) == "string" and #addr > 0 then
-        lobby.server_input = addr
-        lobby:save_prefs()
-        lobby.sub_modal = nil
-        if lobby.view == "home" and lobby.net_tab ~= "online" then
-            lobby:switch_tab("online")
-        end
-        lobby:connect_online_server(addr, false)
-    end
-end
-function BTN_HANDLERS.srv_start_sakura_17780(lobby, btn)
-    if not lobby.sakura or not btn.tunnel then return end
-    local watch_pid = (lobby.server_host and lobby.server_host.get_running_pid)
-        and lobby.server_host:get_running_pid() or nil
-    local keep_alive = (watch_pid ~= nil and lobby.server_host and lobby.server_host.keep_running_on_exit ~= false)
-    local ok, err = lobby.sakura:start_managed_frpc(btn.tunnel, {
-        watch_pid = watch_pid,
-        keep_on_exit = keep_alive,
-    })
-    if ok then
-        if err ~= "downloading" then
-            lobby.overlay:show_toast("正在后台通过官方独立版 frpc 连接 17780 公网服隧道，预计 1~2 秒就绪...", 3.2)
-        end
-    else
-        lobby.overlay:show_toast("启动 17780 隧道失败：" .. tostring(err) .. "（可点「用官方樱花开」）", 4.2)
-    end
-end
-function BTN_HANDLERS.srv_create_sakura_17780(lobby, btn)
-    if lobby.sakura and btn.node_id then
-        local port = (lobby.server_host and lobby.server_host.DEFAULT_PORT) or proto.DEFAULT_ONLINE_PORT
-        lobby.sakura:create_krmp_tunnel(btn.node_id, port)
-    end
-end
-function BTN_HANDLERS.srv_copy_vps_cmd(lobby)
-    local cmd = (lobby.server_host and lobby.server_host.VPS_DEPLOY_CMD) or ""
-    if #cmd > 0 then
-        lobby:copy_to_clipboard(cmd, "已复制 Linux 云服务器 1 行开服命令！贴到云主机终端回车即可永久部署。")
-    end
-end
+-- Online Home (1-click server host modal handlers live in lobby_draw_server.lua)
 function BTN_HANDLERS.server_box(lobby) lobby:set_focus("server") end
 function BTN_HANDLERS.paste_server(lobby) lobby:paste_into_field("server") end
 function BTN_HANDLERS.connect_server(lobby)
@@ -914,53 +615,24 @@ end
 
 function M.textinput(lobby, t)
     if not lobby.open or not lobby.focused_field or type(t) ~= "string" then return false end
-    local f = lobby.focused_field
-    if f == "report_note" then
-        local diag = lobby.boot and lobby.boot.diagnostics
-        if diag and diag.upload then
-            local clean_n = t:gsub("[%z\1-\31]", "")
-            local cur = tostring(diag.upload.note or "")
-            if #clean_n > 0 and (#cur + #clean_n) <= 150 then
-                diag.upload.note = cur .. clean_n
-            end
+    local spec = lobby_prefs.FIELD_SPECS[lobby.focused_field]
+    if not spec then return true end
+    local cur = spec.get(lobby)
+    if spec.utf8 then
+        local clean_n = t:gsub("[%z\1-\31]", "")
+        if #clean_n > 0 and (#cur + #clean_n) <= spec.max_len then
+            spec.set(lobby, cur .. clean_n)
         end
         return true
     end
     local clean_t = t:gsub("：", ":")
     for i = 1, #clean_t do
         local c = clean_t:sub(i, i)
-        if f == "sakura_ip" or f == "ip" then
-            if c:match("^[%d%.:a-zA-Z%-|]$") and #(lobby.sakura_ip_input or "") < 96 then
-                lobby.sakura_ip_input = (lobby.sakura_ip_input or "") .. c
-                lobby.ip_input = lobby.sakura_ip_input
-            end
-        elseif f == "lan_ip" then
-            if c:match("^[%d%.:a-zA-Z%-]$") and #(lobby.lan_ip_input or "") < 80 then
-                lobby.lan_ip_input = (lobby.lan_ip_input or "") .. c
-            end
-        elseif f == "sakura_token" then
-            if lobby.sakura and c:match("^[%w%-%_]$") and #(lobby.sakura.token or "") < 96 then
-                lobby.sakura.token = (lobby.sakura.token or "") .. c
-            end
-        elseif f == "server" then
-            if c:match("^[%d%.:a-zA-Z%-]$") and #lobby.server_input < 80 then
-                lobby.server_input = lobby.server_input .. c
-            end
-        elseif f == "report_server" then
-            local diag = lobby.boot and lobby.boot.diagnostics
-            if diag and diag.upload and c:match("^[%d%.:a-zA-Z%-]$") and #(diag.upload.server_addr or "") < 80 then
-                diag.upload.server_addr = (diag.upload.server_addr or "") .. c
-            end
-        elseif f == "code" then
-            if c:match("^[%da-zA-Z]$") and #lobby.code_input < 6 then
-                lobby.code_input = lobby.code_input .. c:upper()
-            end
-        elseif f == "pw" then
-            if c:match("^[%w%-%_@#]$") and #lobby.pw_input < 16 then
-                lobby.pw_input = lobby.pw_input .. c
-            end
+        if c:match(spec.char_pat) and #cur < spec.max_len then
+            cur = cur .. (spec.upper and c:upper() or c)
         end
     end
+    spec.set(lobby, cur)
     return true
 end
 
@@ -985,40 +657,22 @@ function M.keypressed(lobby, key)
     if f then
         local ctrl = love and love.keyboard and love.keyboard.isDown
             and (love.keyboard.isDown("lctrl") or love.keyboard.isDown("rctrl"))
+        local spec = lobby_prefs.FIELD_SPECS[f]
         if ctrl and key == "v" then
             lobby:paste_into_field(f)
             return true
-        elseif key == "backspace" then
-            if f == "sakura_ip" or f == "ip" then
-                lobby.sakura_ip_input = (lobby.sakura_ip_input or ""):sub(1, -2)
-                lobby.ip_input = lobby.sakura_ip_input
-            elseif f == "lan_ip" then
-                lobby.lan_ip_input = (lobby.lan_ip_input or ""):sub(1, -2)
-            elseif f == "sakura_token" and lobby.sakura then lobby.sakura.token = (lobby.sakura.token or ""):sub(1, -2)
-            elseif f == "server" then lobby.server_input = lobby.server_input:sub(1, -2)
-            elseif f == "report_server" and lobby.boot and lobby.boot.diagnostics and lobby.boot.diagnostics.upload then
-                lobby.boot.diagnostics.upload.server_addr = (lobby.boot.diagnostics.upload.server_addr or ""):sub(1, -2)
-            elseif f == "report_note" and lobby.boot and lobby.boot.diagnostics and lobby.boot.diagnostics.upload then
-                lobby.boot.diagnostics.upload.note = utf8_pop_char(lobby.boot.diagnostics.upload.note or "")
-            elseif f == "code" then lobby.code_input = lobby.code_input:sub(1, -2)
-            elseif f == "pw" then lobby.pw_input = lobby.pw_input:sub(1, -2)
-            end
+        elseif key == "backspace" and spec then
+            local cur = spec.get(lobby)
+            spec.set(lobby, spec.utf8 and utf8_pop_char(cur) or cur:sub(1, -2))
             return true
-        elseif key == "return" or key == "kpenter" then
+        elseif (key == "return" or key == "kpenter") then
             lobby:set_focus(nil)
-            if f == "sakura_ip" or f == "ip" then
-                BTN_HANDLERS.join_sakura_ip(lobby)
-            elseif f == "lan_ip" then
-                BTN_HANDLERS.join_lan_ip(lobby)
-            elseif f == "sakura_token" and lobby.sakura then
-                lobby:save_prefs()
-                lobby.sakura:refresh_api()
-            elseif f == "server" then
-                lobby.server_input = proto.sanitize_addr(lobby.server_input):sub(1, 80)
-                lobby:save_prefs()
-                lobby:connect_online_server(lobby.server_input, false)
-            elseif f == "code" then
-                lobby:join_online_room(lobby.code_input, lobby.pw_input)
+            if spec then
+                if spec.on_enter then
+                    spec.on_enter(lobby)
+                elseif spec.enter_btn and BTN_HANDLERS[spec.enter_btn] then
+                    BTN_HANDLERS[spec.enter_btn](lobby)
+                end
             end
             return true
         end

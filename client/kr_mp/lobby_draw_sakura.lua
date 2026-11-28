@@ -5,6 +5,8 @@
 --   Card 2    : Opt-in Official OpenAPI v4 token bar (1-click paste & login), real-name check, 多线 compliance toggle
 --   Bottom    : Either the 4-step interactive onboarding wizard (for new hosts) OR split view (My TCP Tunnels + Paginated Low-Load Nodes)
 local proto = require("kr_mp.proto")
+local proto = require("kr_mp.proto")
+local lobby_prefs = require("kr_mp.lobby_prefs")
 local ui = require("kr_mp.ui_assets")
 
 local M = {}
@@ -384,4 +386,155 @@ function M.draw(ctx)
     end
 end
 
+-- === Co-located Sakura Modal & Carrier Button Handlers (registered by lobby_input.lua) ===
+
+local H = {}
+
+function H.sakura_carrier(lobby, btn)
+    local next_addr = lobby_prefs.switch_sakura_carrier(lobby.sakura_ip_input or "", btn.carrier)
+    if next_addr then
+        lobby.sakura_ip_input = next_addr
+        lobby.ip_input = next_addr
+        lobby_prefs.record_recent_addr(lobby, next_addr)
+        lobby:save_prefs()
+        local names = { default = "默认线", dx = "电信专线 (dx.)", yd = "移动专线 (yd.)" }
+        local shown = (lobby.privacy_mask and lobby.sakura) and lobby.sakura.mask_addr(next_addr) or next_addr
+        lobby.overlay:show_toast("已切至樱花" .. (names[btn.carrier] or "默认线") .. "：" .. shown, 2.5)
+    end
+end
+function H.sakura_probe(lobby)
+    if lobby.sakura then lobby.sakura:start_carrier_probe(lobby.sakura_ip_input or "") end
+end
+function H.open_sakura(lobby)
+    if lobby.overlay then lobby.overlay:clear_toast() end
+    if lobby.sakura then
+        lobby.sakura:scan_local(true)
+        if type(lobby.sakura.token) == "string" and #lobby.sakura.token >= 8 and not lobby.sakura.user_info and not lobby.sakura.api_busy then
+            lobby.sakura:refresh_api()
+        end
+    end
+    lobby.sub_modal = "sakura"
+end
+function H.sakura_rescan(lobby)
+    if lobby.sakura then
+        lobby.sakura:scan_local(true)
+        lobby.overlay:show_toast("已刷新本机官方樱花启动器与隧道状态。", 2.0)
+    end
+end
+function H.sakura_launch_app(lobby, btn)
+    if lobby.sakura then lobby.sakura:launch_official_launcher(btn and btn.tunnel_name) end
+end
+function H.sakura_download_official(lobby)
+    if lobby.sakura then lobby.sakura:start_official_installer_download() end
+end
+function H.sakura_open_download_page(lobby)
+    if lobby.sakura then lobby.sakura:open_url(lobby.sakura.DOWNLOAD_URL, "已在浏览器打开 SakuraFrp 官方下载页。") end
+end
+function H.sakura_open_register(lobby)
+    if lobby.sakura then lobby.sakura:open_url(lobby.sakura.REGISTER_URL, "已在浏览器打开樱花注册/登录页，注册完请继续第 2 步实名。") end
+end
+function H.sakura_open_realname(lobby)
+    if lobby.sakura then lobby.sakura:open_url(lobby.sakura.REALNAME_URL, "已在浏览器打开樱花实名认证页（支付宝实名，完成后点同步账号即可）。") end
+end
+function H.sakura_open_profile(lobby)
+    if lobby.sakura then lobby.sakura:open_url(lobby.sakura.PROFILE_URL, "已在浏览器打开用户信息页：复制「访问密钥」后回到游戏点「粘贴并登录」！") end
+end
+function H.sakura_paste_and_sync(lobby) lobby:paste_into_field("sakura_token") end
+function H.sakura_toggle_wizard(lobby)
+    local sk = lobby.sakura
+    local currently_wizard = (lobby.sakura_show_wizard == true)
+        or (not (sk and sk.user_info) and lobby.sakura_wizard_dismissed ~= true)
+    lobby.sakura_show_wizard = not currently_wizard
+    lobby.sakura_wizard_dismissed = currently_wizard
+end
+function H.sakura_nodes_prev(lobby, btn)
+    if lobby.sakura then
+        local tp = math.max(1, tonumber(btn and btn.total_pages) or 1)
+        local cur = tonumber(lobby.sakura.node_page) or 1
+        lobby.sakura.node_page = (cur > 1) and (cur - 1) or tp
+    end
+end
+function H.sakura_nodes_next(lobby, btn)
+    if lobby.sakura then
+        local tp = math.max(1, tonumber(btn and btn.total_pages) or 1)
+        local cur = tonumber(lobby.sakura.node_page) or 1
+        lobby.sakura.node_page = (cur < tp) and (cur + 1) or 1
+    end
+end
+function H.sakura_copy_detected(lobby, btn)
+    local target = btn and btn.copy_addr
+    if not target and lobby.sakura then
+        local port = (lobby.role == "host" and lobby.transport and lobby.transport:get_port()) or proto.DEFAULT_TCP_PORT
+        local _, copy = lobby.sakura:get_host_share_addr(port)
+        target = copy
+    end
+    if target and #target > 0 then
+        local has_p2p = (select(2, proto.split_fallback_addr(target)) ~= nil)
+        local msg
+        if lobby.privacy_mask then
+            msg = has_p2p and "已复制免费 P2P + 樱花中继双地址（防窥隐藏），发给队友粘贴即可！"
+                or "已复制樱花公网联机地址（防窥隐藏），发给队友粘贴即可进房！"
+        else
+            msg = (has_p2p and "已复制 P2P+中继双地址：" or "已复制樱花联机地址：") .. target
+        end
+        lobby:copy_to_clipboard(target, msg)
+    else
+        lobby.overlay:show_toast("暂未检测到可复制的活跃樱花地址，请先启动一条 TCP 17777 隧道。", 2.8)
+    end
+end
+function H.sakura_token_box(lobby) lobby:set_focus("sakura_token") end
+function H.paste_sakura_token(lobby) lobby:paste_into_field("sakura_token") end
+function H.sakura_api_refresh(lobby)
+    if lobby.sakura then lobby.sakura:refresh_api() end
+end
+function H.sakura_token_clear(lobby)
+    if lobby.sakura then
+        lobby.sakura:stop_managed_frpc()
+        lobby.sakura:set_token("")
+        lobby:save_prefs()
+        lobby.overlay:show_toast("已清空本地保存的樱花访问密钥。", 2.2)
+    end
+end
+function H.sakura_toggle_public(lobby)
+    if lobby.sakura then
+        lobby.sakura.public_mode = not lobby.sakura.public_mode
+        lobby.sakura:rebuild_filtered_nodes()
+        lobby:save_prefs()
+        lobby.overlay:show_toast(
+            lobby.sakura.public_mode and "已开启【公开直播合规模式】：仅推荐樱花官方允许公开招人的「多线」节点！"
+                or "已切为【熟人私密开黑模式】：可任选低负载普通/多线节点（请勿向公网大群公布普通节点地址）。",
+            3.2
+        )
+    end
+end
+function H.sakura_start_frpc(lobby, btn)
+    if not lobby.sakura or not btn.tunnel then return end
+    local ok, err = lobby.sakura:start_managed_frpc(btn.tunnel)
+    if ok then
+        if err ~= "downloading" then
+            lobby.overlay:show_toast("正在后台通过官方独立版 frpc 启动隧道「" .. tostring(btn.tunnel.name) .. "」...", 3.0)
+        end
+    else
+        lobby.overlay:show_toast("启动隧道失败：" .. tostring(err), 3.8)
+    end
+end
+function H.sakura_stop_frpc(lobby)
+    if lobby.sakura and lobby.sakura:stop_managed_frpc() then
+        lobby.overlay:show_toast("已停止 KR-MP 内置启动的樱花隧道。", 2.2)
+    end
+end
+function H.sakura_use_online(lobby, btn)
+    if btn.tunnel and btn.tunnel.addr then
+        local c = btn.tunnel.p2p_addr and (btn.tunnel.p2p_addr .. "|" .. btn.tunnel.addr) or btn.tunnel.addr
+        H.sakura_copy_detected(lobby, { copy_addr = c })
+    end
+end
+function H.sakura_create_tunnel(lobby, btn)
+    if lobby.sakura and btn.node_id then
+        local port = (lobby.role == "host" and lobby.transport and lobby.transport:get_port()) or proto.DEFAULT_TCP_PORT
+        lobby.sakura:create_krmp_tunnel(btn.node_id, port)
+    end
+end
+
+M.BTN_HANDLERS = H
 return M
