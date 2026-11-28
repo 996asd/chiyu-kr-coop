@@ -537,15 +537,57 @@ local function install_misc_determinism_hooks(hooks)
             end
         end)
     end
-    -- Fast batch game unload: FL 8.2.0's 'slots' screen has show_loading=false, so returning
-    -- from 'game' -> 'slots' calls director:unload_item(game, nil) synchronously, which triggers
-    -- ~130 full purge_atlas() + collectgarbage() cycles (~13-14s main-thread freeze that also
-    -- starves online TCP heartbeats). Deferring purge/GC to a single pass at the end cuts
-    -- War Table return from ~14s to <0.4s with identical resource cleanup.
+    -- Guard FL 8.2.0's screen_credits:destroy() & screen_comics:destroy() against nil self.window.
+    -- Original screen_kr1_end / kr2_end / kr3_end / kr5_end / kr1_fa unconditionally call both
+    -- screen_comics:destroy() and screen_credits:destroy() even when unloaded during the comic phase
+    -- before screen_credits:init() ran, crashing at all/screen_credits.lua:620 (`self.window:destroy()`).
+    local function guard_screen_destroy(mod_name)
+        local scr = package.loaded[mod_name]
+        if type(scr) ~= "table" then return end
+        hooks.wrap_once(scr, "destroy", "safe_destroy", function(orig_destroy)
+            return function(self_s, ...)
+                if not self_s or self_s.window == nil then
+                    return
+                end
+                return orig_destroy(self_s, ...)
+            end
+        end)
+    end
+    guard_screen_destroy("screen_credits")
+    guard_screen_destroy("screen_comics")
+
+    -- Fast batch game unload + safe non-game screen destroy guard + Co-op director escape guard.
+    -- FL 8.2.0's 'slots' screen has show_loading=false, so returning from 'game' -> 'slots' calls
+    -- director:unload_item(game, nil) synchronously (~130 purge_atlas + GC cycles = ~14s freeze).
+    -- Deferring purge/GC to a single pass cuts War Table return from ~14s to <0.4s.
     local dir = director or package.loaded["director"]
     if type(dir) == "table" then
+        hooks.wrap_once(dir, "item_done_callback", "coop_done_guard", function(orig_done_cb)
+            return function(self_d, item_name, outcome, ...)
+                if hooks:is_mp_active() and item_name == "game" and type(outcome) == "table" then
+                    local nxt = tostring(outcome.next_item_name or "")
+                    if nxt == "map" or nxt == "kr1_fa" or nxt:sub(-4) == "_end" then
+                        if hooks.boot and hooks.boot.log then
+                            hooks.boot:log("[COOP] Blocked unexpected game->%s escape in Co-op; keeping match in game screen", nxt)
+                        end
+                        local st = game and game.store
+                        if st and st.game_outcome and st.game_outcome.victory then
+                            local ok_sf, sf = pcall(require, "kr_mp.stage_flow")
+                            if ok_sf and sf and sf.on_victory_view_shown then
+                                pcall(sf.on_victory_view_shown, sf)
+                            end
+                        end
+                        return
+                    end
+                end
+                return orig_done_cb(self_d, item_name, outcome, ...)
+            end
+        end)
+
         hooks.wrap_once(dir, "unload_item", "fast_unload", function(orig_unload)
             return function(self_d, item, async)
+                guard_screen_destroy("screen_credits")
+                guard_screen_destroy("screen_comics")
                 if not async and type(item) == "table" and item.item_name == "game" then
                     local ok_idb, I_db = pcall(require, "klove.image_db")
                     local ok_sdb, S_db = pcall(require, "sound_db")

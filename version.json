@@ -1,9 +1,9 @@
 {
-  "version": "2.4.6",
+  "version": "2.4.7",
   "protocol": 3,
   "fl_version": "8.2.0",
   "released_at": "2026-11-28",
-  "notes": "v2.4.6 全代码库模块化重构与零屎山架构升级：1) 抽离共享非阻塞 TCP 行协议流引擎 tcp_stream.lua，统一局域网/樱花直连与公网中继服的异步 DNS、握手、防 HoL 语音队列、O(N) 分帧、心跳与 12s 看门狗；2) 抽离共享单点语音编解码器 voice_codec.lua 与 WinMM 线程 voice_winmm.lua，PC 与手机端逐位共用同一套 16kHz IMA-ADPCM 实现；3) 抽离共享 Windows FFI/WinINet 工具 win_util.lua 与大厅网络状态机 lobby_net.lua，拆分 518 行 overlay:draw 及 27 分支 HUD 路由与锁步消息路由为表驱动；4) 为 coop.lua 跨模块状态增加异常必复原上下文护栏，并将 Go 服务端 1,408 行 room.go 拆分为高内聚 4 文件（零协议变动，PC/手机端一键更新平滑升级）。",
+  "notes": "v2.4.7 修复 Boss 结局关蓝屏退出与崩溃后战桌界面错位断连：1) 联机胜利拦截 FL 8.2.0 全部 26 个自定义结局关（含 2 代第 37 关 kr2_end、1/3/5/6 代各 Boss 终局关）的过场漫画/职员表跳转，直接走双人结算面板与自动下一关并清理残余黑边幕布；2) 为 screen_credits / screen_comics 销毁方法加装 nil 窗口防护并拦截联机态意外切出 map/*_end 界面，杜绝卸载蓝屏崩端；3) 房主返回战桌后自动兼容 2P 发来的断线冷重连/热续传请求，直接无缝拉回当前房间对齐关卡与界面，失败时自动清理过期重连缓存并修正首局关卡提前落盘问题（零协议变动，PC/手机端一键更新平滑升级）。",
   "download_gitee": "https://gitee.com/chiyu-studio/chiyu-kr-coop/releases",
   "download_github": "https://github.com/996asd/chiyu-kr-coop/releases",
   "server_win_sha256": "539BF784DD25DF152054E2E0F835831CBBD59A25FFBDDE6B84455D0FD30D41FC",

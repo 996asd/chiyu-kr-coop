@@ -1,6 +1,7 @@
 -- KR-MP GUI Simulation-Leak & Safety Guards
 -- Prevents FL 8.2.0 UI popups, selection/hover helpers, PauseView, and DragEntityView
 -- from mutating simulation state, consuming battle PRNG, or leaving stuck visual artifacts.
+local signal = require("hump.signal")
 local commands = require("kr_mp.commands")
 local prng = require("kr_mp.prng")
 local stage_flow = require("kr_mp.stage_flow")
@@ -196,6 +197,28 @@ local function install_coop_menu_guards(hooks, game_gui)
             end
         end)
     end
+
+    -- Suppress single-player post-boss ending screens (kr1_end/kr2_end/kr3_end/kr5_end/boss_fight_*_end/level_*_end)
+    -- during Co-op / Replay so both peers always see VictoryView + stage_flow instead of jumping into
+    -- single-player comics/credits (whose premature unload crashes screen_credits:destroy() with nil window) or map!
+    hooks.wrap_once(game_gui, "victory", "coop_victory_outcome", function(orig_victory)
+        return function(self_gui, ...)
+            if hooks:is_sync_active() then
+                local st = self_gui and self_gui.game and self_gui.game.store
+                if st and st.custom_game_outcome ~= nil then
+                    local next_nm = type(st.custom_game_outcome) == "table" and st.custom_game_outcome.next_item_name or "?"
+                    if hooks.boot and hooks.boot.log then
+                        hooks.boot:log("[COOP] Suppressed post-victory custom_game_outcome (%s) on level=%s -> showing VictoryView",
+                            tostring(next_nm), tostring(st.level_idx))
+                    end
+                    st.custom_game_outcome = nil
+                    -- Ensure boss-outro letterbox curtains (e.g. level111/level130) are dismissed before VictoryView
+                    pcall(signal.emit, "hide-curtains")
+                end
+            end
+            return orig_victory(self_gui, ...)
+        end
+    end)
 
     if VictoryView then
         hooks.wrap_once(VictoryView, "show", "coop_victory", function(orig_vv_show)

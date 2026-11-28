@@ -348,7 +348,7 @@ if ($detVer -and $detVer -ne $TargetFlVersion) {
 
 $StageDir = $null
 $PatchSource = $null
-$ModVer = "2.4.6"
+$ModVer = "2.4.7"
 try {
     if ($SourceDir -and (Test-Path -LiteralPath (Join-Path $SourceDir "UH.lua"))) {
         $PatchSource = (Resolve-Path -LiteralPath $SourceDir).Path

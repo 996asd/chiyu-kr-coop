@@ -500,11 +500,13 @@ function coop:leave_match()
     if game and game.game_gui and game.game_gui.pauseview then
         game.game_gui.pauseview.hidden = true
     end
-    -- Always leave the Co-op battle cleanly back to 'slots' so players are never stranded inside a
-    -- ghost battle after leaving/disconnecting (where tapping FL's native Pause->Quit could break state).
-    if main and main.handler and (main.handler.active_item == game
-        or (main.handler.active_item and main.handler.active_item.item_name == "game")) then
-        if main.handler.next_item_name == nil then
+    -- Always leave the Co-op battle (or any stray ending/map screen) cleanly back to 'slots' so players
+    -- are never stranded inside a ghost battle or single-player screen after leaving/disconnecting.
+    if main and main.handler and main.handler.active_item then
+        local ai = main.handler.active_item
+        local nm = ai.item_name
+        if (ai == game or (nm ~= "slots" and nm ~= "splash" and not ai.is_transition))
+            and main.handler.next_item_name == nil then
             main.handler.next_item_name = "slots"
             main.handler.next_item_args = {}
         end

@@ -112,6 +112,7 @@ local lobby = {
     online_reconnect_attempt = 0,
     online_reconnect_next_ts = 0,
     _pending_lobby_reconnect = false,
+    _pending_session_reconnect = false,
     online_rooms = {},
     online_room_code = nil,
     online_token = nil,
@@ -354,9 +355,13 @@ function lobby:on_return_lobby(by_pid, room_data, msg)
         self.room = room_data
         ensure_room_defaults(self.room)
     end
-    if main and main.handler and main.handler.active_item == game then
-        main.handler.next_item_name = "slots"
-        main.handler.next_item_args = {}
+    if main and main.handler and main.handler.active_item then
+        local ai = main.handler.active_item
+        local nm = ai.item_name
+        if ai == game or (nm ~= "slots" and nm ~= "splash" and not ai.is_transition) then
+            main.handler.next_item_name = "slots"
+            main.handler.next_item_args = {}
+        end
     end
     local peer_ok = true
     if msg and msg.peer_connected ~= nil then
@@ -393,7 +398,6 @@ function lobby:launch_chain_stage(target_level_idx, reason, requested_by_pid)
     end
     ensure_room_defaults(self.room)
     self.room.level_idx = target
-    self:save_prefs()
     local label = catalog.get_stage_label(target)
     local prefix = (reason == "restart") and "正在原地重开：" or "正在自动进入下一关："
     if self.overlay then self.overlay:show_toast(prefix .. label, 2.5) end
@@ -441,7 +445,6 @@ function lobby:host_start_match(is_chain)
             self.overlay:show_toast(string.format("检测到跨网延迟 (%dms)，已自动启用【樱花200ms】防卡顿缓冲！", measured_rtt), 2.8)
         end
     end
-    self:save_prefs()
     local cfg = {
         match_id = match_id,
         level_idx = self.room.level_idx,
@@ -469,6 +472,7 @@ function lobby:host_start_match(is_chain)
         self.overlay:show_toast("发送开局指令失败：网络连接已断开！请等待重连或退出重开房间。", 4.0)
         return false
     end
+    self:save_prefs()
 
     if not self.transport:is_online() then
         self.open = false
@@ -584,6 +588,7 @@ function MSG_HANDLERS.ROOM_REJOINED(self, msg)
     self.online_reconnecting_room = false
     self.online_reconnect_attempt = 0
     self._pending_lobby_reconnect = false
+    self._pending_session_reconnect = false
     self.local_pid = tonumber(msg.pid) or self.local_pid
     self.role = (self.local_pid == 1) and "host" or "client"
     self.online_room_code = msg.code or self.online_room_code
@@ -604,6 +609,7 @@ function MSG_HANDLERS.ROOM_CLOSED(self, msg)
     self.online_reconnecting_room = false
     self.online_reconnect_attempt = 0
     self._pending_lobby_reconnect = false
+    self._pending_session_reconnect = false
     self._pending_chain_stage = nil
     stage_flow:reset()
     self:clear_saved_session()
@@ -621,6 +627,7 @@ end
 
 function MSG_HANDLERS.RECONNECT_STATE(self, msg)
     if not msg.cfg then return end
+    self._pending_session_reconnect = false
     self.local_pid = tonumber(msg.pid) or self.local_pid
     self.role = (self.local_pid == 1) and "host" or "client"
     self.peer_connected = true
@@ -643,12 +650,67 @@ function MSG_HANDLERS.RECONNECT_STATE(self, msg)
     self.coop:prepare_match(self.local_pid, msg.cfg, msg)
 end
 
+local function validate_direct_guest_compat(self, msg, require_version_fields)
+    local my_fl = tostring(KR_FL_VERSION or "8.2.0")
+    local my_hash = proto.compute_script_hash()
+    local check_ver = require_version_fields or (msg.proto ~= nil) or (msg.fl_ver ~= nil)
+    if check_ver and (msg.proto ~= proto.PROTOCOL_VER or msg.fl_ver ~= my_fl) then
+        self.transport:send({
+            t = "ERROR",
+            msg = string.format("版本不匹配！房主 FL=%s 协议=%d，客机 FL=%s 协议=%s",
+                my_fl, proto.PROTOCOL_VER, tostring(msg.fl_ver), tostring(msg.proto)),
+        })
+        self.overlay:show_toast("已拒绝客机：游戏或补丁版本不一致！", 4)
+        return false
+    end
+    if msg.script_hash and msg.script_hash ~= my_hash then
+        self.transport:send({
+            t = "ERROR",
+            msg = string.format("核心脚本哈希不一致！房主=%s 客机=%s", my_hash, tostring(msg.script_hash)),
+        })
+        self.overlay:show_toast("已拒绝客机：游戏核心脚本不一致！", 4)
+        return false
+    end
+    if msg.tick_len and math.abs(msg.tick_len - (TICK_LENGTH or 1 / 60)) > 1e-4 then
+        self.transport:send({ t = "ERROR", msg = "帧率设置不一致！请双方统一以 60 FPS 启动。" })
+        return false
+    end
+    return true
+end
+
+local function accept_direct_guest_into_room(self, msg, fallback_from_reconnect)
+    self.peer_connected = true
+    self.peer_ready = true
+    self.peer_name = tostring(msg.name or "2P 队友")
+    self.transport:send({
+        t = "WELCOME",
+        pid = 2,
+        room = self.room,
+        fallback_from_reconnect = (fallback_from_reconnect == true) or nil,
+    })
+    self:broadcast_room_state()
+    if fallback_from_reconnect then
+        self.boot:log("[LOBBY] Accepted reconnecting P2 seamlessly into host War Table (prev match ended)")
+        self.overlay:show_toast("2P 队友重连上局（已结束），已自动同步接入当前战桌！", 3.5)
+    else
+        self.overlay:show_toast("2P 队友已加入局域网房间，可以开局了！", 2.2)
+    end
+end
+
 function MSG_HANDLERS.HOT_RESUME_REQ(self, msg)
     if self.role ~= "host" or self.transport:is_online() then return end
     if self.lockstep and self.lockstep:handle_hot_resume_req(msg) then
         self.peer_connected = true
         self.peer_ready = true
         if autotest.on_hot_resumed then autotest:on_hot_resumed() end
+    elseif not (self.coop and self.coop:is_active()) and self.view == "room" then
+        -- Host crashed/restarted and is already waiting on the War Table: seamlessly pull P2 into
+        -- the host's current lobby room instead of kicking P2 into a 180s disconnect loop!
+        if validate_direct_guest_compat(self, msg, false) then
+            accept_direct_guest_into_room(self, msg, true)
+        else
+            self.transport:drop_peer_socket("hot_resume_compat_mismatch", true)
+        end
     else
         self.transport:send({ t = "ERROR", msg = "房主当前对局已结束或局号不匹配，无法热续传。" })
         self.transport:drop_peer_socket("hot_resume_mismatch", true)
@@ -674,6 +736,13 @@ function MSG_HANDLERS.COLD_RECONNECT(self, msg)
     end
     if self.lockstep and self.lockstep:handle_cold_reconnect_req(msg) then
         self.peer_connected = true
+    elseif not (self.coop and self.coop:is_active()) and self.view == "room" then
+        -- Host restarted and opened a fresh War Table room: accept P2 directly into the room!
+        if validate_direct_guest_compat(self, msg, true) then
+            accept_direct_guest_into_room(self, msg, true)
+        else
+            self.transport:drop_peer_socket("cold_reconnect_compat_mismatch", true)
+        end
     else
         self.transport:send({ t = "ERROR", msg = "直连追帧重连失败：房主对局已结束或局号不匹配。" })
         self.transport:drop_peer_socket("cold_reconnect_reject", true)
@@ -691,43 +760,36 @@ function MSG_HANDLERS.HELLO(self, msg)
         self.transport:drop_peer_socket("busy_in_match", true)
         return
     end
-    local my_fl = tostring(KR_FL_VERSION or "8.2.0")
-    local my_hash = proto.compute_script_hash()
-    if msg.proto ~= proto.PROTOCOL_VER or msg.fl_ver ~= my_fl then
-        self.transport:send({
-            t = "ERROR",
-            msg = string.format("版本不匹配！房主 FL=%s 协议=%d，客机 FL=%s 协议=%s",
-                my_fl, proto.PROTOCOL_VER, tostring(msg.fl_ver), tostring(msg.proto)),
-        })
-        self.overlay:show_toast("已拒绝客机：游戏或补丁版本不一致！", 4)
+    if not validate_direct_guest_compat(self, msg, true) then
         return
     end
-    if msg.script_hash and msg.script_hash ~= my_hash then
-        self.transport:send({
-            t = "ERROR",
-            msg = string.format("核心脚本哈希不一致！房主=%s 客机=%s", my_hash, tostring(msg.script_hash)),
-        })
-        self.overlay:show_toast("已拒绝客机：游戏核心脚本不一致！", 4)
-        return
-    end
-    if msg.tick_len and math.abs(msg.tick_len - (TICK_LENGTH or 1 / 60)) > 1e-4 then
-        self.transport:send({ t = "ERROR", msg = "帧率设置不一致！请双方统一以 60 FPS 启动。" })
-        return
-    end
-    self.peer_connected = true
-    self.peer_ready = true
-    self.peer_name = tostring(msg.name or "2P 队友")
-    self.transport:send({ t = "WELCOME", pid = 2, room = self.room })
-    self:broadcast_room_state()
-    self.overlay:show_toast("2P 队友已加入局域网房间，可以开局了！", 2.2)
+    accept_direct_guest_into_room(self, msg, false)
 end
 
 function MSG_HANDLERS.WELCOME(self, msg)
     if self.role ~= "client" then return end
+    self._pending_session_reconnect = false
+    self.direct_auto_retry = nil
     self.local_pid = tonumber(msg.pid) or 2
+    if msg.fallback_from_reconnect and self.coop and self.coop:is_active() then
+        self.coop:leave_match()
+    end
+    if not self.transport:is_online() then
+        self:clear_saved_session()
+    end
     if msg.room then self.room = msg.room; ensure_room_defaults(self.room) end
     self.peer_connected = true
-    self.overlay:show_toast("已加入局域网房间（你是 2P 红方）！", 2.0)
+    self.local_ready = true
+    self.view = "room"
+    self.sub_modal = nil
+    self.open = true
+    if msg.fallback_from_reconnect then
+        self.boot:log("[LOBBY] Reconnect seamlessly fell back into Host War Table (level=%s)",
+            tostring(self.room and self.room.level_idx))
+        self.overlay:show_toast("上局已结束，已自动为你同步并进入房主当前战桌！", 3.8)
+    else
+        self.overlay:show_toast("已加入局域网房间（你是 2P 红方）！", 2.0)
+    end
 end
 
 function MSG_HANDLERS.ROOM_STATE(self, msg)
@@ -804,6 +866,21 @@ function MSG_HANDLERS.ERROR(self, msg)
     if self._pending_lobby_reconnect then
         self._pending_lobby_reconnect = false
         self:exit_dead_online_room("公网房间已失效（" .. tostring(msg.msg) .. "），已返回公网大厅，请重新建房或进房！")
+        return
+    end
+    if self._pending_session_reconnect then
+        self._pending_session_reconnect = false
+        self:clear_saved_session()
+        if not (self.coop and self.coop:is_active()) and self.view == "home" then
+            self.role = "none"
+            self.peer_connected = false
+            self.online_room_code = nil
+            self.online_token = nil
+            if self.transport and not self.transport:is_online() then
+                self.transport:close()
+            end
+        end
+        self.overlay:show_toast("上次对局已失效（" .. tostring(msg.msg) .. "），已清理旧记录，请重新加入房主战桌！", 5.5)
         return
     end
     self.overlay:show_toast("提示：" .. tostring(msg.msg), 5)

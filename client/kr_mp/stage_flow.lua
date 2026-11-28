@@ -269,6 +269,11 @@ function stage_flow:update(dt)
         if self.active or self.outcome then self:reset() end
         return
     end
+    -- Never advance hidden auto-next countdown while director is outside the 'game' screen
+    -- (e.g. during loading transitions or any non-game screen where the countdown bar is invisible).
+    if main and main.handler and main.handler.active_item ~= game then
+        return
+    end
     -- Fallback reveal if a custom stage triggers game-victory without VictoryView:show()
     if self.outcome == "victory" and not self.active and self.outcome_ts > 0 then
         if (now_sec() - self.outcome_ts) >= VICTORY_FALLBACK_SHOW then

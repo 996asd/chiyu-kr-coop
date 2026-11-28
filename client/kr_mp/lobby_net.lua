@@ -19,6 +19,7 @@ function M.exit_dead_online_room(self, reason_toast)
     self.online_reconnecting_room = false
     self.online_reconnect_attempt = 0
     self._pending_lobby_reconnect = false
+    self._pending_session_reconnect = false
     self._pending_chain_stage = nil
     stage_flow:reset()
     self:clear_saved_session()
@@ -83,6 +84,10 @@ function M.host_lan_room(self)
     self.view = "room"
     self.sub_modal = nil
     self.direct_auto_retry = nil
+    self._pending_session_reconnect = false
+    if self.saved_session and self.saved_session.mode == "direct" then
+        self:clear_saved_session()
+    end
     if self.transport:is_port_drifted() then
         local req = self.transport:get_requested_port()
         self.overlay:show_toast(string.format(
@@ -126,6 +131,7 @@ function M.on_lan_connected(self, target_ip, target_port)
         self.online_token = nil
         self.peer_connected = true
         self.peer_name = "房主 (" .. tostring(target_ip) .. ")"
+        self._pending_session_reconnect = true
         self.boot:log("[LOBBY] Direct Cold-Reconnect TCP connected -> sending COLD_RECONNECT match_id=%s", tostring(sess.match_id))
         self.transport:send({
             t = "COLD_RECONNECT",
@@ -136,6 +142,7 @@ function M.on_lan_connected(self, target_ip, target_port)
             fl_ver = tostring(KR_FL_VERSION or "8.2.0"),
             script_hash = proto.compute_script_hash(),
             tick_len = TICK_LENGTH or (1 / 60),
+            name = "Player 2",
         })
         self.overlay:show_toast("已重新接通房主，正在拉取历史战局高速追帧...", 4.0)
         return
@@ -147,6 +154,10 @@ function M.on_lan_connected(self, target_ip, target_port)
     self.online_token = nil
     self.peer_connected = true
     self.local_ready = true
+    self._pending_session_reconnect = false
+    if self.saved_session and self.saved_session.mode == "direct" then
+        self:clear_saved_session()
+    end
     self.peer_name = "房主 (" .. tostring(target_ip) .. ")"
     self.view = "room"
     self.sub_modal = nil
@@ -366,6 +377,9 @@ function M.send_reconnect_online(self, sess, silent)
     self.online_token = sess.token
     self.local_pid = tonumber(sess.pid) or 2
     self.role = (self.local_pid == 1) and "host" or "client"
+    if not silent then
+        self._pending_session_reconnect = true
+    end
     self.boot:log("[LOBBY] Sending RECONNECT room=%s pid=%d server=%s", sess.code, self.local_pid, sess.server)
     self.transport:send({
         t = "RECONNECT",
@@ -403,6 +417,7 @@ function M.leave_room(self)
     self.online_reconnecting_room = false
     self.online_reconnect_attempt = 0
     self._pending_lobby_reconnect = false
+    self._pending_session_reconnect = false
     self._pending_chain_stage = nil
     stage_flow:reset()
     if self.transport:is_online() and self.transport:is_connected() then
@@ -547,13 +562,20 @@ function TRANSPORT_HANDLERS.peer_disconnected(self, ev, now)
                 }
             end
         end
-    elseif ev.reason == "early_eof_refused" and self.role == "client" then
+    elseif (ev.reason == "early_eof_refused" or self.view == "home") and self.role == "client" then
+        local was_early = (ev.reason == "early_eof_refused")
+        local was_rc = (self._pending_session_reconnect == true)
+        self._pending_session_reconnect = false
         self.role = "none"
         self.view = "home"
         self.sub_modal = nil
         self.transport:close()
-        if self.open then self.transport:start_lan_scan() end
-        self.overlay:show_toast("已连到樱花节点，但房主游戏未就绪！请确认：① 房主已点「创建房间」；② 樱花本地端口填的是 17777！", 6.5)
+        if self.open and self.net_tab == "lan" then self.transport:start_lan_scan() end
+        if was_early then
+            self.overlay:show_toast("已连到樱花节点，但房主游戏未就绪！请确认：① 房主已点「创建房间」；② 樱花本地端口填的是 17777！", 6.5)
+        elseif not was_rc then
+            self.overlay:show_toast("与房主连接已断开，请确认房主仍在房间后重新直连。", 4.0)
+        end
     else
         self.overlay:show_toast("队友已断开连接。", 3.5)
     end
